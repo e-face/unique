@@ -1,0 +1,15 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/icons">
+        <file alias="chat.png">icon/chat.png</file>
+        <file alias="clear.png">icon/clear.png</file>
+        <file alias="team.png">icon/team.png</file>
+        <file alias="log.png">icon/log.png</file>
+        <file alias="prev_perm.png">icon/prev_perm.png</file>
+        <file alias="next_perm.png">icon/next_perm.png</file>
+        <file alias="worker_manager.png">icon/worker_manager.png</file>
+        <file alias="worker_executor.png">icon/worker_executor.png</file>
+        <file alias="worker_tester.png">icon/worker_tester.png</file>
+        <file alias="worker_tool.png">icon/worker_tool.png</file>
+    </qresource>
+</RCC>
