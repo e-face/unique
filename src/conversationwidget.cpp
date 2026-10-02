@@ -62,11 +62,66 @@ static QString firstPhrase(QString text)
 
 //----------------------------------------------
 
+//----------------------------------------------
+
+QString AuthorBadge::normalizeKey(QString author)
+{
+    QString key = author.trimmed();
+    if (key.isEmpty())
+        return QString::fromUtf8("?");
+    // Все варианты «от пользователя» — один цвет.
+    if (key == QString::fromUtf8("Вы")
+        || key == QString::fromUtf8("Задача")
+        || key.startsWith(QString::fromUtf8("Пользователь")))
+        return QString::fromUtf8("Пользователь");
+    // «Имя · Создан» / «Имя · Ошибка» → цвет по имени.
+    const int sep = key.indexOf(QString::fromUtf8(" \xC2\xB7 "));
+    if (sep > 0)
+        key = key.left(sep).trimmed();
+    return key;
+}
+
+//----------------------------------------------
+
+QColor AuthorBadge::colorFor(QString authorKey)
+{
+    // Тёмные оттенки, согласованные с синим акцентом и палитрой графа воркеров.
+    static const int kHues[] = {
+        210, 160, 355, 280, 190, 25, 240, 330, 145, 40, 200, 300
+    };
+    const QString key = normalizeKey(authorKey);
+    const uint h = qHash(key);
+    const int hue = kHues[h % 12];
+    const int sat = 52 + int((h >> 4) % 18);   // 52..69 %
+    const bool light = AppSettings::instance()->isLightTheme();
+    // На светлой теме — тёмные; на тёмной чуть светлее, чтобы оставались читаемыми.
+    const int lit = light
+        ? (26 + int((h >> 8) % 12))            // 26..37 %
+        : (52 + int((h >> 8) % 12));           // 52..63 %
+    return QColor::fromHsl(hue,
+                           qBound(0, int(sat * 255 / 100), 255),
+                           qBound(0, int(lit * 255 / 100), 255));
+}
+
+//----------------------------------------------
+
+QString AuthorBadge::titleHtml(QString title, QString authorKey)
+{
+    const QString shown = title.trimmed().isEmpty() ? QString::fromUtf8("?") : title.trimmed();
+    const QColor color = colorFor(authorKey.isEmpty() ? shown : authorKey);
+    return QString::fromUtf8(
+               "<span style=\"font-weight:700; color:%1;\">%2</span>")
+        .arg(color.name(), MarkdownFormatter::escapeHtml(shown));
+}
+
+//----------------------------------------------
+
 ChatMessageFrame::ChatMessageFrame(QString title, QString html, QString preview,
                                    QString objectName, bool alignRight, bool collapsed,
-                                   QWidget *parent)
+                                   QWidget *parent, QString authorKey)
     : QFrame(parent)
     , _title(title)
+    , _authorKey(authorKey.trimmed().isEmpty() ? title : authorKey)
     , _bodyHtml(html)
     , _preview(firstPhrase(preview))
     , _view(new QTextBrowser(this))
@@ -147,14 +202,42 @@ void ChatMessageFrame::applyTheme()
             "a { color: %2; }")
                                                     .arg(text, accent));
     }
+    // Пересобрать HTML подписи — цвет автора зависит от светлой/тёмной темы.
+    applyCollapsed();
+}
+
+//----------------------------------------------
+
+QString ChatMessageFrame::titleBadgeHtml() const
+{
+    return AuthorBadge::titleHtml(_title, _authorKey);
+}
+
+//----------------------------------------------
+
+void ChatMessageFrame::appendEscapedParagraph(QString text)
+{
+    QString chunk = QString::fromUtf8("<p style=\"white-space:pre-wrap;\">");
+    chunk += MarkdownFormatter::escapeHtml(clipDisplay(text, 12000));
+    chunk += QString::fromUtf8("</p>");
+    _bodyHtml += chunk;
+    applyCollapsed();
+}
+
+//----------------------------------------------
+
+void ChatMessageFrame::appendHtmlParagraph(QString html, QString previewSource)
+{
+    Q_UNUSED(previewSource);
+    _bodyHtml += html;
+    applyCollapsed();
 }
 
 //----------------------------------------------
 
 QString ChatMessageFrame::collapsedHtml() const
 {
-    QString line = QString::fromUtf8("<b>%1</b>")
-                       .arg(MarkdownFormatter::escapeHtml(_title));
+    QString line = titleBadgeHtml();
     if (!_preview.isEmpty())
     {
         line += QString::fromUtf8(" - ");
@@ -167,8 +250,7 @@ QString ChatMessageFrame::collapsedHtml() const
 
 QString ChatMessageFrame::expandedHtml() const
 {
-    QString html = QString::fromUtf8("<p><b>%1</b></p>")
-                       .arg(MarkdownFormatter::escapeHtml(_title));
+    QString html = QString::fromUtf8("<p>%1</p>").arg(titleBadgeHtml());
     html += _bodyHtml;
     return html;
 }
@@ -332,6 +414,8 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     _scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     connect(_scroll->verticalScrollBar(), SIGNAL(rangeChanged(int,int)),
             this, SLOT(sltScrollRangeChanged(int,int)));
+    connect(_scroll->verticalScrollBar(), SIGNAL(valueChanged(int)),
+            this, SLOT(sltScrollValueChanged(int)));
 
     _input = new QPlainTextEdit(this);
     _input->setPlaceholderText(tr("Сообщение…  Enter — отправить, Shift+Enter — новая строка"));
@@ -419,6 +503,8 @@ void ConversationWidget::setAgent(Agent *agent)
             this, SLOT(sltToolCallFinished(QString,QString,bool)));
     connect(_agent, SIGNAL(notice(QString)),
             this, SLOT(sltNotice(QString)));
+    connect(_agent, SIGNAL(forwardedContext(QString)),
+            this, SLOT(sltForwardedContext(QString)));
     connect(_agent, SIGNAL(failed(QString)),
             this, SLOT(sltFailed(QString)));
     connect(_agent, SIGNAL(busyChanged(bool)),
@@ -427,7 +513,11 @@ void ConversationWidget::setAgent(Agent *agent)
             this, SLOT(sltContextUsageChanged(int,int)));
     connect(_agent, SIGNAL(compactingChanged(bool)),
             this, SLOT(sltCompactingChanged(bool)));
+    connect(_agent, SIGNAL(toolBudgetExhausted(int)),
+            this, SLOT(sltToolBudgetExhausted(int)));
     _agent->refreshContextUsage();
+    if (_agent->isWaitingToolBudget())
+        showToolBudgetRequest(_agent->toolBudgetChunk());
 }
 
 //----------------------------------------------
@@ -574,6 +664,32 @@ bool ConversationWidget::userInputEnabled() const
 
 //----------------------------------------------
 
+void ConversationWidget::setAuthorLabels(QString userAuthor, QString assistantAuthor)
+{
+    _userAuthor = userAuthor.trimmed();
+    _assistantAuthor = assistantAuthor.trimmed();
+}
+
+//----------------------------------------------
+
+QString ConversationWidget::userAuthorLabel() const
+{
+    if (!_userAuthor.isEmpty())
+        return _userAuthor;
+    return _userInputEnabled ? tr("Вы") : tr("Пользователь");
+}
+
+//----------------------------------------------
+
+QString ConversationWidget::assistantAuthorLabel() const
+{
+    if (!_assistantAuthor.isEmpty())
+        return _assistantAuthor;
+    return tr("Ассистент");
+}
+
+//----------------------------------------------
+
 void ConversationWidget::showPermissionRequest(QString action, bool offerAlways)
 {
     Q_UNUSED(offerAlways);
@@ -626,10 +742,66 @@ void ConversationWidget::showContinuationRequest(QString error)
 
 //----------------------------------------------
 
+void ConversationWidget::showToolBudgetRequest(int chunk)
+{
+    _promptMode = 3;
+    const int n = chunk > 0 ? chunk : 0;
+    if (_permissionLabel)
+        _permissionLabel->setText(
+            tr("Бюджет вызовов функций исчерпан (%1).\n"
+               "Сбросить лимиты и продолжить или завершить?")
+                .arg(n));
+    if (_approveButton)
+        _approveButton->setText(tr("Сбросить лимиты"));
+    if (_alwaysButton)
+        _alwaysButton->setVisible(false);
+    if (_rejectButton)
+        _rejectButton->setText(tr("Завершить"));
+    if (_permissionHost)
+        _permissionHost->show();
+}
+
+//----------------------------------------------
+
+void ConversationWidget::showSubtreeBudgetRequest(QString text)
+{
+    _promptMode = 4;
+    if (_permissionLabel)
+        _permissionLabel->setText(text);
+    if (_approveButton)
+        _approveButton->setText(tr("Сбросить лимиты"));
+    if (_alwaysButton)
+        _alwaysButton->setVisible(false);
+    if (_rejectButton)
+        _rejectButton->setText(tr("Запретить"));
+    if (_permissionHost)
+        _permissionHost->show();
+}
+
+//----------------------------------------------
+
+void ConversationWidget::sltToolBudgetExhausted(int chunk)
+{
+    showToolBudgetRequest(chunk);
+}
+
+//----------------------------------------------
+
 void ConversationWidget::sltPermissionApprove()
 {
     const int mode = _promptMode;
     hidePermissionRequest();
+    if (mode == 4)
+    {
+        emit subtreeBudgetAnswered(true);
+        return;
+    }
+    if (mode == 3)
+    {
+        if (_agent)
+            _agent->resolveToolBudget(true);
+        return;
+    }
     if (mode == 2)
         emit continuationAnswered(true);
     else
@@ -642,6 +814,17 @@ void ConversationWidget::sltPermissionAlways()
 {
     const int mode = _promptMode;
     hidePermissionRequest();
+    if (mode == 4)
+    {
+        emit subtreeBudgetAnswered(true);
+        return;
+    }
+    if (mode == 3)
+    {
+        if (_agent)
+            _agent->resolveToolBudget(true);
+        return;
+    }
     if (mode == 2)
         emit continuationAnswered(true);
     else
@@ -654,6 +837,17 @@ void ConversationWidget::sltPermissionReject()
 {
     const int mode = _promptMode;
     hidePermissionRequest();
+    if (mode == 4)
+    {
+        emit subtreeBudgetAnswered(false);
+        return;
+    }
+    if (mode == 3)
+    {
+        if (_agent)
+            _agent->resolveToolBudget(false);
+        return;
+    }
     if (mode == 2)
         emit continuationAnswered(false);
     else
@@ -662,7 +856,8 @@ void ConversationWidget::sltPermissionReject()
 
 //----------------------------------------------
 
-void ConversationWidget::recordDisplay(QString kind, QString title, QString text)
+void ConversationWidget::recordDisplay(QString kind, QString title, QString text,
+                                        QString authorKey)
 {
     if (_restoring)
         return;
@@ -670,6 +865,7 @@ void ConversationWidget::recordDisplay(QString kind, QString title, QString text
     item.kind = kind;
     item.title = title;
     item.text = text;
+    item.authorKey = authorKey.trimmed().isEmpty() ? title : authorKey;
     _displayLog.append(item);
     while (_displayLog.size() > kMaxDisplayLogItems)
         _displayLog.removeFirst();
@@ -680,17 +876,29 @@ void ConversationWidget::recordDisplay(QString kind, QString title, QString text
 void ConversationWidget::replayDisplayItem(const ChatDisplayItem &item)
 {
     const QString kind = item.kind;
+    const QString key = item.authorKey.isEmpty() ? item.title : item.authorKey;
     if (kind == QString::fromUtf8("user"))
-        addPlainBubble(item.title, item.text, QString::fromUtf8("userMsg"), true);
+        addPlainBubble(item.title, item.text, QString::fromUtf8("userMsg"), true,
+                       false, false, key);
     else if (kind == QString::fromUtf8("assistant"))
         addBubble(item.title, MarkdownFormatter::toHtml(item.text), item.text,
-                  QString::fromUtf8("assistantMsg"), false, false);
+                  QString::fromUtf8("assistantMsg"), false, false, key);
     else if (kind == QString::fromUtf8("tool"))
-        addPlainBubble(item.title, item.text, QString::fromUtf8("toolMsg"), false);
+        addPlainBubble(item.title, item.text, QString::fromUtf8("toolMsg"), false,
+                       false, false, key);
     else if (kind == QString::fromUtf8("error"))
-        addPlainBubble(item.title, item.text, QString::fromUtf8("errorMsg"), false);
+        addPlainBubble(item.title, item.text, QString::fromUtf8("errorMsg"), false,
+                       false, false, key);
+    else if (kind == QString::fromUtf8("forwarded"))
+    {
+        if (!AppSettings::instance()->showForwardedContext())
+            return;
+        addPlainBubble(item.title, item.text, QString::fromUtf8("noticeMsg"), false,
+                       false, false, key);
+    }
     else
-        addPlainBubble(item.title, item.text, QString::fromUtf8("noticeMsg"), false);
+        addPlainBubble(item.title, item.text, QString::fromUtf8("noticeMsg"), false,
+                       false, false, key);
 }
 
 //----------------------------------------------
@@ -724,7 +932,10 @@ void ConversationWidget::applyTheme()
 {
     AppSettings *s = AppSettings::instance();
     const QString text = s->textColor().name();
-    const QString panel = s->panelColor().name();
+    // Фон ленты чата/журнала: чуть темнее панели (светлая тема — #f0f0f0).
+    const QString chatBg = s->isLightTheme()
+                           ? QString::fromUtf8("#f0f0f0")
+                           : s->panelColor().darker(108).name();
     const QString bubble = s->isLightTheme()
                            ? QString::fromUtf8("#f3f3f3")
                            : s->panelColor().lighter(114).name();
@@ -752,7 +963,7 @@ void ConversationWidget::applyTheme()
         "QWidget#messagesHost { background:%1; }"
         "QFrame#userMsg QFrame#bubble { background:%6; border:1px solid %9;"
         "  border-radius:10px; }"
-        "QFrame#assistantMsg QFrame#bubble { background:%7; border:none;"
+        "QFrame#assistantMsg QFrame#bubble { background:%7; border:1px solid %9;"
         "  border-radius:8px; }"
         "QFrame#toolMsg QFrame#bubble { background:%8; border:1px solid %9;"
         "  border-radius:8px; }"
@@ -772,7 +983,7 @@ void ConversationWidget::applyTheme()
         "  border-radius:4px; padding:5px 12px; }"
         "QPushButton:hover { background:%5; }"
         "QPushButton:disabled { color:%MUTED%; }")
-                      .arg(panel, text, bubble, accent, input, user, assistant, other, border)
+                      .arg(chatBg, text, bubble, accent, input, user, assistant, other, border)
                       .replace(QString::fromUtf8("%MUTED%"), muted)
                       .replace(QString::fromUtf8("%PERMBG%"), permBg)
                       .replace(QString::fromUtf8("%PERMBORDER%"), permBorder)
@@ -952,6 +1163,8 @@ void ConversationWidget::sltSend()
     const QString text = _input->toPlainText().trimmed();
     if (text.isEmpty())
         return;
+    if (_promptMode == 3)
+        hidePermissionRequest();
     _input->clear();
     emit sendRequested(text);
 }
@@ -960,18 +1173,56 @@ void ConversationWidget::sltSend()
 
 void ConversationWidget::sltUserMessage(const QString &text)
 {
-    const QString title = _userInputEnabled ? tr("Вы") : tr("Задача");
-    recordDisplay(QString::fromUtf8("user"), title, text);
-    addPlainBubble(title, text, QString::fromUtf8("userMsg"), true);
+    const int ingress = _agent ? _agent->lastUserIngress() : AgentUserIngressHuman;
+    if (ingress == AgentUserIngressSystem)
+        return;
+
+    QString title = userAuthorLabel();
+    QString colorKey = QString::fromUtf8("Пользователь");
+    QString body = text;
+    if (ingress == AgentUserIngressAssignment)
+    {
+        title = tr("Задание");
+        colorKey = title;
+    }
+    else if (ingress == AgentUserIngressFollowUp)
+    {
+        title = tr("Уточнение");
+        colorKey = title;
+        if (body.startsWith(QString::fromUtf8("Follow-up from your parent worker.")))
+        {
+            const int sep = body.indexOf(QString::fromUtf8("\n\n"));
+            if (sep >= 0)
+                body = body.mid(sep + 2).trimmed();
+        }
+    }
+    else if (ingress == AgentUserIngressGroup)
+    {
+        title = tr("Группа");
+        colorKey = title;
+        if (body.startsWith(QString::fromUtf8("[Your turn as narrator]")))
+            body = tr("Ваш ход в обсуждении");
+        else if (body.startsWith(QString::fromUtf8("[Group VOTE required]")))
+            body = tr("Нужно проголосовать");
+        else if (body.startsWith(QString::fromUtf8("[Group dialogue DONE]")))
+            body = tr("Группа пришла к решению");
+        else if (body.startsWith(QString::fromUtf8("[Waiting]"))
+                 || body.startsWith(QString::fromUtf8("[Waiting for other votes]")))
+            body = tr("Ожидание хода");
+    }
+
+    recordDisplay(QString::fromUtf8("user"), title, body, colorKey);
+    addPlainBubble(title, body, QString::fromUtf8("userMsg"), true, false, false, colorKey);
 }
 
 //----------------------------------------------
 
 void ConversationWidget::sltAssistantMessage(const QString &text)
 {
-    recordDisplay(QString::fromUtf8("assistant"), tr("Ассистент"), text);
+    const QString title = assistantAuthorLabel();
+    recordDisplay(QString::fromUtf8("assistant"), title, text, title);
     const QString html = MarkdownFormatter::toHtml(clipDisplay(text, 24000));
-    addBubble(tr("Ассистент"), html, text, QString::fromUtf8("assistantMsg"), false, false);
+    addBubble(title, html, text, QString::fromUtf8("assistantMsg"), false, false, title);
 }
 
 //----------------------------------------------
@@ -991,11 +1242,11 @@ void ConversationWidget::sltToolCallFinished(const QString &name, const QString 
     body += QChar('\n');
     body += result;
     const QString title = ok ? tr("Функция") : tr("Функция (ошибка)");
-    recordDisplay(QString::fromUtf8("tool"), title, body);
+    recordDisplay(QString::fromUtf8("tool"), title, body, title);
     addPlainBubble(title,
                    body,
                    QString::fromUtf8("toolMsg"),
-                   false);
+                   false, false, false, title);
     _pendingToolName.clear();
     _pendingToolArgs.clear();
     if (_agent && _agent->isBusy())
@@ -1006,16 +1257,29 @@ void ConversationWidget::sltToolCallFinished(const QString &name, const QString 
 
 void ConversationWidget::sltNotice(const QString &text)
 {
-    recordDisplay(QString::fromUtf8("notice"), tr("Контекст"), text);
-    addPlainBubble(tr("Контекст"), text, QString::fromUtf8("noticeMsg"), false);
+    recordDisplay(QString::fromUtf8("notice"), tr("Заметка"), text, tr("Заметка"));
+    addPlainBubble(tr("Заметка"), text, QString::fromUtf8("noticeMsg"), false,
+                   false, false, tr("Заметка"));
+}
+
+//----------------------------------------------
+
+void ConversationWidget::sltForwardedContext(const QString &text)
+{
+    recordDisplay(QString::fromUtf8("forwarded"), tr("Контекст"), text, tr("Контекст"));
+    if (!AppSettings::instance()->showForwardedContext())
+        return;
+    addPlainBubble(tr("Контекст"), text, QString::fromUtf8("noticeMsg"), false,
+                   false, false, tr("Контекст"));
 }
 
 //----------------------------------------------
 
 void ConversationWidget::sltFailed(const QString &error)
 {
-    recordDisplay(QString::fromUtf8("error"), tr("Ошибка"), error);
-    addPlainBubble(tr("Ошибка"), error, QString::fromUtf8("errorMsg"), false);
+    recordDisplay(QString::fromUtf8("error"), tr("Ошибка"), error, tr("Ошибка"));
+    addPlainBubble(tr("Ошибка"), error, QString::fromUtf8("errorMsg"), false,
+                   false, false, tr("Ошибка"));
 }
 
 //----------------------------------------------
@@ -1023,7 +1287,7 @@ void ConversationWidget::sltFailed(const QString &error)
 void ConversationWidget::sltScrollToBottom()
 {
     _scrollScheduled = false;
-    if (!_scroll)
+    if (!_scroll || !_pinBottom)
         return;
     QScrollBar *bar = _scroll->verticalScrollBar();
     bar->setValue(bar->maximum());
@@ -1031,9 +1295,22 @@ void ConversationWidget::sltScrollToBottom()
 
 //----------------------------------------------
 
+bool ConversationWidget::isNearBottom() const
+{
+    if (!_scroll)
+        return true;
+    QScrollBar *bar = _scroll->verticalScrollBar();
+    if (!bar)
+        return true;
+    // Небольшой порог: лёгкое отставание от края всё ещё считается «в конце».
+    return bar->value() >= bar->maximum() - 48;
+}
+
+//----------------------------------------------
+
 void ConversationWidget::scheduleScrollToBottom()
 {
-    if (_scrollScheduled)
+    if (!_pinBottom || _scrollScheduled)
         return;
     _scrollScheduled = true;
     QTimer::singleShot(0, this, SLOT(sltScrollToBottom()));
@@ -1083,15 +1360,32 @@ void ConversationWidget::sltScrollRangeChanged(int, int)
 
 //----------------------------------------------
 
-QWidget *ConversationWidget::addBubble(QString title, QString html, QString preview,
-                                       QString objectName, bool alignRight, bool collapsed)
+void ConversationWidget::sltScrollValueChanged(int)
 {
+    // Пока ждём отложенную подкрутку вниз, value ещё не у края —
+    // не сбрасываем _pinBottom, иначе лента «отлипнет».
+    if (_scrollScheduled)
+        return;
+    _pinBottom = isNearBottom();
+}
+
+//----------------------------------------------
+
+QWidget *ConversationWidget::addBubble(QString title, QString html, QString preview,
+                                       QString objectName, bool alignRight, bool collapsed,
+                                       QString authorKey)
+{
+    // Фиксируем «прилипание» ДО изменения layout: иначе после вставки
+    // maximum уже больше value и лента всегда считалась бы не в конце.
+    if (!_restoring)
+        _pinBottom = isNearBottom();
+
     ChatMessageFrame *frame = new ChatMessageFrame(title, html, preview, objectName,
-                                                   alignRight, collapsed, _messagesHost);
+                                                   alignRight, collapsed, _messagesHost,
+                                                   authorKey);
     _messagesLayout->addWidget(frame, 0, Qt::AlignTop);
     trimOldBubbles();
-    _pinBottom = true;
-    if (!_restoring)
+    if (!_restoring && _pinBottom)
         scheduleScrollToBottom();
     return frame;
 }
@@ -1100,7 +1394,7 @@ QWidget *ConversationWidget::addBubble(QString title, QString html, QString prev
 
 QWidget *ConversationWidget::addPlainBubble(QString title, QString text, QString objectName,
                                             bool alignRight, bool forceCollapsed,
-                                            bool forceExpanded)
+                                            bool forceExpanded, QString authorKey)
 {
     bool collapsed = (objectName != QString::fromUtf8("userMsg")
                       && objectName != QString::fromUtf8("assistantMsg"));
@@ -1111,7 +1405,7 @@ QWidget *ConversationWidget::addPlainBubble(QString title, QString text, QString
     QString html = QString::fromUtf8("<p style=\"white-space:pre-wrap;\">");
     html += MarkdownFormatter::escapeHtml(clipDisplay(text, 12000));
     html += QString::fromUtf8("</p>");
-    return addBubble(title, html, text, objectName, alignRight, collapsed);
+    return addBubble(title, html, text, objectName, alignRight, collapsed, authorKey);
 }
 
 //----------------------------------------------

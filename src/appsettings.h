@@ -25,15 +25,22 @@ struct PermissionGrant
 //----------------------------------------------
 
 /**
- * @brief Профиль модели: имя, адрес API, модель, токен и опциональный баланс.
+ * @brief Профиль модели: имя, адрес API, модель, токен, класс задач и баланс.
  */
 struct LlmProfile
 {
+    LlmProfile()
+        : modality(WorkerTaskKindLlm)
+    {
+    }
+
     QString id;
     QString name;
     QString baseUrl;
     QString model;
     QString apiKey;
+    /** Класс задач API: llm / image_generation / speech / embedding / other. */
+    WorkerTaskKind modality;
     /**
      * @brief URL или путь относительно baseUrl для запроса баланса.
      *        Пусто — баланс не запрашивается.
@@ -97,8 +104,56 @@ struct UsageStats
 
 //----------------------------------------------
 
+//----------------------------------------------
+
 /**
- * @brief Глобальные настройки: разрешения команд, тема, статистика.
+ * @brief Настройки воркеров/API/доступов: либо defaults программы, либо проекта.
+ * Полные профили моделей живут только в defaults.
+ */
+enum SettingsKind
+{
+    /** Значения по умолчанию в config/ — ими инициализируется новый проект. */
+    SettingsKindDefaults = 0,
+    /** Настройки открытого проекта в ___project___/ — независимы от defaults. */
+    SettingsKindProject = 1
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Рабочий набор настроек (профили только в defaults; в проекте — ссылки).
+ */
+struct WorkspaceSettings
+{
+    WorkspaceSettings();
+
+    QList<PermissionGrant> permissionGrants;
+    QSet<QString>          alwaysCommands;
+    bool                   shellControl;
+    bool                   outsideFilesControl;
+    bool                   systemSettingsControl;
+    /** Заполняется только для SettingsKindDefaults (config/ai). */
+    QList<LlmProfile>      profiles;
+    QList<WorkerPreset>    workerPresets;
+    /** Пресет корневого воркера при создании проекта / пустого сеанса. */
+    QString                rootWorkerPresetId;
+    QString                workerProfileId[3];
+    int                    maxWorkerDepth;
+    int                    maxConcurrentWorkers;
+    int                    llmTimeoutSec;
+    int                    roleToolIterations[4];
+    int                    roleContextCap[4];
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Настройки приложения: defaults (config/) и проект (___project___/).
+ *
+ * Оформление UI и полные профили моделей — только в defaults (config/ai).
+ * В проекте хранятся ссылки на профили (workerProfileId, preset.profileId)
+ * плюс пресеты, лимиты и контроль действий; при создании проекта копируются
+ * из defaults, дальше правятся независимо (кроме тел профилей).
  */
 class AppSettings : public QObject
 {
@@ -111,33 +166,51 @@ public:
      */
     static QString configDir();
     /**
-     * @brief Каталог config/ai с текстовыми файлами профилей.
+     * @brief Каталог config/ai с текстовыми файлами профилей программы.
      */
     static QString aiProfilesDir();
     /**
-     * @brief Путь к config/settings.ini (глобальные настройки, не реестр).
+     * @brief Путь к config/settings.ini (defaults и оформление).
      */
     static QString settingsFilePath();
 
     void load();
     void save() const;
+    void save(SettingsKind kind) const;
     void setProjectRoot(QString root);
     QString projectRoot() const;
+    bool hasProjectSettings() const;
     static QString projectStoreDir(QString projectRoot);
 
+    SettingsKind activeKind() const;
+    const WorkspaceSettings &workspace(SettingsKind kind) const;
+
     bool isCommandAlwaysAllowed(QString programKey) const;
+    bool isCommandAlwaysAllowed(SettingsKind kind, QString programKey) const;
     void addAlwaysAllowedCommand(QString programKey, QString actionText = QString());
+    void addAlwaysAllowedCommand(SettingsKind kind, QString programKey,
+                                 QString actionText = QString());
     void addAlwaysAllowedCommands(const QStringList &keys);
+    void addAlwaysAllowedCommands(SettingsKind kind, const QStringList &keys);
     void removeAlwaysAllowedCommand(QString programKey);
+    void removeAlwaysAllowedCommand(SettingsKind kind, QString programKey);
     QStringList alwaysAllowedCommands() const;
+    QStringList alwaysAllowedCommands(SettingsKind kind) const;
     QList<PermissionGrant> permissionGrants() const;
+    QList<PermissionGrant> permissionGrants(SettingsKind kind) const;
 
     bool shellControlEnabled() const;
+    bool shellControlEnabled(SettingsKind kind) const;
     void setShellControlEnabled(bool enabled);
+    void setShellControlEnabled(SettingsKind kind, bool enabled);
     bool outsideFilesControlEnabled() const;
+    bool outsideFilesControlEnabled(SettingsKind kind) const;
     void setOutsideFilesControlEnabled(bool enabled);
+    void setOutsideFilesControlEnabled(SettingsKind kind, bool enabled);
     bool systemSettingsControlEnabled() const;
+    bool systemSettingsControlEnabled(SettingsKind kind) const;
     void setSystemSettingsControlEnabled(bool enabled);
+    void setSystemSettingsControlEnabled(SettingsKind kind, bool enabled);
 
     int     fontPointSize() const;
     void    setFontPointSize(int size);
@@ -164,6 +237,12 @@ public:
     bool    isLightTheme() const;
 
     /**
+     * @brief Показывать пересылаемый между воркерами контекст в чатах и журнале.
+     */
+    bool showForwardedContext() const;
+    void setShowForwardedContext(bool enabled);
+
+    /**
      * @brief Учёт токенов одного ответа модели.
      * @param role  ключ роли воркера (manager/executor/tester/tool/root) для разбивки.
      *
@@ -186,50 +265,78 @@ public:
     qint64 roleCachedPromptTokens(QString role) const;
     void resetUsage();
     void resetGlobalUsage();
-
     /**
-     * @brief Максимальная глубина дерева воркеров (корень — глубина 0).
+     * @brief Сбросить настройки и статистику открытого проекта как при создании.
      */
+    void reseedOpenProject();
+
     int  maxWorkerDepth() const;
+    int  maxWorkerDepth(SettingsKind kind) const;
     void setMaxWorkerDepth(int depth);
-    /**
-     * @brief Сколько воркеров могут одновременно вести диалог с моделью.
-     */
+    void setMaxWorkerDepth(SettingsKind kind, int depth);
     int  maxConcurrentWorkers() const;
+    int  maxConcurrentWorkers(SettingsKind kind) const;
     void setMaxConcurrentWorkers(int count);
-    /**
-     * @brief Сколько секунд ждать ответ модели на один HTTP-запрос,
-     *        после чего запрос прерывается с ошибкой таймаута.
-     */
+    void setMaxConcurrentWorkers(SettingsKind kind, int count);
     int  llmTimeoutSec() const;
+    int  llmTimeoutSec(SettingsKind kind) const;
     void setLlmTimeoutSec(int seconds);
-    /**
-     * @brief Бюджет вызовов функций за один ход для роли воркера.
-     */
+    void setLlmTimeoutSec(SettingsKind kind, int seconds);
     int  roleToolIterations(WorkerType type) const;
+    int  roleToolIterations(SettingsKind kind, WorkerType type) const;
     void setRoleToolIterations(WorkerType type, int count);
-    /**
-     * @brief Потолок контекста в токенах (0 — окно модели).
-     */
+    void setRoleToolIterations(SettingsKind kind, WorkerType type, int count);
     int  roleContextCap(WorkerType type) const;
+    int  roleContextCap(SettingsKind kind, WorkerType type) const;
     void setRoleContextCap(WorkerType type, int tokens);
+    void setRoleContextCap(SettingsKind kind, WorkerType type, int tokens);
 
+    /** Полные профили — всегда из настроек программы (config/ai). */
     QList<LlmProfile> profiles() const;
     LlmProfile profileById(QString id) const;
     LlmProfile profileForWorkerType(WorkerType type) const;
+    LlmProfile profileForWorkerType(SettingsKind kind, WorkerType type) const;
     QString workerProfileId(WorkerType type) const;
+    QString workerProfileId(SettingsKind kind, WorkerType type) const;
     void setWorkerProfileId(WorkerType type, QString profileId);
+    void setWorkerProfileId(SettingsKind kind, WorkerType type, QString profileId);
     QString addProfile(LlmProfile profile);
     void updateProfile(const LlmProfile &profile);
     void removeProfile(QString id);
+
+    QList<WorkerPreset> workerPresets() const;
+    QList<WorkerPreset> workerPresets(SettingsKind kind) const;
+    WorkerPreset workerPresetById(QString id) const;
+    WorkerPreset workerPresetById(SettingsKind kind, QString id) const;
+    QString addWorkerPreset(WorkerPreset preset, QString *error = 0);
+    QString addWorkerPreset(SettingsKind kind, WorkerPreset preset, QString *error = 0);
+    void updateWorkerPreset(const WorkerPreset &preset, QString *error = 0);
+    void updateWorkerPreset(SettingsKind kind, const WorkerPreset &preset, QString *error = 0);
+    void removeWorkerPreset(QString id);
+    void removeWorkerPreset(SettingsKind kind, QString id);
+    QString workerPresetsSummary() const;
+    QString workerPresetsSummary(SettingsKind kind) const;
+
+    /**
+     * @brief Пресет воркера верхнего уровня (корень чата при создании проекта).
+     */
+    QString rootWorkerPresetId() const;
+    QString rootWorkerPresetId(SettingsKind kind) const;
+    void setRootWorkerPresetId(QString presetId);
+    void setRootWorkerPresetId(SettingsKind kind, QString presetId);
+    WorkerPreset rootWorkerPreset() const;
+    WorkerPreset rootWorkerPreset(SettingsKind kind) const;
 
 signals:
     void appearanceChanged();
     void alwaysCommandsChanged();
     void controlFlagsChanged();
     void profilesChanged();
+    void workerPresetsChanged();
     void workerLimitsChanged();
     void usageChanged();
+    void projectSettingsChanged();
+    void displayOptionsChanged();
 
 private slots:
     void sltFlushStats();
@@ -243,36 +350,47 @@ private:
     void saveUsage(QSettings *settings, const UsageStats &stats) const;
     void saveRoleStats(QSettings *settings, const UsageStats &stats) const;
     static QString normalizeKey(QString key);
-    void migrateLegacyCommands(const QStringList &keys);
+    void migrateLegacyCommands(WorkspaceSettings *ws, const QStringList &keys);
 
     QString projectIniPath() const;
-    /**
-     * @brief Перенести список «всегда» из старого project.ini в глобальные
-     *        настройки и убрать его из файла проекта.
-     */
-    void migrateProjectPermissions(QString projectIni);
-    void appendGrant(PermissionGrant grant);
-    void loadPermissions(QSettings *settings);
-    void savePermissions(QSettings *settings) const;
+    WorkspaceSettings &ws(SettingsKind kind);
+    const WorkspaceSettings &ws(SettingsKind kind) const;
+    WorkspaceSettings &activeWs();
+    const WorkspaceSettings &activeWs() const;
+    void appendGrant(WorkspaceSettings *bundle, PermissionGrant grant);
+    void loadPermissions(QSettings *settings, WorkspaceSettings *bundle);
+    void savePermissions(QSettings *settings, const WorkspaceSettings &bundle) const;
+    void loadWorkspaceIni(QSettings *settings, WorkspaceSettings *bundle);
+    void saveWorkspaceIni(QSettings *settings, const WorkspaceSettings &bundle) const;
     void loadProfiles();
     void saveProfiles() const;
-    void migrateLegacyProviders(QSettings *settings);
+    void loadWorkerPresets(QSettings *settings, WorkspaceSettings *bundle);
+    void saveWorkerPresets(QSettings *settings, const WorkspaceSettings &bundle) const;
+    void ensureWorkerPresetsSeeded(WorkspaceSettings *bundle);
+    void ensureRootWorkerPresetId(WorkspaceSettings *bundle);
+    void migrateLegacyProviders(QSettings *settings, WorkspaceSettings *bundle);
     void migrateFromNativeRegistry();
+    void migrateProjectLocalProfiles();
     void writeProfileFile(const LlmProfile &profile) const;
     void removeProfileFile(QString id) const;
-    static QString profileFilePath(QString id);
+    QString profileFilePath(QString id) const;
     static QString sanitizeProfileFileStem(QString id);
     int profileIndexById(QString id) const;
-    void ensureWorkerProfileIds();
+    void ensureWorkerProfileIds(WorkspaceSettings *bundle);
     static QString newProfileId();
     void applyLightDefaults();
+    bool projectWorkspaceSeeded() const;
+    void seedProjectFromDefaults();
+    void loadProjectWorkspace();
+    void saveProjectWorkspace() const;
+    void saveDefaultsWorkspace() const;
+    void emitWorkspaceSignals(SettingsKind kind, bool limits, bool profiles,
+                              bool presets, bool permissions, bool controls);
 
     QString                _projectRoot;
-    QList<PermissionGrant> _permissionGrants;
-    QSet<QString>          _alwaysCommands;
-    bool                   _shellControl;
-    bool                   _outsideFilesControl;
-    bool                   _systemSettingsControl;
+    bool                   _projectOpen;
+    WorkspaceSettings      _defaults;
+    WorkspaceSettings      _project;
     int                    _fontPointSize;
     QColor                 _textColor;
     QColor                 _windowColor;
@@ -283,14 +401,8 @@ private:
     QColor                 _chatOtherColor;
     UsageStats             _globalUsage;
     UsageStats             _projectUsage;
-    QList<LlmProfile>      _profiles;
-    QString                _workerProfileId[3];
-    int                    _maxWorkerDepth;
-    int                    _maxConcurrentWorkers;
-    int                    _llmTimeoutSec;
-    int                    _roleToolIterations[4];
-    int                    _roleContextCap[4];
     QTimer                *_statsTimer;
+    bool                   _showForwardedContext;
 };
 
 #endif // APPSETTINGS_H

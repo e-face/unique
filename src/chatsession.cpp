@@ -248,6 +248,10 @@ ChatSnapshot ChatSession::snapshot(bool sealing) const
         shot.toolPurpose = _worker->toolPurpose();
         shot.task = _worker->task();
         shot.workerTitle = _worker->title();
+        shot.personName = _worker->personName();
+        shot.groupId = _worker->groupId();
+        shot.groupRole = groupRoleToString(_worker->groupRole());
+        shot.llmProfileId = _worker->llmProfileId();
         shot.result = _worker->result();
         shot.lastError = _worker->lastError();
         shot.lastAssistant = _worker->lastAssistant();
@@ -314,6 +318,13 @@ QString ChatStore::storeDir()
 QString ChatStore::indexPath()
 {
     return storeDir() + QString::fromUtf8("/chats.json");
+}
+
+//----------------------------------------------
+
+QString ChatStore::uiStatePath()
+{
+    return storeDir() + QString::fromUtf8("/ui.json");
 }
 
 //----------------------------------------------
@@ -430,6 +441,8 @@ QJsonObject ChatStore::displayToJson(const ChatDisplayItem &item)
     object.insert(QString::fromUtf8("kind"), item.kind);
     object.insert(QString::fromUtf8("title"), item.title);
     object.insert(QString::fromUtf8("text"), item.text);
+    if (!item.authorKey.isEmpty())
+        object.insert(QString::fromUtf8("authorKey"), item.authorKey);
     return object;
 }
 
@@ -441,6 +454,9 @@ ChatDisplayItem ChatStore::displayFromJson(const QJsonObject &object)
     item.kind = object.value(QString::fromUtf8("kind")).toString();
     item.title = object.value(QString::fromUtf8("title")).toString();
     item.text = object.value(QString::fromUtf8("text")).toString();
+    item.authorKey = object.value(QString::fromUtf8("authorKey")).toString();
+    if (item.authorKey.isEmpty())
+        item.authorKey = item.title;
     return item;
 }
 
@@ -463,6 +479,14 @@ QJsonObject ChatStore::snapshotMetaToJson(const ChatSnapshot &shot)
     object.insert(QString::fromUtf8("task"), shot.task);
     if (!shot.workerTitle.isEmpty())
         object.insert(QString::fromUtf8("workerTitle"), shot.workerTitle);
+    if (!shot.personName.isEmpty())
+        object.insert(QString::fromUtf8("personName"), shot.personName);
+    if (!shot.groupId.isEmpty())
+        object.insert(QString::fromUtf8("groupId"), shot.groupId);
+    if (!shot.groupRole.isEmpty() && shot.groupRole != QString::fromUtf8("none"))
+        object.insert(QString::fromUtf8("groupRole"), shot.groupRole);
+    if (!shot.llmProfileId.isEmpty())
+        object.insert(QString::fromUtf8("llmProfileId"), shot.llmProfileId);
     object.insert(QString::fromUtf8("result"), shot.result);
     object.insert(QString::fromUtf8("workerState"), shot.workerState);
     object.insert(QString::fromUtf8("lastError"), shot.lastError);
@@ -502,6 +526,10 @@ ChatSnapshot ChatStore::snapshotMetaFromJson(const QJsonObject &object)
     shot.toolPurpose = object.value(QString::fromUtf8("toolPurpose")).toString();
     shot.task = object.value(QString::fromUtf8("task")).toString();
     shot.workerTitle = object.value(QString::fromUtf8("workerTitle")).toString();
+    shot.personName = object.value(QString::fromUtf8("personName")).toString();
+    shot.groupId = object.value(QString::fromUtf8("groupId")).toString();
+    shot.groupRole = object.value(QString::fromUtf8("groupRole")).toString();
+    shot.llmProfileId = object.value(QString::fromUtf8("llmProfileId")).toString();
     shot.result = object.value(QString::fromUtf8("result")).toString();
     shot.workerState = object.value(QString::fromUtf8("workerState")).toString();
     shot.lastError = object.value(QString::fromUtf8("lastError")).toString();
@@ -723,4 +751,53 @@ bool ChatStore::load(QList<ChatSnapshot> *chats, QString *activeId)
         chats->append(shot);
     }
     return !chats->isEmpty();
+}
+
+//----------------------------------------------
+
+bool ChatStore::saveUiState(const ProjectUiState &ui)
+{
+    if (g_chatProjectRoot.isEmpty())
+        return false;
+    QJsonObject root;
+    root.insert(QString::fromUtf8("version"), 1);
+    root.insert(QString::fromUtf8("activePage"), ui.activePage);
+    QJsonArray tabs;
+    foreach (const QString &key, ui.openTabs)
+    {
+        if (!key.trimmed().isEmpty())
+            tabs.append(key);
+    }
+    root.insert(QString::fromUtf8("openTabs"), tabs);
+    root.insert(QString::fromUtf8("geometry"),
+                QString::fromLatin1(ui.geometry.toBase64()));
+    root.insert(QString::fromUtf8("windowState"),
+                QString::fromLatin1(ui.windowState.toBase64()));
+    return writeJsonFile(uiStatePath(), root);
+}
+
+//----------------------------------------------
+
+bool ChatStore::loadUiState(ProjectUiState *ui)
+{
+    if (!ui || g_chatProjectRoot.isEmpty())
+        return false;
+    *ui = ProjectUiState();
+    QJsonObject root;
+    if (!readJsonFile(uiStatePath(), &root))
+        return false;
+    ui->activePage = root.value(QString::fromUtf8("activePage")).toString();
+    const QJsonArray tabs = root.value(QString::fromUtf8("openTabs")).toArray();
+    for (int i = 0; i < tabs.size(); ++i)
+    {
+        const QString key = tabs.at(i).toString().trimmed();
+        if (!key.isEmpty())
+            ui->openTabs.append(key);
+    }
+    ui->geometry = QByteArray::fromBase64(
+        root.value(QString::fromUtf8("geometry")).toString().toLatin1());
+    ui->windowState = QByteArray::fromBase64(
+        root.value(QString::fromUtf8("windowState")).toString().toLatin1());
+    return !ui->activePage.isEmpty() || !ui->openTabs.isEmpty()
+           || !ui->geometry.isEmpty();
 }

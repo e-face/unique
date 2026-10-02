@@ -32,6 +32,8 @@ signals:
     void toolRemoveRequested(const QString &id);
     void workerInterruptRequested(const QString &id);
     void reportToParentRequested(const QString &id);
+    /** Смена профиля модели воркера с схемы (на лету). */
+    void workerProfileChangeRequested(const QString &workerId, const QString &profileId);
 
 protected:
     virtual void mousePressEvent(QMouseEvent *event);

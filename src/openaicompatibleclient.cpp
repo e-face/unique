@@ -436,10 +436,14 @@ QString OpenAiCompatibleClient::encodeRequestText(const LlmRequest &request) con
 
 void OpenAiCompatibleClient::abort()
 {
-    if (_activeRequestId <= 0)
-        return;
-    LlmNetworkWorker::instance()->abortRequest(_activeRequestId);
-    _activeRequestId = 0;
+    if (_activeRequestId > 0)
+    {
+        LlmNetworkWorker::instance()->abortRequest(_activeRequestId);
+        _activeRequestId = 0;
+    }
+    // Иначе после Stop клиент остаётся busy=true, а сетевой callback
+    // с «aborted» отбрасывается (id уже обнулён) — следующий send падает.
+    setBusy(false);
 }
 
 //----------------------------------------------

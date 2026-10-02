@@ -8,6 +8,7 @@
 #include "projectbrief.h"
 #include "workermanager.h"
 //----------------------------------------------
+#include <QDateTime>
 #include <QEventLoop>
 #include <QMetaObject>
 #include <QRegExp>
@@ -30,6 +31,7 @@ Worker::Worker(QObject *parent)
     , _state(WorkerStateIdle)
     , _parentWorker(0)
     , _session(0)
+    , _groupRole(GroupRoleNone)
     , _completed(false)
     , _skipIdleComplete(false)
     , _needsParentReport(false)
@@ -42,6 +44,17 @@ Worker::Worker(QObject *parent)
     , _permissionOfferAlways(false)
     , _toolStarted(false)
     , _waitingForTool(0)
+    , _parkForGroupDialogue(false)
+    , _hasVerification(false)
+    , _verificationPassed(false)
+    , _toolBatchCount(0)
+    , _subtreeBatchAllowance(0)
+    , _startedAtMs(0)
+    , _subtreeMsAllowance(0)
+    , _subtreeBudgetGranted(false)
+    , _subtreeBudgetLoopActive(false)
+    , _pendingSubtreeGrantBatches(0)
+    , _pendingSubtreeGrantMs(0)
 {
     QString id = QUuid::createUuid().toString();
     if (id.startsWith(QChar('{')))
@@ -139,7 +152,8 @@ QList<Worker *> Worker::unfinishedChildren() const
     QList<Worker *> list;
     foreach (Worker *child, _children)
     {
-        if (child && !child->hasAnswered())
+        // Собеседники группы не «задачи»: главный не ждёт их complete_task.
+        if (child && !child->isGroupInterlocutor() && !child->hasAnswered())
             list.append(child);
     }
     return list;
@@ -346,6 +360,7 @@ void Worker::sendFollowUp(QString message)
     const QString trimmed = message.trimmed();
     if (trimmed.isEmpty() || !_session || !_session->agent())
         return;
+    _parkForGroupDialogue = false;
     _completed = false;
     _skipIdleComplete = false;
     _needsParentReport = false;
@@ -356,19 +371,34 @@ void Worker::sendFollowUp(QString message)
     _result.clear();
     clearWorkPlan();
     setState(WorkerStateRunning);
-    // Новая задача от родителя: прежняя работа сворачивается моделью в
-    // сводку, а сама формулировка остаётся в контексте дословно.
+    // Follow-up от родителя: историю не сворачиваем заранее — сжатие
+    // сработает само, когда контекст подойдёт к лимиту.
     if (isTool())
     {
         // Для инструмента каждое сообщение — самостоятельный запуск.
-        _session->agent()->sendUserMessageAfterCompact(trimmed);
+        _session->agent()->sendUserMessageAfterCompact(trimmed,
+                                                       AgentUserIngressAssignment);
         return;
     }
-    _session->agent()->sendUserMessageAfterCompact(
+    // Групповые action-prompt не маскируем под «Follow-up from parent»
+    // (иначе модель думает, что задание переоткрыли).
+    const bool groupAction =
+        trimmed.startsWith(QString::fromUtf8("[Your turn as narrator]"))
+        || trimmed.startsWith(QString::fromUtf8("[Group VOTE required]"))
+        || trimmed.startsWith(QString::fromUtf8("[Group dialogue DONE]"))
+        || trimmed.startsWith(QString::fromUtf8("[Waiting]"))
+        || trimmed.startsWith(QString::fromUtf8("[Waiting for other votes]"));
+    if (groupAction)
+    {
+        _session->agent()->sendUserMessage(trimmed, AgentUserIngressGroup);
+        return;
+    }
+    _session->agent()->sendUserMessage(
         QString::fromUtf8(
             "Follow-up from your parent worker. Continue the SAME assignment; "
             "do not start from scratch unless the parent explicitly asks.\n\n%1")
-            .arg(trimmed));
+            .arg(trimmed),
+        AgentUserIngressFollowUp);
 }
 
 //----------------------------------------------
@@ -411,11 +441,11 @@ void Worker::sltFlushFollowUps()
     WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
     if (manager && !manager->canStartNow())
     {
-        // Мест нет: встаём в очередь. Родитель увидит незавершённого ребёнка,
-        // а менеджер запустит нас, когда освободится слот.
+        // Мест нет: встаём в очередь менеджера (не только state=Queued).
         _completed = false;
         _skipIdleComplete = true;
-        setState(WorkerStateQueued);
+        _result.clear();
+        manager->requestStart(this);
         return;
     }
     const QString next = _pendingFollowUps.takeFirst();
@@ -508,11 +538,104 @@ void Worker::setTitle(QString title)
 
 //----------------------------------------------
 
+QString Worker::personName() const
+{
+    return _personName;
+}
+
+//----------------------------------------------
+
+void Worker::setPersonName(QString name)
+{
+    const QString clean = name.simplified();
+    if (_personName == clean)
+        return;
+    _personName = clean;
+    emit stateChanged();
+}
+
+//----------------------------------------------
+
+QString Worker::llmProfileId() const
+{
+    return _llmProfileId;
+}
+
+//----------------------------------------------
+
+void Worker::setLlmProfileId(QString id)
+{
+    const QString clean = id.trimmed();
+    if (_llmProfileId == clean)
+        return;
+    _llmProfileId = clean;
+}
+
+//----------------------------------------------
+
+QString Worker::groupId() const
+{
+    return _groupId;
+}
+
+//----------------------------------------------
+
+void Worker::setGroupId(QString id)
+{
+    _groupId = id.trimmed();
+}
+
+//----------------------------------------------
+
+GroupRole Worker::groupRole() const
+{
+    return _groupRole;
+}
+
+//----------------------------------------------
+
+void Worker::setGroupRole(GroupRole role)
+{
+    _groupRole = role;
+}
+
+//----------------------------------------------
+
+bool Worker::isGroupChief() const
+{
+    return _groupRole == GroupRoleChief && !_groupId.isEmpty();
+}
+
+//----------------------------------------------
+
+bool Worker::isGroupInterlocutor() const
+{
+    return _groupRole == GroupRoleInterlocutor && !_groupId.isEmpty();
+}
+
+//----------------------------------------------
+
+bool Worker::canSpawnChildren() const
+{
+    if (isGroupInterlocutor())
+        return false;
+    if (isTool())
+        return false;
+    return type() == WorkerTypeManager;
+}
+
+//----------------------------------------------
+
 QString Worker::displayLabel() const
 {
-    if (!_title.isEmpty())
-        return _title;
-    return shortLabelFromTask(_task);
+    QString taskPart = _title;
+    if (taskPart.isEmpty())
+        taskPart = shortLabelFromTask(_task);
+    if (!_personName.isEmpty() && !taskPart.isEmpty())
+        return _personName + QString::fromUtf8(" — ") + taskPart;
+    if (!_personName.isEmpty())
+        return _personName;
+    return taskPart;
 }
 
 //----------------------------------------------
@@ -789,6 +912,204 @@ void Worker::setWaitingForTool(bool waiting)
 
 //----------------------------------------------
 
+void Worker::parkForGroupDialogue()
+{
+    _parkForGroupDialogue = true;
+    _skipIdleComplete = true;
+}
+
+//----------------------------------------------
+
+void Worker::setVerification(bool present, bool passed, QString command, QString output,
+                             QString artifact, QString digest)
+{
+    _hasVerification = present;
+    _verificationPassed = present && passed;
+    _verificationCommand = command.trimmed();
+    _verificationOutput = output.trimmed();
+    _verificationArtifact = artifact.trimmed();
+    _verificationDigest = digest.trimmed();
+}
+
+//----------------------------------------------
+
+bool Worker::hasVerification() const
+{
+    return _hasVerification;
+}
+
+//----------------------------------------------
+
+bool Worker::verificationPassed() const
+{
+    return _hasVerification && _verificationPassed;
+}
+
+//----------------------------------------------
+
+QString Worker::verificationCommand() const
+{
+    return _verificationCommand;
+}
+
+//----------------------------------------------
+
+QString Worker::verificationOutput() const
+{
+    return _verificationOutput;
+}
+
+//----------------------------------------------
+
+QString Worker::verificationArtifact() const
+{
+    return _verificationArtifact;
+}
+
+//----------------------------------------------
+
+QString Worker::verificationDigest() const
+{
+    return _verificationDigest;
+}
+
+//----------------------------------------------
+
+void Worker::noteToolBatch()
+{
+    ++_toolBatchCount;
+}
+
+//----------------------------------------------
+
+int Worker::toolBatchCount() const
+{
+    return _toolBatchCount;
+}
+
+//----------------------------------------------
+
+int Worker::subtreeToolBatches() const
+{
+    int total = _toolBatchCount;
+    foreach (Worker *child, _children)
+    {
+        if (child)
+            total += child->subtreeToolBatches();
+    }
+    return total;
+}
+
+//----------------------------------------------
+
+qint64 Worker::startedAtMs() const
+{
+    return _startedAtMs;
+}
+
+//----------------------------------------------
+
+qint64 Worker::subtreeElapsedMs() const
+{
+    qint64 start = _startedAtMs;
+    foreach (Worker *child, _children)
+    {
+        if (!child || child->startedAtMs() <= 0)
+            continue;
+        if (start <= 0 || child->startedAtMs() < start)
+            start = child->startedAtMs();
+    }
+    if (start <= 0)
+        return 0;
+    return QDateTime::currentMSecsSinceEpoch() - start;
+}
+
+//----------------------------------------------
+
+int Worker::subtreeBatchLimit() const
+{
+    return WorkerManager::maxSubtreeToolBatches() + _subtreeBatchAllowance;
+}
+
+//----------------------------------------------
+
+qint64 Worker::subtreeMsLimit() const
+{
+    return WorkerManager::maxSubtreeMs() + _subtreeMsAllowance;
+}
+
+//----------------------------------------------
+
+bool Worker::requestSubtreeBudgetGrant(int grantBatches, qint64 grantMs)
+{
+    if (_userStopped)
+        return false;
+    _subtreeBudgetGranted = false;
+    _pendingSubtreeGrantBatches = qMax(0, grantBatches);
+    _pendingSubtreeGrantMs = qMax(qint64(0), grantMs);
+
+    const int usedBatches = subtreeToolBatches();
+    const int limitBatches = subtreeBatchLimit();
+    const int usedMin = int(subtreeElapsedMs() / 60000);
+    const int limitMin = int(subtreeMsLimit() / 60000);
+    const QString text = tr(
+        "Бюджет поддерева исчерпан.\n"
+        "Tool-пакеты: %1 / %2. Время: ≈%3 / %4 мин.\n"
+        "Сбросить лимиты (+%5 пакетов, +%6 мин) и продолжить создание детей?")
+                             .arg(usedBatches)
+                             .arg(limitBatches)
+                             .arg(usedMin)
+                             .arg(limitMin)
+                             .arg(_pendingSubtreeGrantBatches)
+                             .arg(int(_pendingSubtreeGrantMs / 60000));
+
+    setState(WorkerStateWaitingApproval);
+    _subtreeBudgetPromptText = text;
+    emit subtreeBudgetRequested(text);
+
+    _subtreeBudgetLoopActive = true;
+    QEventLoop loop;
+    connect(this, SIGNAL(subtreeBudgetResolved()), &loop, SLOT(quit()));
+    loop.exec();
+    _subtreeBudgetLoopActive = false;
+    _subtreeBudgetPromptText.clear();
+
+    if (_state == WorkerStateWaitingApproval)
+        setState(WorkerStateRunning);
+    return _subtreeBudgetGranted;
+}
+
+//----------------------------------------------
+
+void Worker::resolveSubtreeBudget(bool granted)
+{
+    _subtreeBudgetGranted = granted;
+    if (granted)
+    {
+        _subtreeBatchAllowance += _pendingSubtreeGrantBatches;
+        _subtreeMsAllowance += _pendingSubtreeGrantMs;
+    }
+    _pendingSubtreeGrantBatches = 0;
+    _pendingSubtreeGrantMs = 0;
+    emit subtreeBudgetResolved();
+}
+
+//----------------------------------------------
+
+bool Worker::isWaitingSubtreeBudget() const
+{
+    return _subtreeBudgetLoopActive;
+}
+
+//----------------------------------------------
+
+QString Worker::subtreeBudgetPromptText() const
+{
+    return _subtreeBudgetPromptText;
+}
+
+//----------------------------------------------
+
 void Worker::applyPersistedState(WorkerState state, QString result,
                                  QString lastError, QString lastAssistant,
                                  QString permissionAction)
@@ -910,6 +1231,7 @@ void Worker::quitBlockingLoops()
     _permissionLoopActive = false;
     emit permissionResolved();
     emit continuationResolved();
+    emit subtreeBudgetResolved();
     emit finished();
 }
 
@@ -919,6 +1241,7 @@ void Worker::beginUserStop()
 {
     _userStopped = true;
     _skipIdleComplete = true;
+    _parkForGroupDialogue = false;
     _pendingFollowUps.clear();
     _delegatedThisBatch.clear();
     if (_session && _session->agent())
@@ -926,6 +1249,7 @@ void Worker::beginUserStop()
     _permissionLoopActive = false;
     emit permissionResolved();
     emit continuationResolved();
+    emit subtreeBudgetResolved();
 }
 
 //----------------------------------------------
@@ -938,6 +1262,7 @@ void Worker::finishUserStop()
     {
         _completed = false;
         _skipIdleComplete = false;
+        _userStopped = false;
         setState(WorkerStateIdle);
         return;
     }
@@ -1006,6 +1331,22 @@ QString Worker::composeStartPrefix() const
                 arch = arch.left(1497) + QString::fromUtf8("...");
             parts.append(QString::fromUtf8("Architecture (from your manager):\n") + arch);
         }
+        // Handoff — в injectContext, не в тексте задания (журнал показывает чистое задание).
+        QString handoff = QString::fromUtf8(
+            "CONTEXT HANDOFF (use this; do not ignore):\n"
+            "--- parent brief ---\n%1\n")
+                              .arg(_parentWorker->task().trimmed().left(2000));
+        const QString siblings = _parentWorker->childResultsReport().trimmed();
+        if (!siblings.isEmpty())
+            handoff += QString::fromUtf8("--- sibling / prior child outcomes ---\n%1\n")
+                           .arg(siblings.left(2500));
+        handoff += QString::fromUtf8(
+            "COMMUNICATION: Do not discuss with sibling workers. Receive work from your "
+            "parent and report via complete_task; managers assign children via "
+            "delegate_task. Group dialogue uses group_speak / group_await / "
+            "group_propose / group_vote only. Keep your work as isolated as possible "
+            "from siblings so contexts barely overlap. Name the files/interfaces you own.\n");
+        parts.append(handoff);
     }
     const QString hint = KnowledgeStore::instance()->hintFor(_type, _task);
     if (!hint.isEmpty())
@@ -1044,11 +1385,19 @@ void Worker::startTask()
     if (!isTool())
         _changedFiles.clear();
     clearWorkPlan();
+    _hasVerification = false;
+    _verificationPassed = false;
+    _verificationCommand.clear();
+    _verificationOutput.clear();
+    _verificationArtifact.clear();
+    _verificationDigest.clear();
+    _toolBatchCount = 0;
+    _startedAtMs = QDateTime::currentMSecsSinceEpoch();
     setState(WorkerStateRunning);
     const QString prefix = composeStartPrefix();
     if (!prefix.isEmpty())
         _session->agent()->injectContext(prefix);
-    _session->agent()->sendUserMessage(_task);
+    _session->agent()->sendUserMessage(_task, AgentUserIngressAssignment);
 }
 
 //----------------------------------------------
@@ -1079,6 +1428,9 @@ void Worker::complete(QString result, bool ok)
     _needsParentReport = false;
     _parentReportNudged = false;
     _result = text;
+    WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
+    if (manager)
+        manager->releaseFilePaths(this);
     setState(ok ? WorkerStateCompleted : WorkerStateFailed);
     emit finished();
 }
@@ -1168,20 +1520,54 @@ QString Worker::childOutcomesSummary() const
 {
     if (_children.isEmpty())
         return QString();
-    QString text = QString::fromUtf8("Child outcomes:");
+
+    // Свежие делегирования в этом батче — первыми (приоритет, не отсечение).
+    QList<Worker *> ordered;
+    QList<Worker *> seen;
+    foreach (Worker *child, _delegatedThisBatch)
+    {
+        if (!child || seen.contains(child))
+            continue;
+        seen.append(child);
+        ordered.append(child);
+    }
     foreach (Worker *child, _children)
     {
-        if (!child)
+        if (!child || seen.contains(child))
             continue;
+        seen.append(child);
+        ordered.append(child);
+    }
+
+    static const int kPerChildChars = 120;
+    static const int kBlockMaxChars = 750;
+
+    QString text = QString::fromUtf8("Child outcomes:");
+    int omitted = 0;
+    for (int i = 0; i < ordered.size(); ++i)
+    {
+        Worker *child = ordered.at(i);
         QString snippet = child->result().trimmed();
         if (snippet.isEmpty())
             snippet = QString::fromUtf8("(empty)");
-        if (snippet.size() > 400)
-            snippet = snippet.left(397) + QString::fromUtf8("...");
-        text += QString::fromUtf8("\n- [%1 %2] %3")
-                    .arg(workerTypeToString(child->type()),
-                         workerStateToString(child->state()),
-                         snippet);
+        if (snippet.size() > kPerChildChars)
+            snippet = snippet.left(kPerChildChars - 3) + QString::fromUtf8("...");
+        const QString row = QString::fromUtf8("\n- [%1 %2] %3")
+                                .arg(workerTypeToString(child->type()),
+                                     workerStateToString(child->state()),
+                                     snippet);
+        if (text.size() + row.size() > kBlockMaxChars)
+        {
+            omitted = ordered.size() - i;
+            break;
+        }
+        text += row;
+    }
+    if (omitted > 0)
+    {
+        text += QString::fromUtf8(
+                    "\n... (%1 more; use get_child_result for full reports)")
+                    .arg(omitted);
     }
     return text;
 }
@@ -1297,7 +1683,7 @@ void Worker::resolvePermission(bool approved, bool always, QString comment)
         message += _permissionAction.trimmed();
     }
     message += QString::fromUtf8("\nContinue the assigned task.");
-    _session->agent()->sendUserMessage(message);
+    _session->agent()->sendUserMessage(message, AgentUserIngressSystem);
 }
 
 //----------------------------------------------
@@ -1584,7 +1970,7 @@ void Worker::sltResumeAfterError()
         ".\nContinue the assigned task. "
         "If you cannot finish, call complete_task with what was done and what failed. "
         "The parent is still waiting for your answer.");
-    _session->agent()->sendUserMessage(message);
+    _session->agent()->sendUserMessage(message, AgentUserIngressSystem);
 }
 
 //----------------------------------------------
@@ -1649,11 +2035,13 @@ void Worker::sltIdleAfterBusy()
         {
             _parentReportNudged = true;
             _skipIdleComplete = true;
-            _session->agent()->sendUserMessage(QString::fromUtf8(
-                "You still have not called complete_task. "
-                "Call complete_task now with a concise report for your parent: "
-                "the assignment, what the children delivered, and the overall outcome. "
-                "Do not address the end user."));
+            _session->agent()->sendUserMessage(
+                QString::fromUtf8(
+                    "You still have not called complete_task. "
+                    "Call complete_task now with a concise report for your parent: "
+                    "the assignment, what the children delivered, and the overall outcome. "
+                    "Do not address the end user."),
+                AgentUserIngressSystem);
             return;
         }
         complete(composeParentReport(), true);
@@ -1663,6 +2051,49 @@ void Worker::sltIdleAfterBusy()
         return;
     if (_state != WorkerStateRunning)
         return;
+    // Участники активного группового диалога не завершают задачу между репликами.
+    if (!_groupId.isEmpty())
+    {
+        WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
+        if (manager && manager->isGroupDialogueActive(_groupId))
+        {
+            setState(WorkerStateIdle);
+            return;
+        }
+        // После единогласного DONE: собеседники автозавершаются с outcome,
+        // chief (не root) должен вызвать complete_task — иначе один авто-отчёт.
+        if (manager && manager->isGroupDialogueDone(_groupId))
+        {
+            const QString outcome = manager->groupDialogueOutcome(_groupId);
+            if (isGroupInterlocutor())
+            {
+                complete(QString::fromUtf8("Group dialogue DONE:\n%1").arg(outcome), true);
+                return;
+            }
+            if (!isRoot())
+            {
+                if (!_parentReportNudged && _session && _session->agent())
+                {
+                    _parentReportNudged = true;
+                    _skipIdleComplete = true;
+                    _session->agent()->sendUserMessage(
+                        QString::fromUtf8(
+                            "[Group dialogue DONE]\nApproved result:\n%1\n\n"
+                            "Call complete_task with this result if you must report to a parent, "
+                            "OR start another round with the same members via group_speak / "
+                            "group_propose.")
+                            .arg(outcome),
+                        AgentUserIngressSystem);
+                    return;
+                }
+                complete(QString::fromUtf8("Group dialogue DONE:\n%1").arg(outcome), true);
+                return;
+            }
+            // Root chief: диалог закончен — idle без авто-complete в «parent».
+            setState(WorkerStateIdle);
+            return;
+        }
+    }
     noteParentTurnEnded();
     QString text = _lastAssistant.trimmed();
     if (text.isEmpty())
@@ -1696,6 +2127,16 @@ void Worker::sltToolBatchFinished()
 {
     if (_userStopped)
         return;
+    noteToolBatch();
+    if (_parkForGroupDialogue)
+    {
+        _parkForGroupDialogue = false;
+        if (_session && _session->agent())
+            _session->agent()->holdForExternal();
+        if (_state == WorkerStateRunning)
+            setState(WorkerStateIdle);
+        return;
+    }
     if (_delegatedThisBatch.isEmpty() && !hasUnfinishedChildren())
         return;
 
@@ -1766,6 +2207,7 @@ void Worker::sltPruneUnusedChildren()
         return;
 
     WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
+    Q_UNUSED(manager);
     const QList<Worker *> kids = _children;
     foreach (Worker *child, kids)
     {
@@ -1775,14 +2217,8 @@ void Worker::sltPruneUnusedChildren()
             child->markUsed();
         else
             ++child->_unusedParentTurns;
-        if (!manager)
-            continue;
-        if (child->_unusedParentTurns < 3)
-            continue;
-        if (!child->hasAnswered() || child->hasUnfinishedChildren())
-            continue;
-        QString error;
-        manager->dismissChild(this, child->id(), &error);
     }
+    // Завершённых детей не удаляем автоматически: родитель может многократно
+    // перезапустить их через delegate_task(worker_id=...) с новыми указаниями.
     _touchedThisTurn.clear();
 }

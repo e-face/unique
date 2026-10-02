@@ -13,9 +13,9 @@
 
 static const int kDefaultMaxToolIterations = 1000;
 /** Заполнение окна, при котором перед запросом запускается сжатие. */
-static const int kCompactRatioPermille     = 700;
+static const int kCompactRatioPermille     = 950;
 /** Заполнение, при котором сжимаем жёстче (меньше свежего хвоста). */
-static const int kEmergencyRatioPermille   = 860;
+static const int kEmergencyRatioPermille   = 980;
 /** Доля окна, оставляемая дословно как свежий хвост при обычном сжатии. */
 static const int kTailKeepPermille         = 200;
 /** То же при аварийном сжатии. */
@@ -37,9 +37,12 @@ static const QString kAnchorFollowUpPrefix = QString::fromUtf8(
 Agent::Agent(QObject *parent)
     : QObject(parent)
     , _client(0)
+    , _pendingUserIngress(AgentUserIngressHuman)
+    , _lastUserIngress(AgentUserIngressHuman)
     , _summaryChunkTotal(0)
     , _phase(PhaseIdle)
     , _maxToolIterations(kDefaultMaxToolIterations)
+    , _toolBudgetChunk(kDefaultMaxToolIterations)
     , _toolIterations(0)
     , _contextCap(0)
     , _lastEstimated(0)
@@ -49,6 +52,7 @@ Agent::Agent(QObject *parent)
     , _inspectIo(false)
     , _stopAfterTools(false)
     , _heldForExternal(false)
+    , _waitingToolBudget(false)
     , _executingTools(false)
     , _toolCallDepth(0)
     , _repairedToolHistory(false)
@@ -180,7 +184,7 @@ void Agent::appendContextNote(QString text)
     note.role = LlmRoleUser;
     note.content = trimmed;
     _history.append(note);
-    emit notice(trimmed);
+    emit forwardedContext(trimmed);
     emitContextUsage();
 }
 
@@ -198,7 +202,7 @@ void Agent::flushPendingNotes()
         note.role = LlmRoleUser;
         note.content = text;
         _history.append(note);
-        emit notice(text);
+        emit forwardedContext(text);
     }
     if (!notes.isEmpty())
         emitContextUsage();
@@ -256,6 +260,7 @@ void Agent::continueChat()
     }
     _pendingContinueChat = false;
     _heldForExternal = false;
+    _waitingToolBudget = false;
     _stopAfterTools = false;
     _finalAnswerRound = false;
     _compactThenChat = true;
@@ -377,7 +382,11 @@ QString Agent::effectiveSystemPrompt() const
 void Agent::setMaxToolIterations(int count)
 {
     if (count > 0)
+    {
         _maxToolIterations = count;
+        if (!_waitingToolBudget)
+            _toolBudgetChunk = count;
+    }
 }
 
 //----------------------------------------------
@@ -396,8 +405,68 @@ void Agent::setContextCap(int tokens)
 void Agent::applyRoleSettings(WorkerType type)
 {
     AppSettings *settings = AppSettings::instance();
-    setMaxToolIterations(settings->roleToolIterations(type));
+    const int iterations = settings->roleToolIterations(type);
+    _toolBudgetChunk = iterations > 0 ? iterations : kDefaultMaxToolIterations;
+    setMaxToolIterations(iterations);
     setContextCap(settings->roleContextCap(type));
+}
+
+//----------------------------------------------
+
+bool Agent::isWaitingToolBudget() const
+{
+    return _waitingToolBudget;
+}
+
+//----------------------------------------------
+
+int Agent::toolBudgetChunk() const
+{
+    return _toolBudgetChunk > 0 ? _toolBudgetChunk : kDefaultMaxToolIterations;
+}
+
+//----------------------------------------------
+
+void Agent::resolveToolBudget(bool continueWork)
+{
+    if (!_waitingToolBudget)
+        return;
+    _waitingToolBudget = false;
+
+    if (!_client)
+    {
+        emit failed(tr("Клиент языковой модели не задан."));
+        setPhase(PhaseIdle);
+        setBusy(false);
+        return;
+    }
+
+    if (continueWork)
+    {
+        const int chunk = toolBudgetChunk();
+        _toolIterations = 0;
+        _maxToolIterations = chunk;
+        _finalAnswerRound = false;
+        emit notice(tr("Лимит вызовов функций сброшен (%1). Продолжаю работу.")
+                    .arg(_maxToolIterations));
+    }
+    else
+    {
+        _finalAnswerRound = true;
+        emit notice(tr("Бюджет вызовов функций исчерпан (%1). Завершаю работу.")
+                    .arg(_maxToolIterations));
+        LlmMessage nudge;
+        nudge.role = LlmRoleUser;
+        nudge.content = QString::fromUtf8(
+            "TOOL BUDGET EXHAUSTED. You have no more function calls except complete_task. "
+            "Call complete_task NOW with the best report you can give (what you did, "
+            "files changed, what is left). If you cannot call it, answer in text.");
+        _history.append(nudge);
+    }
+
+    setBusy(true);
+    setPhase(PhaseChat);
+    maybeOptimizeThenComplete();
 }
 
 //----------------------------------------------
@@ -550,7 +619,14 @@ void Agent::setHistory(const QList<LlmMessage> &history)
 
 //----------------------------------------------
 
-void Agent::sendUserMessage(QString text)
+int Agent::lastUserIngress() const
+{
+    return _lastUserIngress;
+}
+
+//----------------------------------------------
+
+void Agent::sendUserMessage(QString text, int ingress)
 {
     const QString trimmed = text.trimmed();
     if (trimmed.isEmpty())
@@ -569,7 +645,7 @@ void Agent::sendUserMessage(QString text)
     if (_history.isEmpty())
         resetHistory();
 
-    beginUserTurn(trimmed);
+    beginUserTurn(trimmed, ingress);
     setBusy(true);
     setPhase(PhaseChat);
     maybeOptimizeThenComplete();
@@ -577,8 +653,9 @@ void Agent::sendUserMessage(QString text)
 
 //----------------------------------------------
 
-void Agent::beginUserTurn(QString text)
+void Agent::beginUserTurn(QString text, int ingress)
 {
+    _lastUserIngress = ingress;
     LlmMessage user;
     user.role = LlmRoleUser;
     user.content = text;
@@ -592,12 +669,13 @@ void Agent::beginUserTurn(QString text)
     _compactThenChat = true;
     _stopAfterTools = false;
     _heldForExternal = false;
+    _waitingToolBudget = false;
     _pendingContinueChat = false;
 }
 
 //----------------------------------------------
 
-void Agent::sendUserMessageAfterCompact(QString text)
+void Agent::sendUserMessageAfterCompact(QString text, int ingress)
 {
     const QString trimmed = text.trimmed();
     if (trimmed.isEmpty())
@@ -624,11 +702,12 @@ void Agent::sendUserMessageAfterCompact(QString text)
     }
     if (movable == 0)
     {
-        sendUserMessage(trimmed);
+        sendUserMessage(trimmed, ingress);
         return;
     }
 
     _pendingUserMessage = trimmed;
+    _pendingUserIngress = ingress;
     _compactThenChat = true;
     _overflowRetried = false;
     _stopAfterTools = false;
@@ -664,8 +743,11 @@ void Agent::compactContext()
 void Agent::abort()
 {
     _heldForExternal = false;
+    _waitingToolBudget = false;
     _stopAfterTools = true;
     _pendingContinueChat = false;
+    _compactThenChat = false;
+    _finalAnswerRound = false;
     foreach (AgentTool *tool, _tools)
     {
         if (tool)
@@ -780,6 +862,10 @@ void Agent::sltResponseReceived(const LlmResponse &response)
 
 void Agent::sltClientFailed(const QString &error)
 {
+    // Поздний callback после Stop (или отмена, когда агент уже Idle).
+    if (!_busy && _phase == PhaseIdle)
+        return;
+
     if (_phase == PhaseCompact)
     {
         finishCompactFallback(error);
@@ -1041,11 +1127,13 @@ void Agent::continueAfterCompact()
     if (!_pendingUserMessage.isEmpty())
     {
         const QString text = _pendingUserMessage;
+        const int ingress = _pendingUserIngress;
         _pendingUserMessage.clear();
+        _pendingUserIngress = AgentUserIngressHuman;
         // Новая задача от родителя закрепляется: следующее сжатие оставит
         // её дословно, а прежний follow-up уйдёт в сводку.
         _followUpAnchor = text;
-        beginUserTurn(text);
+        beginUserTurn(text, ingress);
     }
     if (_compactThenChat)
     {
@@ -1239,18 +1327,15 @@ void Agent::handleToolCalls(LlmMessage message)
 
     emitContextUsage();
     if (lastAllowedBatch)
-        _finalAnswerRound = true;
-    if (_finalAnswerRound)
     {
-        emit notice(tr("Лимит вызовов функций исчерпан (%1). Запрашиваю финальный ответ.")
+        const int chunk = toolBudgetChunk();
+        _waitingToolBudget = true;
+        setPhase(PhaseIdle);
+        setBusy(false);
+        emit notice(tr("Лимит вызовов функций исчерпан (%1). Ожидаю решение.")
                     .arg(_maxToolIterations));
-        LlmMessage nudge;
-        nudge.role = LlmRoleUser;
-        nudge.content = QString::fromUtf8(
-            "TOOL BUDGET EXHAUSTED. You have no more function calls except complete_task. "
-            "Call complete_task NOW with the best report you can give (what you did, "
-            "files changed, what is left). If you cannot call it, answer in text.");
-        _history.append(nudge);
+        emit toolBudgetExhausted(chunk);
+        return;
     }
     // Между раундами функций контекст растёт быстрее всего: те же пороги,
     // что и перед новым сообщением пользователя.

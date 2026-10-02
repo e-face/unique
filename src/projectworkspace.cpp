@@ -12,10 +12,12 @@
 
 //----------------------------------------------
 
-const int ProjectWorkspace::maxReadBytes      = 4 * 1024 * 1024;
-const int ProjectWorkspace::maxReadChunkChars = 32 * 1024;
-const int ProjectWorkspace::maxWriteBytes     = 2 * 1024 * 1024;
-const int ProjectWorkspace::maxListEntries = 1000;
+const int ProjectWorkspace::maxReadBytes         = 4 * 1024 * 1024;
+const int ProjectWorkspace::maxReadChunkChars    = 8 * 1024;
+const int ProjectWorkspace::maxReadCallChars     = 12 * 1024;
+const int ProjectWorkspace::maxCommandReplyChars = 4 * 1024;
+const int ProjectWorkspace::maxWriteBytes        = 2 * 1024 * 1024;
+const int ProjectWorkspace::maxListEntries       = 1000;
 
 //----------------------------------------------
 

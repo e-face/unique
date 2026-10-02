@@ -8,7 +8,9 @@
 #include "worker.h"
 #include "workermanager.h"
 //----------------------------------------------
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -541,7 +543,9 @@ QString PlanWorkTool::description() const
     return QString::fromUtf8(
         "Required before the first delegate_task (skip if you finish a small task yourself). "
         "simple/cannot_split -> executor; complex needs expected_parts>=3 or stay "
-        "in YOUR plan as simple items. Do not give the whole job to one executor.");
+        "in YOUR plan as simple items. Do not give the whole job to one executor. "
+        "When planning, note which preset_id (model) fits each subtask for later "
+        "delegate_task — minimize cost, maximize model fit.");
 }
 
 //----------------------------------------------
@@ -713,9 +717,12 @@ QString DelegateTaskTool::name() const
 QString DelegateTaskTool::description() const
 {
     return QString::fromUtf8(
-        "Give work to a direct child. plan_work first (not needed if you do a small task yourself). simple -> executor, "
-        "complex -> manager (depth limits are in your first message). "
-        "Reuse an existing child via worker_id. Several calls run in parallel; "
+        "Give work to a direct child. plan_work first (not needed if you do a small task yourself). "
+        "simple -> executor, complex -> manager (depth limits are in your first message). "
+        "Pass preset_id from available worker presets to bind the child's model "
+        "(cheapest adequate for routine work; stronger models for hard reasoning). "
+        "Reuse an existing child via worker_id — including COMPLETED children, which can "
+        "be restarted many times with new instructions. Several calls run in parallel; "
         "you continue after ALL children of the batch answer. type: manager/executor/tester.");
 }
 
@@ -751,12 +758,21 @@ QJsonObject DelegateTaskTool::parametersSchema() const
                                      "the worker's name in the UI, so make it specific, not the "
                                      "project name."));
 
+    QJsonObject presetId;
+    presetId.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    presetId.insert(QString::fromUtf8("description"),
+                    QString::fromUtf8(
+                        "Optional worker preset_id (from first-message list). Selects the "
+                        "child's model profile. type must match the preset's type. "
+                        "Omit only if reusing worker_id or accepting the default for type."));
+
     QJsonObject properties;
     properties.insert(QString::fromUtf8("type"), type);
     properties.insert(QString::fromUtf8("title"), title);
     properties.insert(QString::fromUtf8("task"), task);
     properties.insert(QString::fromUtf8("worker_id"), workerId);
     properties.insert(QString::fromUtf8("subtask"), subtask);
+    properties.insert(QString::fromUtf8("preset_id"), presetId);
 
     QJsonArray required;
     required.append(QString::fromUtf8("type"));
@@ -800,6 +816,7 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
     const QString task = args.value(QString::fromUtf8("task")).toString();
     const QString workerId = args.value(QString::fromUtf8("worker_id")).toString();
     const QString subtaskName = args.value(QString::fromUtf8("subtask")).toString();
+    const QString presetId = args.value(QString::fromUtf8("preset_id")).toString().trimmed();
     // Имя воркера: явный title, иначе имя подзадачи из плана, иначе суть из текста.
     QString title = args.value(QString::fromUtf8("title")).toString().simplified();
     if (title.isEmpty())
@@ -809,6 +826,43 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
         if (ok)
             *ok = false;
         return QString::fromUtf8("Task text is empty.");
+    }
+
+    QString llmProfileId;
+    if (!presetId.isEmpty())
+    {
+        const WorkerPreset preset = AppSettings::instance()->workerPresetById(presetId);
+        if (preset.id.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "Unknown preset_id=%1.\n%2")
+                .arg(presetId, AppSettings::instance()->workerPresetsSummary());
+        }
+        if (preset.type != type)
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "preset_id=%1 is type=%2, but delegate_task type=%3. "
+                "Pick a preset whose type matches, or change type.")
+                .arg(presetId, workerTypeToString(preset.type), workerTypeToString(type));
+        }
+        if (preset.type == WorkerTypeTool)
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "Tool presets are for create_tool / run_tool, not delegate_task.");
+        }
+        llmProfileId = preset.profileId.trimmed();
+        if (llmProfileId.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8("Preset %1 has an empty profileId.").arg(presetId);
+        }
     }
 
     if (_owner->type() == WorkerTypeManager)
@@ -886,19 +940,30 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
         _owner->registerDelegated(child);
         if (!title.isEmpty() && child->title().isEmpty())
             child->setTitle(title);
+        child->markUsed();
+        const QString previousState = workerStateToString(child->state());
+        // Завершённый ребёнок снова берёт задачу — родитель ждёт новый отчёт.
         child->beginFollowUp(task);
         if (ok)
             *ok = true;
+        QString note;
+        if (!llmProfileId.isEmpty() && child->llmProfileId() != llmProfileId)
+        {
+            note = QString::fromUtf8(
+                " (preset_id ignored: child's model is already fixed)");
+        }
         return QString::fromUtf8(
-            "Reused existing child worker id=%1 type=%2 state=%3. "
-            "Further instructions were sent to that worker. "
-            "It will answer after ALL children in this batch have finished.")
+            "Reused existing child worker id=%1 type=%2 previous_state=%3%4. "
+            "Completed workers MAY be restarted many times with new instructions. "
+            "Further instructions were sent. It will answer after ALL children "
+            "of this batch have finished.")
             .arg(child->id(),
                  workerTypeToString(child->type()),
-                 workerStateToString(child->state()));
+                 previousState,
+                 note);
     }
 
-    Worker *spawned = _manager->spawn(_owner, type, task, &error);
+    Worker *spawned = _manager->spawn(_owner, type, task, &error, llmProfileId);
     if (!spawned)
     {
         if (ok)
@@ -912,8 +977,23 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
     if (ok)
         *ok = true;
     const bool queued = spawned->state() == WorkerStateQueued;
+    const int usedBatches = _owner->subtreeToolBatches();
+    const int usedMin = int(_owner->subtreeElapsedMs() / 60000);
+    QString profileNote;
+    if (!llmProfileId.isEmpty())
+    {
+        const LlmProfile profile = AppSettings::instance()->profileById(llmProfileId);
+        const QString pname = profile.name.trimmed().isEmpty() ? llmProfileId
+                                                               : profile.name.trimmed();
+        const QString model = profile.model.trimmed().isEmpty()
+            ? QString::fromUtf8("?")
+            : profile.model.trimmed();
+        profileNote = QString::fromUtf8(" Model: profile=\"%1\" model=%2 (preset_id=%3).")
+                          .arg(pname, model, presetId);
+    }
     return QString::fromUtf8(
-        "%1 NEW child worker id=%2 type=%3 (depth %4 of max %5). %6 "
+        "%1 NEW child worker id=%2 type=%3 (depth %4 of max %5).%6 "
+        "Subtree usage: tool-batches=%7, wall≈%8 min. %9 "
         "Reuse this id for later instructions on the same assignment. "
         "It will answer you after ALL children in this batch have finished. "
         "Do not assume success yet.")
@@ -921,6 +1001,9 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
         .arg(spawned->id(), workerTypeToString(spawned->type()))
         .arg(spawned->depth())
         .arg(_manager->maxDepth())
+        .arg(profileNote)
+        .arg(usedBatches)
+        .arg(usedMin)
         .arg(_manager->loadSummary());
 }
 
@@ -944,8 +1027,11 @@ QString CompleteTaskTool::name() const
 QString CompleteTaskTool::description() const
 {
     return QString::fromUtf8(
-        "Finish and send YOUR report to the parent. Fill `lessons` with reusable "
-        "facts (commands, fixes, paths) when you learned something non-obvious.");
+        "Finish and send YOUR report to the parent. Evidence-over-claims / fail-closed: "
+        "executors who changed files and ALL testers must pass verified plus structured "
+        "evidence {command, output, artifact?, digest?}. Managers cannot accept work that "
+        "changed files until a tester child completed with verified=true. "
+        "lessons format: lines CMD:/ERR:/FIX:/PATH:/TAGS:.");
 }
 
 //----------------------------------------------
@@ -960,15 +1046,54 @@ QJsonObject CompleteTaskTool::parametersSchema() const
     lessons.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     lessons.insert(QString::fromUtf8("description"),
                    QString::fromUtf8(
-                       "2-8 short lines of reusable knowledge for a future worker doing a "
-                       "similar task in THIS project: exact build/run/test commands that "
-                       "worked, errors you met and their fixes, environment quirks, "
-                       "important file locations and conventions. No generic advice, "
-                       "no restating of the result."));
+                       "Structured reusable knowledge, prefer lines:\n"
+                       "CMD: <exact command>\nERR: <error text>\nFIX: <what fixed it>\n"
+                       "PATH: <file paths>\nTAGS: build,lint,project-token\n"
+                       "Plus any short quirks. No generic advice."));
+    QJsonObject verified;
+    verified.insert(QString::fromUtf8("type"), QString::fromUtf8("boolean"));
+    verified.insert(QString::fromUtf8("description"),
+                    QString::fromUtf8(
+                        "true if build/checks passed; false if they failed. Required for "
+                        "testers and for executors who changed files."));
+    QJsonObject command;
+    command.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    command.insert(QString::fromUtf8("description"),
+                   QString::fromUtf8("Exact verification command that was run."));
+    QJsonObject output;
+    output.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    output.insert(QString::fromUtf8("description"),
+                  QString::fromUtf8("Raw/key stdout+stderr (errors with file:line)."));
+    QJsonObject artifact;
+    artifact.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    artifact.insert(QString::fromUtf8("description"),
+                    QString::fromUtf8("Optional path to produced artifact (exe, log, report)."));
+    QJsonObject digest;
+    digest.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    digest.insert(QString::fromUtf8("description"),
+                  QString::fromUtf8("Optional short hash/size/fingerprint of the artifact."));
+    QJsonObject evidenceProps;
+    evidenceProps.insert(QString::fromUtf8("command"), command);
+    evidenceProps.insert(QString::fromUtf8("output"), output);
+    evidenceProps.insert(QString::fromUtf8("artifact"), artifact);
+    evidenceProps.insert(QString::fromUtf8("digest"), digest);
+    QJsonArray evidenceRequired;
+    evidenceRequired.append(QString::fromUtf8("command"));
+    evidenceRequired.append(QString::fromUtf8("output"));
+    QJsonObject evidence;
+    evidence.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    evidence.insert(QString::fromUtf8("description"),
+                    QString::fromUtf8(
+                        "Structured proof. Required with verified for testers and for "
+                        "executors who changed files."));
+    evidence.insert(QString::fromUtf8("properties"), evidenceProps);
+    evidence.insert(QString::fromUtf8("required"), evidenceRequired);
 
     QJsonObject properties;
     properties.insert(QString::fromUtf8("result"), result);
     properties.insert(QString::fromUtf8("lessons"), lessons);
+    properties.insert(QString::fromUtf8("verified"), verified);
+    properties.insert(QString::fromUtf8("evidence"), evidence);
 
     QJsonArray required;
     required.append(QString::fromUtf8("result"));
@@ -1017,16 +1142,122 @@ QString CompleteTaskTool::invoke(QString argumentsJson, bool *ok)
         return waiting;
     }
 
-    const QString result = args.value(QString::fromUtf8("result")).toString();
+    QString result = args.value(QString::fromUtf8("result")).toString();
     const QString lessons = args.value(QString::fromUtf8("lessons")).toString().trimmed();
+    const bool hasVerified = args.contains(QString::fromUtf8("verified"));
+    const bool verified = args.value(QString::fromUtf8("verified")).toBool();
+    const WorkerType type = _owner->type();
+    const bool changedFiles = !_owner->changedFiles().isEmpty();
+
+    QString evCommand;
+    QString evOutput;
+    QString evArtifact;
+    QString evDigest;
+    const QJsonValue evidenceVal = args.value(QString::fromUtf8("evidence"));
+    if (evidenceVal.isObject())
+    {
+        const QJsonObject ev = evidenceVal.toObject();
+        evCommand = ev.value(QString::fromUtf8("command")).toString().trimmed();
+        evOutput = ev.value(QString::fromUtf8("output")).toString().trimmed();
+        evArtifact = ev.value(QString::fromUtf8("artifact")).toString().trimmed();
+        evDigest = ev.value(QString::fromUtf8("digest")).toString().trimmed();
+    }
+    else if (evidenceVal.isString())
+    {
+        // Совместимость: свободный текст → output, command помечаем legacy.
+        evOutput = evidenceVal.toString().trimmed();
+        if (!evOutput.isEmpty())
+            evCommand = QString::fromUtf8("(unstructured evidence)");
+    }
+    const bool evidenceOk = (evCommand.size() >= 3 && evOutput.size() >= 20);
+
+    // A: verification gate — fail-closed + structured evidence.
+    if (type == WorkerTypeTester)
+    {
+        if (!hasVerified || !evidenceOk)
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "REFUSED (verification gate): tester must pass verified and structured "
+                "evidence {command, output} (output >= 20 chars). Optional artifact/digest.");
+        }
+    }
+    else if (type == WorkerTypeExecutor && changedFiles)
+    {
+        if (!hasVerified || !evidenceOk)
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "REFUSED (verification gate): after changing files, executor must pass "
+                "verified and evidence {command, output} for build/compile/syntax. "
+                "Test suites are tester-only.");
+        }
+    }
+    else if (type == WorkerTypeManager)
+    {
+        bool needsTester = false;
+        bool havePassingTester = false;
+        foreach (Worker *child, _owner->children())
+        {
+            if (!child || !child->hasAnswered())
+                continue;
+            if (child->type() == WorkerTypeExecutor && !child->changedFiles().isEmpty())
+                needsTester = true;
+            if (child->type() == WorkerTypeTester && child->verificationPassed())
+                havePassingTester = true;
+        }
+        if (needsTester && !havePassingTester)
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "REFUSED (acceptance gate): executors changed files but no tester child "
+                "completed with verified=true + evidence. Spawn/await an independent tester "
+                "reproduction before complete_task.");
+        }
+    }
+
+    bool success = true;
+    if (type == WorkerTypeTester || (type == WorkerTypeExecutor && changedFiles))
+        success = verified;
+
+    if (hasVerified || evidenceOk)
+        _owner->setVerification(true, verified && evidenceOk, evCommand, evOutput,
+                                evArtifact, evDigest);
+
+    if (evidenceOk)
+    {
+        result += QString::fromUtf8(
+                      "\n\n[verification] verified=%1\ncommand: %2\noutput:\n%3")
+                      .arg(verified ? QString::fromUtf8("true")
+                                    : QString::fromUtf8("false"),
+                           evCommand, evOutput);
+        if (!evArtifact.isEmpty())
+            result += QString::fromUtf8("\nartifact: ") + evArtifact;
+        if (!evDigest.isEmpty())
+            result += QString::fromUtf8("\ndigest: ") + evDigest;
+    }
+
     if (!lessons.isEmpty())
-        KnowledgeStore::instance()->remember(_owner->type(), _owner->task(), lessons, true);
-    _owner->complete(result, true);
+        KnowledgeStore::instance()->remember(_owner->type(), _owner->task(), lessons, success);
+
+    WorkerManager *manager = qobject_cast<WorkerManager *>(_owner->parent());
+    if (manager)
+    {
+        manager->releaseFilePaths(_owner);
+        manager->noteTaskCompleted();
+    }
+    _owner->complete(result, success);
     if (_owner->session() && _owner->session()->agent())
         _owner->session()->agent()->requestStopAfterTools();
     if (ok)
         *ok = true;
-    return QString::fromUtf8("Task completed and returned to the parent worker.");
+    if (success)
+        return QString::fromUtf8("Task completed and returned to the parent worker.");
+    return QString::fromUtf8(
+        "Task finished as FAILED (verified=false). Report returned to the parent.");
 }
 
 //----------------------------------------------
@@ -1122,7 +1353,8 @@ QString ListChildWorkersTool::name() const
 QString ListChildWorkersTool::description() const
 {
     return QString::fromUtf8(
-        "List direct children (id, type, state, task). Use worker_id in delegate_task to reuse.");
+        "List direct children (id, type, state, task). Use worker_id in delegate_task to "
+        "reuse — completed children can be restarted with new instructions repeatedly.");
 }
 
 //----------------------------------------------
@@ -1912,22 +2144,82 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
 
     QByteArray bytes = process.readAll();
     QString output = ProjectWorkspace::decodeConsoleOutput(bytes);
-    // Длинный вывод (сборка, тесты) режем по схеме «начало + конец»: ошибки
-    // компилятора обычно в начале, итог и падения тестов — в конце.
-    const int maxChars = 8 * 1024;
-    if (output.size() > maxChars)
+
+    // Полный лог — в ___project___/tmp; в ответ модели — exit + file:line и ссылка.
+    QString logRel;
+    if (_workspace && _workspace->ensureTempDir() && !output.isEmpty())
     {
-        const int headChars = maxChars * 5 / 8;
-        const int tailChars = maxChars - headChars;
-        const int dropped = output.size() - headChars - tailChars;
-        output = output.left(headChars)
-                 + QString::fromUtf8("\n...[%1 chars of output omitted; rerun with a filter "
-                                       "(findstr/grep) or fewer targets to see them]...\n")
-                       .arg(dropped)
-                 + output.right(tailChars);
+        const QString stamp = QDateTime::currentDateTime().toString(
+            QString::fromUtf8("yyyyMMdd_hhmmss_zzz"));
+        const QString fileName = QString::fromUtf8("cmd_%1.log").arg(stamp);
+        const QString absLog = QDir(_workspace->tempDir()).filePath(fileName);
+        QFile logFile(absLog);
+        if (logFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        {
+            logFile.write(output.toUtf8());
+            logFile.close();
+            logRel = QString::fromUtf8("___project___/tmp/%1").arg(fileName);
+        }
     }
-    if (output.trimmed().isEmpty())
-        output = QString::fromUtf8("(no output)");
+
+    QString replyBody;
+    {
+        const QStringList allLines = output.split(QChar('\n'));
+        QStringList hits;
+        QRegExp msvc(QString::fromUtf8("\\([^\\)]*\\d+[^\\)]*\\)"));
+        QRegExp unixLike(QString::fromUtf8(":[0-9]+(?::[0-9]+)?"));
+        foreach (const QString &line, allLines)
+        {
+            const QString t = line.trimmed();
+            if (t.isEmpty())
+                continue;
+            if (msvc.indexIn(t) >= 0 || unixLike.indexIn(t) >= 0)
+                hits.append(t);
+        }
+        if (!hits.isEmpty())
+        {
+            replyBody = QString::fromUtf8("file:line hits (%1):\n").arg(hits.size());
+            int used = replyBody.size();
+            const int budget = ProjectWorkspace::maxCommandReplyChars;
+            for (int i = 0; i < hits.size(); ++i)
+            {
+                const QString row = hits.at(i) + QChar('\n');
+                if (used + row.size() > budget)
+                {
+                    replyBody += QString::fromUtf8("... [%1 more hits in full log]\n")
+                                     .arg(hits.size() - i);
+                    break;
+                }
+                replyBody += row;
+                used += row.size();
+            }
+        }
+        else
+        {
+            // Нет file:line — короткий превью начала/конца.
+            const int budget = ProjectWorkspace::maxCommandReplyChars;
+            if (output.size() <= budget)
+                replyBody = output;
+            else
+            {
+                const int head = budget * 5 / 8;
+                const int tail = budget - head;
+                replyBody = output.left(head)
+                            + QString::fromUtf8("\n...[%1 chars omitted]...\n")
+                                  .arg(output.size() - head - tail)
+                            + output.right(tail);
+            }
+        }
+    }
+    if (replyBody.trimmed().isEmpty())
+        replyBody = QString::fromUtf8("(no output)");
+    if (!logRel.isEmpty())
+    {
+        replyBody += QString::fromUtf8(
+                         "\nfull log: %1\n"
+                         "Continue with ONE call: read_file path=\"%1\" offset=1")
+                         .arg(logRel);
+    }
 
     QString report;
     if (!finished)
@@ -1938,7 +2230,7 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
                                      "background=true), or it waited for input (stdin is empty; "
                                      "add flags like /y, -y, --yes). Partial output:\n%2")
                      .arg(timeoutSec)
-                     .arg(output);
+                     .arg(replyBody);
         if (ok)
             *ok = false;
         return report;
@@ -1949,13 +2241,542 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
     {
         report = QString::fromUtf8("Started in background (detached), not waiting for it "
                                      "to finish. exit_code=0\n%1")
-                     .arg(output);
+                     .arg(replyBody);
         if (ok)
             *ok = true;
         return report;
     }
-    report = QString::fromUtf8("exit_code=%1\n%2").arg(code).arg(output);
+    report = QString::fromUtf8("exit_code=%1\n%2").arg(code).arg(replyBody);
     if (ok)
         *ok = (code == 0);
     return report;
+}
+
+//----------------------------------------------
+
+AddGroupMemberTool::AddGroupMemberTool(WorkerManager *manager, Worker *owner, QObject *parent)
+    : AgentTool(parent)
+    , _manager(manager)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString AddGroupMemberTool::name() const
+{
+    return QString::fromUtf8("add_group_member");
+}
+
+//----------------------------------------------
+
+QString AddGroupMemberTool::description() const
+{
+    return QString::fromUtf8(
+        "Add an interlocutor to your discussion group (creates the group if needed). "
+        "Managers may form a group at their discretion for thorough study of a hard/"
+        "ambiguous question before coding. "
+        "Pick preset_id from available presets — prefer diverse, capable models for "
+        "deep discussion; avoid duplicate profiles. "
+        "Each group member MUST use a different model profile. "
+        "The group uses turn-based dialogue (group_speak / group_await / vote); "
+        "peers cannot delegate_task.");
+}
+
+//----------------------------------------------
+
+QJsonObject AddGroupMemberTool::parametersSchema() const
+{
+    QJsonObject presetId;
+    presetId.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    presetId.insert(QString::fromUtf8("description"),
+                    QString::fromUtf8("Id of a worker preset from settings."));
+    QJsonObject properties;
+    properties.insert(QString::fromUtf8("preset_id"), presetId);
+    QJsonArray required;
+    required.append(QString::fromUtf8("preset_id"));
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), properties);
+    schema.insert(QString::fromUtf8("required"), required);
+    return schema;
+}
+
+//----------------------------------------------
+
+QString AddGroupMemberTool::invoke(QString argumentsJson, bool *ok)
+{
+    QJsonObject args;
+    QString error;
+    if (!parseObject(argumentsJson, &args, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    const QString presetId = args.value(QString::fromUtf8("preset_id")).toString();
+    Worker *peer = _manager ? _manager->addGroupMember(_owner, presetId, &error) : 0;
+    if (!peer)
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (ok)
+        *ok = true;
+    return QString::fromUtf8(
+        "Added group member %1 (type=%2, worker_id=%3, group_id=%4). "
+        "Turn-based dialogue started: narrator uses group_speak/group_end_turn; "
+        "others group_await; finish with group_propose + unanimous group_vote.")
+        .arg(peer->personName(), workerTypeToString(peer->type()), peer->id(),
+             peer->groupId());
+}
+
+//----------------------------------------------
+
+TalkToTool::TalkToTool(WorkerManager *manager, Worker *owner, QObject *parent)
+    : AgentTool(parent)
+    , _manager(manager)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString TalkToTool::name() const
+{
+    return QString::fromUtf8("talk_to");
+}
+
+//----------------------------------------------
+
+QString TalkToTool::description() const
+{
+    return QString::fromUtf8(
+        "DISABLED. Do not call. Outside a group workers do not discuss peers "
+        "(parent assignment / complete_task / delegate_task only). "
+        "Inside a group use group_speak / group_await / group_propose / group_vote.");
+}
+
+//----------------------------------------------
+
+QJsonObject TalkToTool::parametersSchema() const
+{
+    QJsonObject workerId;
+    workerId.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    workerId.insert(QString::fromUtf8("description"), QString::fromUtf8("Target worker_id."));
+    QJsonObject message;
+    message.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    message.insert(QString::fromUtf8("description"), QString::fromUtf8("Message text."));
+    QJsonObject properties;
+    properties.insert(QString::fromUtf8("worker_id"), workerId);
+    properties.insert(QString::fromUtf8("message"), message);
+    QJsonArray required;
+    required.append(QString::fromUtf8("worker_id"));
+    required.append(QString::fromUtf8("message"));
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), properties);
+    schema.insert(QString::fromUtf8("required"), required);
+    return schema;
+}
+
+//----------------------------------------------
+
+QString TalkToTool::invoke(QString argumentsJson, bool *ok)
+{
+    Q_UNUSED(argumentsJson);
+    if (ok)
+        *ok = false;
+    return QString::fromUtf8(
+        "REFUSED: talk_to is disabled. Outside a group do not discuss peers — "
+        "receive the assignment from the parent and report via complete_task; "
+        "managers use delegate_task. Group members use group_speak / group_await / "
+        "group_end_turn / group_propose / group_vote.");
+}
+
+//----------------------------------------------
+
+GroupAwaitTool::GroupAwaitTool(WorkerManager *manager, Worker *owner, QObject *parent)
+    : AgentTool(parent)
+    , _manager(manager)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString GroupAwaitTool::name() const
+{
+    return QString::fromUtf8("group_await");
+}
+
+//----------------------------------------------
+
+QString GroupAwaitTool::description() const
+{
+    return QString::fromUtf8(
+        "If you are NOT the narrator and do not need to vote: call once to park until a "
+        "follow-up wakes you for your turn. Does NOT block the process. "
+        "If you ARE the narrator or must vote, returns instructions immediately — act, "
+        "do not park.");
+}
+
+//----------------------------------------------
+
+QJsonObject GroupAwaitTool::parametersSchema() const
+{
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), QJsonObject());
+    return schema;
+}
+
+//----------------------------------------------
+
+QString GroupAwaitTool::invoke(QString argumentsJson, bool *ok)
+{
+    Q_UNUSED(argumentsJson);
+    QString error;
+    const QString report = _manager ? _manager->groupAwait(_owner, &error) : QString();
+    if (report.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (ok)
+        *ok = true;
+    return report;
+}
+
+//----------------------------------------------
+
+GroupSpeakTool::GroupSpeakTool(WorkerManager *manager, Worker *owner, QObject *parent)
+    : AgentTool(parent)
+    , _manager(manager)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString GroupSpeakTool::name() const
+{
+    return QString::fromUtf8("group_speak");
+}
+
+//----------------------------------------------
+
+QString GroupSpeakTool::description() const
+{
+    return QString::fromUtf8(
+        "As the current narrator, broadcast a replica to ALL group members. "
+        "Then call group_end_turn() or group_propose(result).");
+}
+
+//----------------------------------------------
+
+QJsonObject GroupSpeakTool::parametersSchema() const
+{
+    QJsonObject message;
+    message.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    message.insert(QString::fromUtf8("description"), QString::fromUtf8("What you say to the group."));
+    QJsonObject properties;
+    properties.insert(QString::fromUtf8("message"), message);
+    QJsonArray required;
+    required.append(QString::fromUtf8("message"));
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), properties);
+    schema.insert(QString::fromUtf8("required"), required);
+    return schema;
+}
+
+//----------------------------------------------
+
+QString GroupSpeakTool::invoke(QString argumentsJson, bool *ok)
+{
+    QJsonObject args;
+    QString error;
+    if (!parseObject(argumentsJson, &args, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    const QString message = args.value(QString::fromUtf8("message")).toString();
+    const QString report = _manager ? _manager->groupSpeak(_owner, message, &error)
+                                    : QString();
+    if (report.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (ok)
+        *ok = true;
+    return report;
+}
+
+//----------------------------------------------
+
+GroupEndTurnTool::GroupEndTurnTool(WorkerManager *manager, Worker *owner, QObject *parent)
+    : AgentTool(parent)
+    , _manager(manager)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString GroupEndTurnTool::name() const
+{
+    return QString::fromUtf8("group_end_turn");
+}
+
+//----------------------------------------------
+
+QString GroupEndTurnTool::description() const
+{
+    return QString::fromUtf8(
+        "Pass the narrator role to the next group member after group_speak.");
+}
+
+//----------------------------------------------
+
+QJsonObject GroupEndTurnTool::parametersSchema() const
+{
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), QJsonObject());
+    return schema;
+}
+
+//----------------------------------------------
+
+QString GroupEndTurnTool::invoke(QString argumentsJson, bool *ok)
+{
+    Q_UNUSED(argumentsJson);
+    QString error;
+    const QString report = _manager ? _manager->groupEndTurn(_owner, &error) : QString();
+    if (report.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (ok)
+        *ok = true;
+    return report;
+}
+
+//----------------------------------------------
+
+GroupProposeTool::GroupProposeTool(WorkerManager *manager, Worker *owner, QObject *parent)
+    : AgentTool(parent)
+    , _manager(manager)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString GroupProposeTool::name() const
+{
+    return QString::fromUtf8("group_propose");
+}
+
+//----------------------------------------------
+
+QString GroupProposeTool::description() const
+{
+    return QString::fromUtf8(
+        "Propose the group's shared result for a unanimous vote. "
+        "Current narrator or chief. Others must group_vote.");
+}
+
+//----------------------------------------------
+
+QJsonObject GroupProposeTool::parametersSchema() const
+{
+    QJsonObject result;
+    result.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    result.insert(QString::fromUtf8("description"),
+                  QString::fromUtf8("Concrete shared conclusion for the group to approve."));
+    QJsonObject properties;
+    properties.insert(QString::fromUtf8("result"), result);
+    QJsonArray required;
+    required.append(QString::fromUtf8("result"));
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), properties);
+    schema.insert(QString::fromUtf8("required"), required);
+    return schema;
+}
+
+//----------------------------------------------
+
+QString GroupProposeTool::invoke(QString argumentsJson, bool *ok)
+{
+    QJsonObject args;
+    QString error;
+    if (!parseObject(argumentsJson, &args, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    const QString result = args.value(QString::fromUtf8("result")).toString();
+    const QString report = _manager ? _manager->groupPropose(_owner, result, &error)
+                                    : QString();
+    if (report.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (ok)
+        *ok = true;
+    return report;
+}
+
+//----------------------------------------------
+
+GroupVoteTool::GroupVoteTool(WorkerManager *manager, Worker *owner, QObject *parent)
+    : AgentTool(parent)
+    , _manager(manager)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString GroupVoteTool::name() const
+{
+    return QString::fromUtf8("group_vote");
+}
+
+//----------------------------------------------
+
+QString GroupVoteTool::description() const
+{
+    return QString::fromUtf8(
+        "Vote on the current group_propose. approve=true to accept; false rejects and "
+        "continues the turn-based discussion. Unanimous approval ends the dialogue.");
+}
+
+//----------------------------------------------
+
+QJsonObject GroupVoteTool::parametersSchema() const
+{
+    QJsonObject approve;
+    approve.insert(QString::fromUtf8("type"), QString::fromUtf8("boolean"));
+    approve.insert(QString::fromUtf8("description"),
+                   QString::fromUtf8("true = approve proposal; false = reject."));
+    QJsonObject comment;
+    comment.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    comment.insert(QString::fromUtf8("description"),
+                   QString::fromUtf8("Short reason, especially on reject."));
+    QJsonObject properties;
+    properties.insert(QString::fromUtf8("approve"), approve);
+    properties.insert(QString::fromUtf8("comment"), comment);
+    QJsonArray required;
+    required.append(QString::fromUtf8("approve"));
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), properties);
+    schema.insert(QString::fromUtf8("required"), required);
+    return schema;
+}
+
+//----------------------------------------------
+
+QString GroupVoteTool::invoke(QString argumentsJson, bool *ok)
+{
+    QJsonObject args;
+    QString error;
+    if (!parseObject(argumentsJson, &args, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    const bool approve = args.value(QString::fromUtf8("approve")).toBool();
+    const QString comment = args.value(QString::fromUtf8("comment")).toString();
+    const QString report = _manager ? _manager->groupVote(_owner, approve, comment, &error)
+                                    : QString();
+    if (report.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (ok)
+        *ok = true;
+    return report;
+}
+
+//----------------------------------------------
+
+ListGroupMembersTool::ListGroupMembersTool(WorkerManager *manager, Worker *owner,
+                                           QObject *parent)
+    : AgentTool(parent)
+    , _manager(manager)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString ListGroupMembersTool::name() const
+{
+    return QString::fromUtf8("list_group_members");
+}
+
+//----------------------------------------------
+
+QString ListGroupMembersTool::description() const
+{
+    return QString::fromUtf8(
+        "List members of your discussion group (name, type, role, worker_id, state).");
+}
+
+//----------------------------------------------
+
+QJsonObject ListGroupMembersTool::parametersSchema() const
+{
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), QJsonObject());
+    return schema;
+}
+
+//----------------------------------------------
+
+QString ListGroupMembersTool::invoke(QString argumentsJson, bool *ok)
+{
+    Q_UNUSED(argumentsJson);
+    if (!_owner || _owner->groupId().isEmpty())
+    {
+        if (ok)
+            *ok = true;
+        return QString::fromUtf8("You are not in a group yet. Managers: add_group_member.");
+    }
+    QStringList lines;
+    lines << QString::fromUtf8("group_id=%1").arg(_owner->groupId());
+    foreach (Worker *peer, _manager->groupMembers(_owner->groupId()))
+    {
+        if (!peer)
+            continue;
+        lines << QString::fromUtf8("- %1 | type=%2 | role=%3 | worker_id=%4 | state=%5")
+                     .arg(peer->personName().isEmpty() ? QString::fromUtf8("(unnamed)")
+                                                       : peer->personName(),
+                          workerTypeToString(peer->type()),
+                          groupRoleToString(peer->groupRole()), peer->id(),
+                          workerStateToString(peer->state()));
+    }
+    if (ok)
+        *ok = true;
+    return lines.join(QChar('\n'));
 }

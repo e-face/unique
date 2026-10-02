@@ -4,19 +4,24 @@
 #include "conversationwidget.h"
 //----------------------------------------------
 #include <QHash>
+#include <QList>
 #include <QPointer>
 #include <QString>
 
 class Agent;
+class QLabel;
+class QTimer;
 
 //----------------------------------------------
 
 /**
- * @brief Журнал: сводная лента всех чатов за время работы программы.
+ * @brief Журнал: сводная лента чатов за время работы программы.
  *
- * Сообщения пользователя и ассистента добавляются навсегда (развёрнуты).
- * Остальное (вызовы функций, делегирование, заметки, ошибки) — временные
- * свёрнутые записи: пока последняя запись временная, новая её замещает.
+ * Сообщения пользователя и ассистента — с подписью автора, навсегда.
+ * Вызовы функций в постоянную ленту не попадают; текущее действие
+ * — одна строка фиксированной высоты после последнего сообщения
+ * (смена текста + мерцание, без пересоздания виджета).
+ * Заметки/ошибки — временные свёрнутые записи (новая замещает предыдущую).
  * Между запусками не сохраняется.
  */
 class JournalWidget : public ConversationWidget
@@ -28,29 +33,60 @@ public:
     void attachAgent(Agent *agent, QString label);
     void detachAgent(Agent *agent);
     void setAgentLabel(Agent *agent, QString label);
+    void clearMessages();
 
 public slots:
-    void addPermanent(const QString &source, const QString &title,
-                      const QString &text, bool fromUser);
-    void addTransient(const QString &source, const QString &title,
+    void addPermanent(const QString &author, const QString &text, bool fromUser);
+    void addTransient(const QString &author, const QString &title,
                       const QString &text, const QString &kind = QString());
 
 private slots:
     void sltJournalUser(const QString &text);
     void sltJournalAssistant(const QString &text);
-    void sltJournalToolStarted(const QString &name, const QString &arguments);
-    void sltJournalToolFinished(const QString &name, const QString &result, bool ok);
     void sltJournalNotice(const QString &text);
+    void sltJournalForwarded(const QString &text);
     void sltJournalFailed(const QString &error);
     void sltAgentDestroyed(QObject *object);
+    void sltToolCallStarted(const QString &name, const QString &arguments);
+    void sltToolCallFinished(const QString &name, const QString &result, bool ok);
+    void sltJournalBusyChanged(bool busy);
+    void sltJournalCompactingChanged(bool compacting);
+    void sltLiveActionRotate();
+    void sltLiveActionFade();
 
 private:
     QString labelFor(QObject *sender) const;
-    static QString shortArgs(QString arguments);
+    static QString caption(const QString &author, const QString &title);
+    static QString actionTitleForTool(const QString &name);
+    static QString toolArgsExcerpt(const QString &name, const QString &arguments);
+    QString elideLiveAction(const QString &text) const;
+    static QString friendlyIngressBody(const QString &text, int ingress);
+    static QString ingressAuthorTitle(const QString &toLabel, int ingress);
+    void setAgentLiveAction(QObject *agent, const QString &action);
+    void clearAgentLiveAction(QObject *agent);
+    void rebuildLiveActionList();
+    void ensureLiveActionAtEnd();
+    void refreshLiveActionText();
+    void applyLiveActionFadeStyle();
 
-    QHash<QObject *, QString> _labels;
-    QHash<QObject *, QString> _pendingArgs;
-    QPointer<QWidget>         _transient;
+    struct LiveAction
+    {
+        QPointer<QObject> agent;
+        QString           text;
+    };
+
+    QHash<QObject *, QString>  _labels;
+    QHash<QObject *, QString>  _agentActions;
+    QList<LiveAction>          _liveActions;
+    QPointer<QWidget>          _transient;
+    QPointer<ChatMessageFrame> _lastPermanent;
+    QString                    _lastPermanentAuthor;
+    bool                       _lastPermanentFromUser;
+    QLabel                    *_liveActionLine;
+    QTimer                    *_liveRotateTimer;
+    QTimer                    *_liveFadeTimer;
+    int                        _liveActionIndex;
+    double                     _liveFadePhase;
 };
 
 #endif // JOURNALWIDGET_H

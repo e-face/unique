@@ -25,9 +25,11 @@ static const double kMergeThreshold    = 0.80;
 static const double kRecallThreshold   = 0.25;
 static const int    kMinCommonTokens   = 2;
 /** Сколько записей попадает в подсказку новому воркеру. */
-static const int    kHintMaxEntries    = 2;
+static const int    kHintMaxEntries    = 3;
 /** Суммарный размер подсказки (символов), включая заголовок. */
-static const int    kHintMaxChars      = 1500;
+static const int    kHintMaxChars      = 1800;
+/** TTL урока без использований: 90 суток. */
+static const qint64 kLessonTtlMs       = 90LL * 24 * 3600 * 1000;
 
 //----------------------------------------------
 
@@ -145,6 +147,39 @@ void KnowledgeStore::ensureLoaded()
 
 //----------------------------------------------
 
+void KnowledgeStore::invalidate()
+{
+    _entries.clear();
+    _dirtyUses = false;
+    _loadedDir.clear();
+}
+
+//----------------------------------------------
+
+//----------------------------------------------
+
+static void parseLessonFields(const QString &lessons, KnowledgeEntry *entry)
+{
+    if (!entry)
+        return;
+    foreach (const QString &raw, lessons.split(QChar('\n')))
+    {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QString::fromUtf8("CMD:"), Qt::CaseInsensitive))
+            entry->command = line.mid(4).trimmed();
+        else if (line.startsWith(QString::fromUtf8("ERR:"), Qt::CaseInsensitive))
+            entry->error = line.mid(4).trimmed();
+        else if (line.startsWith(QString::fromUtf8("FIX:"), Qt::CaseInsensitive))
+            entry->fix = line.mid(4).trimmed();
+        else if (line.startsWith(QString::fromUtf8("PATH:"), Qt::CaseInsensitive))
+            entry->path = line.mid(5).trimmed();
+        else if (line.startsWith(QString::fromUtf8("TAGS:"), Qt::CaseInsensitive))
+            entry->tags = line.mid(5).trimmed().toLower();
+    }
+}
+
+//----------------------------------------------
+
 void KnowledgeStore::load()
 {
     _entries.clear();
@@ -164,9 +199,16 @@ void KnowledgeStore::load()
         entry.workerType = object.value(QString::fromUtf8("workerType")).toString();
         entry.task = object.value(QString::fromUtf8("task")).toString();
         entry.lessons = object.value(QString::fromUtf8("lessons")).toString();
+        entry.command = object.value(QString::fromUtf8("command")).toString();
+        entry.error = object.value(QString::fromUtf8("error")).toString();
+        entry.fix = object.value(QString::fromUtf8("fix")).toString();
+        entry.path = object.value(QString::fromUtf8("path")).toString();
+        entry.tags = object.value(QString::fromUtf8("tags")).toString();
         entry.created = qint64(object.value(QString::fromUtf8("created")).toDouble());
         entry.uses = object.value(QString::fromUtf8("uses")).toInt();
         entry.ok = object.value(QString::fromUtf8("ok")).toBool(true);
+        if (entry.command.isEmpty() && entry.error.isEmpty())
+            parseLessonFields(entry.lessons, &entry);
         if (entry.lessons.trimmed().isEmpty())
             continue;
         if (entry.id.isEmpty())
@@ -192,13 +234,18 @@ bool KnowledgeStore::save()
         object.insert(QString::fromUtf8("workerType"), entry.workerType);
         object.insert(QString::fromUtf8("task"), entry.task);
         object.insert(QString::fromUtf8("lessons"), entry.lessons);
+        object.insert(QString::fromUtf8("command"), entry.command);
+        object.insert(QString::fromUtf8("error"), entry.error);
+        object.insert(QString::fromUtf8("fix"), entry.fix);
+        object.insert(QString::fromUtf8("path"), entry.path);
+        object.insert(QString::fromUtf8("tags"), entry.tags);
         object.insert(QString::fromUtf8("created"), double(entry.created));
         object.insert(QString::fromUtf8("uses"), entry.uses);
         object.insert(QString::fromUtf8("ok"), entry.ok);
         list.append(object);
     }
     QJsonObject root;
-    root.insert(QString::fromUtf8("version"), 1);
+    root.insert(QString::fromUtf8("version"), 2);
     root.insert(QString::fromUtf8("entries"), list);
 
     QSaveFile file(path);
@@ -232,8 +279,10 @@ void KnowledgeStore::remember(WorkerType type, QString task, QString lessons, bo
     const QString typeName = workerTypeToString(type);
     const QString taskText = clip(task, kMaxTaskChars);
     const QSet<QString> want = tokens(taskText);
+    KnowledgeEntry parsed;
+    parseLessonFields(text, &parsed);
 
-    // Похожая запись того же типа: обновляем, сохраняя ещё не известные строки.
+    // Дедуп: похожая задача / тот же CMD / похожий ERR.
     int bestIndex = -1;
     double bestScore = 0;
     for (int i = 0; i < _entries.size(); ++i)
@@ -241,7 +290,12 @@ void KnowledgeStore::remember(WorkerType type, QString task, QString lessons, bo
         const KnowledgeEntry &entry = _entries.at(i);
         if (entry.workerType != typeName)
             continue;
-        const double score = similarity(want, tokens(entry.task));
+        double score = similarity(want, tokens(entry.task));
+        if (!parsed.command.isEmpty() && entry.command == parsed.command)
+            score = qMax(score, 0.85);
+        if (!parsed.error.isEmpty() && !entry.error.isEmpty()
+            && similarity(tokens(parsed.error), tokens(entry.error)) >= 0.6)
+            score = qMax(score, 0.82);
         if (score > bestScore)
         {
             bestScore = score;
@@ -266,6 +320,16 @@ void KnowledgeStore::remember(WorkerType type, QString task, QString lessons, bo
         entry.task = taskText;
         entry.created = QDateTime::currentMSecsSinceEpoch();
         entry.ok = ok;
+        if (!parsed.command.isEmpty())
+            entry.command = parsed.command;
+        if (!parsed.error.isEmpty())
+            entry.error = parsed.error;
+        if (!parsed.fix.isEmpty())
+            entry.fix = parsed.fix;
+        if (!parsed.path.isEmpty())
+            entry.path = parsed.path;
+        if (!parsed.tags.isEmpty())
+            entry.tags = parsed.tags;
         save();
         return;
     }
@@ -275,6 +339,11 @@ void KnowledgeStore::remember(WorkerType type, QString task, QString lessons, bo
     entry.workerType = typeName;
     entry.task = taskText;
     entry.lessons = text;
+    entry.command = parsed.command;
+    entry.error = parsed.error;
+    entry.fix = parsed.fix;
+    entry.path = parsed.path;
+    entry.tags = parsed.tags;
     entry.created = QDateTime::currentMSecsSinceEpoch();
     entry.ok = ok;
     _entries.append(entry);
@@ -312,6 +381,15 @@ QList<KnowledgeEntry> KnowledgeStore::recall(WorkerType type, QString task, int 
     if (_entries.isEmpty() || maxCount <= 0)
         return out;
 
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // Вытесняем устаревшие без повторных использований.
+    for (int i = _entries.size() - 1; i >= 0; --i)
+    {
+        const KnowledgeEntry &e = _entries.at(i);
+        if (e.uses <= 0 && e.created > 0 && (now - e.created) > kLessonTtlMs)
+            _entries.removeAt(i);
+    }
+
     const QString typeName = workerTypeToString(type);
     const QSet<QString> want = tokens(task);
     if (want.isEmpty())
@@ -321,15 +399,26 @@ QList<KnowledgeEntry> KnowledgeStore::recall(WorkerType type, QString task, int 
     for (int i = 0; i < _entries.size(); ++i)
     {
         const KnowledgeEntry &entry = _entries.at(i);
+        // Fail-closed recall: failed lessons только как слабый сигнал.
+        // Теги/CMD участвуют до порога — иначе индекс по типу ошибки не срабатывает.
         double score = similarity(want, tokens(entry.task));
-        // Уроки самой записи тоже могут упоминать нужные вещи (команды, файлы).
         score = qMax(score, 0.8 * similarity(want, tokens(entry.lessons)));
+        if (!entry.tags.isEmpty())
+            score = qMax(score, 0.75 * similarity(want, tokens(entry.tags)));
+        if (!entry.command.isEmpty())
+            score = qMax(score, 0.7 * similarity(want, tokens(entry.command)));
+        if (!entry.error.isEmpty())
+            score = qMax(score, 0.7 * similarity(want, tokens(entry.error)));
         if (score < kRecallThreshold)
             continue;
         if (entry.workerType == typeName)
             score += 0.15;
-        if (!entry.ok)
-            score -= 0.05;
+        if (entry.ok)
+            score += 0.20;
+        else
+            score -= 0.25;
+        if (entry.uses > 0)
+            score += qMin(0.15, 0.03 * entry.uses);
         KnowledgeMatch match;
         match.index = i;
         match.score = score;
@@ -358,9 +447,9 @@ QString KnowledgeStore::hintFor(WorkerType type, QString task)
     // Подсказка попадает в первое сообщение каждого воркера, поэтому её
     // размер ограничен жёстко: лучшую запись даём полнее, остаток — по бюджету.
     QString text = QString::fromUtf8(
-        "Experience of previous workers in this project on similar tasks "
-        "(verified in practice; follow it unless it contradicts your assignment, "
-        "and do not re-investigate what is already known here):");
+        "Experience of previous workers (retrieval-first; prefer these lessons before "
+        "re-discovering commands/paths). Verified entries are marked; treat failed ones "
+        "as warnings only:");
     int n = 0;
     foreach (const KnowledgeEntry &entry, found)
     {
@@ -368,11 +457,23 @@ QString KnowledgeStore::hintFor(WorkerType type, QString task)
         if (budget < 120)
             break;
         ++n;
-        QString head = QString::fromUtf8("\n%1. [%2%3] task: %4\n   lessons: ")
+        QString head = QString::fromUtf8("\n%1. [%2%3] task: %4")
                            .arg(n)
                            .arg(entry.workerType)
-                           .arg(entry.ok ? QString() : QString::fromUtf8(", failed"))
+                           .arg(entry.ok ? QString::fromUtf8(", ok")
+                                         : QString::fromUtf8(", failed"))
                            .arg(clip(entry.task, 120).simplified());
+        if (!entry.tags.isEmpty())
+            head += QString::fromUtf8("\n   TAGS: ") + clip(entry.tags, 80);
+        if (!entry.command.isEmpty())
+            head += QString::fromUtf8("\n   CMD: ") + clip(entry.command, 120);
+        if (!entry.error.isEmpty())
+            head += QString::fromUtf8("\n   ERR: ") + clip(entry.error, 120);
+        if (!entry.fix.isEmpty())
+            head += QString::fromUtf8("\n   FIX: ") + clip(entry.fix, 120);
+        if (!entry.path.isEmpty())
+            head += QString::fromUtf8("\n   PATH: ") + clip(entry.path, 120);
+        head += QString::fromUtf8("\n   lessons: ");
         QString lessons = entry.lessons.trimmed();
         const int room = budget - head.size();
         if (room < 40)

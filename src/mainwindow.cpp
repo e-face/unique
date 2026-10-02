@@ -8,6 +8,7 @@
 #include "conversationwidget.h"
 #include "filechangestore.h"
 #include "journalwidget.h"
+#include "knowledgestore.h"
 #include "llmclient.h"
 #include "openaicompatibleclient.h"
 #include "projecttreedock.h"
@@ -284,6 +285,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _graph(0)
     , _journal(0)
     , _settingsPage(0)
+    , _projectSettingsPage(0)
     , _projectDock(0)
     , _recentMenu(0)
     , _openProjectAction(0)
@@ -296,6 +298,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _showJournalAction(0)
     , _prevConfirmAction(0)
     , _nextConfirmAction(0)
+    , _projectSettingsAction(0)
     , _inspectCheck(0)
     , _composer(0)
     , _composerSend(0)
@@ -353,6 +356,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     _closing = true;
     if (statusBar())
         statusBar()->showMessage(tr("Сохранение…"));
+    saveProjectUiState();
     saveOpenChats(true);
     sltSaveSettings();
     QMainWindow::closeEvent(event);
@@ -375,8 +379,7 @@ void MainWindow::showEvent(QShowEvent *event)
     }
     beginStatusProgress(tr("Загрузка проекта"), 0);
     loadOpenChats();
-    applySessionGeometries();
-    sltShowGraph();
+    restoreProjectUiState(false);
     sltWorkerTreeChanged();
     resumeWorkers();
     endStatusProgress(tr("Готово"));
@@ -413,8 +416,11 @@ void MainWindow::sltClear()
     QMessageBox box(this);
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle(tr("Очистить всё"));
-    box.setText(tr("Удалить все чаты и воркеров и начать заново?\n"
-                   "Папка проекта и ключи API не изменятся."));
+    box.setText(tr("Очистить проект до состояния нового?\n"
+                   "Будут удалены чаты, воркеры, журнал сеанса, база знаний, "
+                   "статистика токенов и настройки проекта в ___project___\n"
+                   "(пресеты и разрешения снова возьмутся из настроек программы).\n"
+                   "Исходники рабочей папки и ключи API не изменятся."));
     box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
     box.setDefaultButton(QMessageBox::No);
     box.setButtonText(QMessageBox::Yes, tr("Очистить"));
@@ -457,6 +463,8 @@ void MainWindow::sltResetWorkspace()
     if (!hasOpenProject())
     {
         discardSessionUi();
+        if (_journal)
+            _journal->clearMessages();
         sltShowGraph();
         _resetting = false;
         updateComposerState();
@@ -465,21 +473,67 @@ void MainWindow::sltResetWorkspace()
         return;
     }
 
-    if (_projectStoreEnabled)
-        ChatStore::save(QList<ChatSnapshot>(), QString());
+    const QString root = _workspace->root();
+    const QString store = AppSettings::projectStoreDir(root);
 
     discardSessionUi();
+    if (_journal)
+        _journal->clearMessages();
+
+    FileChangeStore::instance()->forget();
+    KnowledgeStore::instance()->invalidate();
+    if (_projectDock)
+        _projectDock->releaseFileModel();
+
+    // Как при создании проекта: убираем ___project___ и поднимаем заново.
+    if (!retireProjectStore(store))
+    {
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Warning);
+        box.setWindowTitle(tr("Очистить всё"));
+        box.setText(tr("Не удалось убрать папку ___project___.\n"
+                       "Закройте программы, которые держат файлы проекта, и повторите."));
+        box.setStandardButtons(QMessageBox::Ok);
+        AppSettings *s = AppSettings::instance();
+        box.setStyleSheet(QString::fromUtf8(
+                              "QMessageBox { background:%1; color:%2; }"
+                              "QMessageBox QLabel { color:%2; background:transparent; }"
+                              "QPushButton { background:%3; color:%2; border:1px solid %4;"
+                              "  border-radius:4px; padding:5px 12px; }")
+                              .arg(s->panelColor().name(),
+                                   s->textColor().name(),
+                                   s->inputColor().name(),
+                                   s->borderColor().name()));
+        box.exec();
+        // Частичный сброс UI уже сделан — поднимаем пустой сеанс без wipe.
+        AppSettings::instance()->reseedOpenProject();
+        AppSettings::instance()->resetUsage();
+    }
+    else
+    {
+        AppSettings::instance()->reseedOpenProject();
+        ensureProjectStore();
+        FileChangeStore::instance()->setRoot(root, false);
+    }
+
+    if (_projectSettingsPage)
+    {
+        _projectSettingsPage->setProjectPath(root);
+        _projectSettingsPage->reloadAll();
+    }
+    if (_projectDock)
+        _projectDock->setProjectRoot(root);
 
     sltNewChat();
-    sltShowGraph();
-    sltShowChat();
+    restoreProjectUiState(true);
     _resetting = false;
     if (rootSession() && rootSession()->agent())
         rootSession()->agent()->refreshContextUsage();
     saveOpenChats();
     sltBusyChanged(false);
     updateComposerState();
-    statusBar()->showMessage(tr("Начат новый пустой сеанс."));
+    updateProjectActions();
+    statusBar()->showMessage(tr("Проект очищен — как только что созданный."));
 }
 
 //----------------------------------------------
@@ -629,7 +683,11 @@ void MainWindow::switchToProject(QString workspaceRoot, bool loadExisting)
         _workspace->setRoot(clean);
     applyProjectDirectory(loadExisting, false);
     if (!loadExisting)
+    {
         ensureProjectStore();
+        // Новый проект: не переносим счётчики с ранее открытого.
+        AppSettings::instance()->resetUsage();
+    }
     rememberRecentProject(hasOpenProject() ? _workspace->root() : clean);
     sltSaveSettings();
     pumpUi(true);
@@ -649,8 +707,10 @@ void MainWindow::switchToProject(QString workspaceRoot, bool loadExisting)
     // чатов с диска, пересборка графа) — показываем это отдельной подписью,
     // иначе «Дерево файлов» висит на экране всё время восстановления.
     updateStatusProgress(0, 0, tr("Восстановление воркеров"));
-    sltShowGraph();
-    sltShowChat();
+    if (loadExisting)
+        restoreProjectUiState(false);
+    else
+        restoreProjectUiState(true);
     if (rootSession() && rootSession()->agent())
         rootSession()->agent()->refreshContextUsage();
     if (_chatsShown)
@@ -980,6 +1040,8 @@ void MainWindow::sltSendRequested(const QString &text)
 
     if (_settingsPage)
         _settingsPage->commitCurrentProfile();
+    if (_projectSettingsPage)
+        _projectSettingsPage->commitCurrentProfile();
     applyClientToAllSessions();
     sltSaveSettings();
     applyProjectDirectory();
@@ -1011,6 +1073,8 @@ void MainWindow::sltCompactRequested()
 
     if (_settingsPage)
         _settingsPage->commitCurrentProfile();
+    if (_projectSettingsPage)
+        _projectSettingsPage->commitCurrentProfile();
     applyClientToSession(session);
     session->agent()->compactContext();
 }
@@ -1165,7 +1229,7 @@ void MainWindow::sltNewChat()
     if (!session)
         return;
     _workers->createRoot(session);
-    if (_chatsShown)
+    if (_chatsShown && !_loadingProject && !_resetting)
     {
         ensureSessionVisible(session);
         saveOpenChats();
@@ -1180,7 +1244,8 @@ void MainWindow::sltTabCloseRequested(int index)
         return;
     QWidget *page = _tabs->widget(index);
     _tabs->removeTab(index);
-    if (page == _graph || page == _settingsPage || page == _journal)
+    if (page == _graph || page == _settingsPage || page == _projectSettingsPage
+        || page == _journal)
         return;
     if (page)
         page->hide();
@@ -1197,11 +1262,13 @@ void MainWindow::sltCurrentTabChanged(int index)
     {
         if (_graphDirty)
             rebuildGraphIfVisible();
+        scheduleSaveOpenChats();
         return;
     }
     ChatSession *session = sessionByTabWidget(page);
     if (session)
         restoreSessionContent(session);
+    scheduleSaveOpenChats();
 }
 
 //----------------------------------------------
@@ -1212,6 +1279,9 @@ void MainWindow::sltChatUserMessage(const QString &text)
     if (!session || !session->autoTitle())
         return;
     if (session->worker() && !session->worker()->isRoot())
+        return;
+    Agent *agent = qobject_cast<Agent *>(sender());
+    if (agent && agent->lastUserIngress() != AgentUserIngressHuman)
         return;
 
     QString title = Worker::shortLabelFromTask(text);
@@ -1280,6 +1350,8 @@ void MainWindow::createGraphWindow()
             this, SLOT(sltWorkerForceStopById(QString)));
     connect(_graph, SIGNAL(reportToParentRequested(QString)),
             this, SLOT(sltWorkerForceReportById(QString)));
+    connect(_graph, SIGNAL(workerProfileChangeRequested(QString,QString)),
+            this, SLOT(sltWorkerProfileChangeRequested(QString,QString)));
     if (_tabBar)
         _tabBar->setGraphPage(_graph);
 }
@@ -1309,33 +1381,46 @@ QString MainWindow::workerWindowTitle(Worker *worker) const
 {
     if (!worker)
         return tr("Чат");
-    QString base;
+    QString role;
     switch (worker->type())
     {
     case WorkerTypeExecutor:
-        base = tr("Исполнитель");
+        role = tr("Исполнитель");
         break;
     case WorkerTypeTester:
-        base = tr("Тестировщик");
+        role = tr("Тестировщик");
         break;
     case WorkerTypeTool:
         if (!worker->toolName().isEmpty())
             return tr("Инструмент: %1").arg(worker->toolName());
-        base = tr("Инструмент");
+        role = tr("Инструмент");
         break;
     case WorkerTypeManager:
     default:
-        if (worker->isRoot())
+        if (worker->isRoot() && worker->personName().isEmpty())
             return worker->session() ? worker->session()->title() : tr("Главный чат");
-        base = tr("Менеджер");
+        role = tr("Менеджер");
         break;
     }
-    QString task = worker->displayLabel();
+    if (worker->isGroupInterlocutor())
+        role += tr(" · собеседник");
+    else if (worker->isGroupChief())
+        role += tr(" · главный группы");
+
+    QString name = worker->personName();
+    QString task = worker->title();
     if (task.isEmpty())
-        return base;
-    if (task.size() > 48)
-        task = task.left(45) + QString::fromUtf8("…");
-    return base + QString::fromUtf8(" — ") + task;
+        task = Worker::shortLabelFromTask(worker->task());
+    if (task.size() > 40)
+        task = task.left(37) + QString::fromUtf8("…");
+
+    if (!name.isEmpty() && !task.isEmpty())
+        return name + QString::fromUtf8(" · ") + role + QString::fromUtf8(" — ") + task;
+    if (!name.isEmpty())
+        return name + QString::fromUtf8(" · ") + role;
+    if (!task.isEmpty())
+        return role + QString::fromUtf8(" — ") + task;
+    return role;
 }
 
 //----------------------------------------------
@@ -1376,6 +1461,9 @@ void MainWindow::applyWorkerUi(Worker *worker)
     }
     worker->session()->widget()->setExternalActivity(external);
     updateSessionTabTitle(worker->session());
+    // Подпись автора в чате = та же, что в журнале (уникальный цвет по имени).
+    worker->session()->widget()->setAuthorLabels(
+        tr("Пользователь"), workerWindowTitle(worker));
     if (_journal && worker->session()->agent())
         _journal->setAgentLabel(worker->session()->agent(), workerWindowTitle(worker));
     if (root)
@@ -1409,10 +1497,17 @@ void MainWindow::sltWorkerCreated(Worker *worker)
             this, SLOT(sltWorkerTreeChanged()));
     connect(worker, SIGNAL(permissionRequested(QString)),
             this, SLOT(sltPermissionRequested(QString)));
+    connect(worker, SIGNAL(subtreeBudgetRequested(QString)),
+            this, SLOT(sltSubtreeBudgetRequested(QString)));
     connect(worker, SIGNAL(continuationRequested(QString)),
             this, SLOT(sltContinuationRequested(QString)));
     connect(worker, SIGNAL(finished()),
             this, SLOT(sltWorkerFinished()));
+    if (worker->session() && worker->session()->agent())
+    {
+        connect(worker->session()->agent(), SIGNAL(toolBudgetExhausted(int)),
+                this, SLOT(sltToolBudgetExhausted(int)));
+    }
     if (_journal && worker->session() && worker->session()->agent())
     {
         _journal->attachAgent(worker->session()->agent(), workerWindowTitle(worker));
@@ -1585,6 +1680,41 @@ void MainWindow::sltWorkerForceReportById(const QString &id)
 
 //----------------------------------------------
 
+void MainWindow::sltWorkerProfileChangeRequested(const QString &workerId,
+                                                 const QString &profileId)
+{
+    Worker *worker = _workers ? _workers->workerById(workerId) : 0;
+    if (!worker)
+        return;
+    const LlmProfile profile = AppSettings::instance()->profileById(profileId);
+    if (profile.id.isEmpty())
+    {
+        if (statusBar())
+            statusBar()->showMessage(tr("Профиль модели не найден"));
+        return;
+    }
+    worker->setLlmProfileId(profile.id);
+    if (worker->session())
+    {
+        applyClientToSession(worker->session());
+        applyWorkerUi(worker);
+    }
+    if (_graph)
+        _graph->rebuild(_workers);
+    if (!_closing && !_resetting)
+        scheduleSaveOpenChats();
+    QString title = profile.name.trimmed();
+    if (title.isEmpty())
+        title = profile.model.trimmed();
+    if (title.isEmpty())
+        title = profile.id;
+    if (statusBar())
+        statusBar()->showMessage(
+            tr("Профиль модели: %1 → %2").arg(workerWindowTitle(worker), title));
+}
+
+//----------------------------------------------
+
 void MainWindow::sltToolRemoveRequested(const QString &id)
 {
     Worker *tool = _workers ? _workers->workerById(id) : 0;
@@ -1639,6 +1769,56 @@ void MainWindow::sltPermissionAnswered(bool approved, bool always, const QString
 
 //----------------------------------------------
 
+void MainWindow::sltSubtreeBudgetRequested(const QString &text)
+{
+    Worker *worker = qobject_cast<Worker *>(sender());
+    if (!worker || !worker->session())
+        return;
+    focusWorkerSession(worker);
+    if (worker->session()->widget())
+        worker->session()->widget()->showSubtreeBudgetRequest(text);
+    if (_journal)
+        _journal->addTransient(workerWindowTitle(worker), tr("Бюджет поддерева"),
+                               text, QString::fromUtf8("noticeMsg"));
+}
+
+//----------------------------------------------
+
+void MainWindow::sltSubtreeBudgetAnswered(bool granted)
+{
+    ConversationWidget *widget = qobject_cast<ConversationWidget *>(sender());
+    ChatSession *session = sessionByWidget(widget);
+    if (!session || !session->worker())
+        return;
+    session->worker()->resolveSubtreeBudget(granted);
+    updatePermissionHighlights();
+    QTimer::singleShot(0, this, SLOT(sltAdvanceConfirmation()));
+}
+
+//----------------------------------------------
+
+void MainWindow::sltToolBudgetExhausted(int chunk)
+{
+    Q_UNUSED(chunk);
+    Agent *agent = qobject_cast<Agent *>(sender());
+    if (!agent)
+        return;
+    foreach (ChatSession *session, _sessions)
+    {
+        if (!session || session->agent() != agent || !session->worker())
+            continue;
+        focusWorkerSession(session->worker());
+        if (_journal)
+            _journal->addTransient(workerWindowTitle(session->worker()),
+                                   tr("Бюджет функций"),
+                                   tr("Исчерпан лимит вызовов функций. Нужно решение."),
+                                   QString::fromUtf8("noticeMsg"));
+        break;
+    }
+}
+
+//----------------------------------------------
+
 void MainWindow::sltContinuationRequested(const QString &error)
 {
     Worker *worker = qobject_cast<Worker *>(sender());
@@ -1681,9 +1861,19 @@ void MainWindow::sltShowSettings()
 {
     if (!_settingsPage)
         return;
-    _settingsPage->loadControlFlags();
-    _settingsPage->refreshPermissionsList();
+    _settingsPage->reloadAll();
     ensureTabVisible(_settingsPage, tr("Настройки"));
+}
+
+//----------------------------------------------
+
+void MainWindow::sltShowProjectSettings()
+{
+    if (!_projectSettingsPage || !hasOpenProject())
+        return;
+    _projectSettingsPage->setProjectPath(_workspace->root());
+    _projectSettingsPage->reloadAll();
+    ensureTabVisible(_projectSettingsPage, tr("Настройки проекта"));
 }
 
 //----------------------------------------------
@@ -1726,7 +1916,7 @@ void MainWindow::sltShowStatistics()
             QStringList()
                 << QString::number(_sessions.size())
                 << QString::number(workers)
-                << QString::number(s->alwaysAllowedCommands().size()));
+                << QString::number(s->alwaysAllowedCommands(SettingsKindProject).size()));
         projectLay->addWidget(projectView);
     }
     else
@@ -1772,6 +1962,15 @@ void MainWindow::sltAppearanceApplied()
 
 void MainWindow::sltProfilesChanged()
 {
+    applyClientToAllSessions();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltDefaultProfilesChanged()
+{
+    // Профили общие для всех проектов: правка в настройках программы
+    // должна сразу обновлять клиенты открытых сессий.
     applyClientToAllSessions();
 }
 
@@ -1832,7 +2031,8 @@ void MainWindow::setupUi()
     QWidget *central = new QWidget(this);
     setCentralWidget(central);
 
-    _settingsPage = new SettingsPage(this);
+    _settingsPage = new SettingsPage(SettingsKindDefaults, this);
+    _projectSettingsPage = new SettingsPage(SettingsKindProject, this);
     _inspectCheck = _settingsPage->inspectCheck();
 
     if (_inspectCheck)
@@ -1841,6 +2041,8 @@ void MainWindow::setupUi()
     connect(_settingsPage, SIGNAL(appearanceApplied()),
             this, SLOT(sltAppearanceApplied()));
     connect(_settingsPage, SIGNAL(profilesChanged()),
+            this, SLOT(sltDefaultProfilesChanged()));
+    connect(_projectSettingsPage, SIGNAL(profilesChanged()),
             this, SLOT(sltProfilesChanged()));
     connect(AppSettings::instance(), SIGNAL(profilesChanged()),
             this, SLOT(sltProfilesChanged()));
@@ -1852,7 +2054,8 @@ void MainWindow::setupUi()
     toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
     _clearAction = toolbar->addAction(AppIcons::clearAll(), tr("Очистить всё"));
-    _clearAction->setToolTip(tr("Удалить все чаты и воркеров и начать с пустого сеанса."));
+    _clearAction->setToolTip(tr("Сбросить проект до состояния только что созданного: "
+                                "чаты, воркеры, журнал, знания и настройки ___project___."));
     connect(_clearAction, SIGNAL(triggered()), this, SLOT(sltClear()));
 
     _showChatAction = toolbar->addAction(AppIcons::mainChat(), tr("Главный чат"));
@@ -1994,8 +2197,9 @@ void MainWindow::setupMenus()
 
     QMenu *projectMenu = menuBar()->addMenu(tr("Проект"));
 
-    QAction *projectSettingsAction = projectMenu->addAction(tr("Настройки проекта…"));
-    connect(projectSettingsAction, SIGNAL(triggered()), this, SLOT(sltShowSettings()));
+    _projectSettingsAction = projectMenu->addAction(tr("Настройки проекта…"));
+    connect(_projectSettingsAction, SIGNAL(triggered()),
+            this, SLOT(sltShowProjectSettings()));
 
     QMenu *helpMenu = menuBar()->addMenu(tr("Справка"));
     QAction *statsAction = helpMenu->addAction(tr("Статистика"));
@@ -2055,6 +2259,8 @@ void MainWindow::attachSessionUi(ChatSession *session)
             this, SLOT(sltPermissionAnswered(bool,bool,QString)));
     connect(chat, SIGNAL(continuationAnswered(bool)),
             this, SLOT(sltContinuationAnswered(bool)));
+    connect(chat, SIGNAL(subtreeBudgetAnswered(bool)),
+            this, SLOT(sltSubtreeBudgetAnswered(bool)));
 
     session->setWidget(chat);
 }
@@ -2067,9 +2273,15 @@ void MainWindow::applyClientToSession(ChatSession *session)
         return;
 
     WorkerType type = WorkerTypeManager;
+    LlmProfile profile;
     if (session->worker())
+    {
         type = session->worker()->type();
-    const LlmProfile profile = AppSettings::instance()->profileForWorkerType(type);
+        if (!session->worker()->llmProfileId().isEmpty())
+            profile = AppSettings::instance()->profileById(session->worker()->llmProfileId());
+    }
+    if (profile.id.isEmpty())
+        profile = AppSettings::instance()->profileForWorkerType(type);
 
     OpenAiCompatibleClient *client = qobject_cast<OpenAiCompatibleClient *>(session->client());
     if (client)
@@ -2206,8 +2418,15 @@ void MainWindow::loadOpenChats()
         ++i;
         ChatSession *session = createSession(shot.id, shot.title);
         const WorkerType type = workerTypeFromString(shot.workerType);
-        Worker *worker = _workers->createWorker(type, shot.id, session, 0, shot.task);
+        Worker *worker = _workers->createWorker(type, shot.id, session, 0, shot.task,
+                                                shot.llmProfileId);
         worker->setTitle(shot.workerTitle);
+        if (!shot.personName.isEmpty())
+            worker->setPersonName(shot.personName);
+        if (!shot.groupId.isEmpty())
+            worker->setGroupId(shot.groupId);
+        if (!shot.groupRole.isEmpty())
+            worker->setGroupRole(groupRoleFromString(shot.groupRole));
         if (type == WorkerTypeTool)
         {
             worker->setToolName(shot.toolName);
@@ -2229,6 +2448,9 @@ void MainWindow::loadOpenChats()
     }
     foreach (const ChatSnapshot &shot, shots)
         _workers->linkParent(_workers->workerById(shot.id), shot.parentId);
+    // groupId/role выставляются после createWorker→installTools — перевешиваем
+    // инструменты и поднимаем сохранённый диалог группы.
+    _workers->reinstallToolsAndResumeGroups();
     endStatusProgress();
     if (!wasLoading)
         _loadingProject = false;
@@ -2253,6 +2475,7 @@ void MainWindow::saveOpenChats(bool wait)
 {
     if (!_projectStoreEnabled)
         return;
+    saveProjectUiState();
     if (wait)
         waitForChatSave();
     else if (_chatSaveThread && _chatSaveThread->isRunning())
@@ -2541,6 +2764,149 @@ void MainWindow::applySessionGeometries()
 
 //----------------------------------------------
 
+QString MainWindow::tabKeyForWidget(QWidget *widget) const
+{
+    if (!widget)
+        return QString();
+    if (widget == _journal)
+        return QString::fromUtf8("journal");
+    if (widget == _graph)
+        return QString::fromUtf8("graph");
+    if (widget == _settingsPage)
+        return QString::fromUtf8("settings");
+    if (widget == _projectSettingsPage)
+        return QString::fromUtf8("projectSettings");
+    ChatSession *session = sessionByTabWidget(widget);
+    if (session)
+        return QString::fromUtf8("chat:") + session->id();
+    return QString();
+}
+
+//----------------------------------------------
+
+void MainWindow::openTabByKey(const QString &key, bool makeCurrent)
+{
+    const QString k = key.trimmed();
+    if (k.isEmpty())
+        return;
+    if (k == QString::fromUtf8("journal"))
+    {
+        createJournalWindow();
+        if (makeCurrent)
+            ensureTabVisible(_journal, tr("Журнал"), AppIcons::journal());
+        else if (_tabs && _tabs->indexOf(_journal) < 0)
+            _tabs->addTab(_journal, AppIcons::journal(), tr("Журнал"));
+        return;
+    }
+    if (k == QString::fromUtf8("graph"))
+    {
+        if (makeCurrent)
+            ensureTabVisible(_graph, tr("Команда"), AppIcons::workerGraph());
+        else if (_tabs && _tabs->indexOf(_graph) < 0)
+            _tabs->addTab(_graph, AppIcons::workerGraph(), tr("Команда"));
+        return;
+    }
+    if (k == QString::fromUtf8("settings"))
+    {
+        if (makeCurrent)
+            ensureTabVisible(_settingsPage, tr("Настройки"));
+        else if (_tabs && _tabs->indexOf(_settingsPage) < 0)
+            _tabs->addTab(_settingsPage, tr("Настройки"));
+        return;
+    }
+    if (k == QString::fromUtf8("projectSettings"))
+    {
+        if (makeCurrent)
+            ensureTabVisible(_projectSettingsPage, tr("Настройки проекта"));
+        else if (_tabs && _tabs->indexOf(_projectSettingsPage) < 0)
+            _tabs->addTab(_projectSettingsPage, tr("Настройки проекта"));
+        return;
+    }
+    if (k.startsWith(QString::fromUtf8("chat:")))
+    {
+        const QString id = k.mid(5);
+        foreach (ChatSession *session, _sessions)
+        {
+            if (!session || session->id() != id || !session->widget() || !_tabs)
+                continue;
+            session->ensureContentLoaded();
+            const QString title = (session->worker() && !session->worker()->isRoot())
+                                  ? workerWindowTitle(session->worker())
+                                  : session->title();
+            int index = _tabs->indexOf(session->widget());
+            if (index < 0)
+                index = _tabs->addTab(session->widget(), iconForSession(session), title);
+            if (makeCurrent)
+                _tabs->setCurrentIndex(index);
+            return;
+        }
+    }
+}
+
+//----------------------------------------------
+
+void MainWindow::saveProjectUiState()
+{
+    if (!hasOpenProject() || !_projectStoreEnabled)
+        return;
+    ProjectUiState ui;
+    ui.geometry = saveGeometry();
+    ui.windowState = saveState();
+    if (_tabs)
+    {
+        for (int i = 0; i < _tabs->count(); ++i)
+        {
+            const QString key = tabKeyForWidget(_tabs->widget(i));
+            if (!key.isEmpty())
+                ui.openTabs.append(key);
+        }
+        ui.activePage = tabKeyForWidget(_tabs->currentWidget());
+    }
+    if (ui.activePage.isEmpty() && !_pendingActiveId.isEmpty())
+        ui.activePage = QString::fromUtf8("chat:") + _pendingActiveId;
+    ChatStore::saveUiState(ui);
+}
+
+//----------------------------------------------
+
+void MainWindow::restoreProjectUiState(bool preferJournalIfEmpty)
+{
+    ProjectUiState ui;
+    const bool haveUi = ChatStore::loadUiState(&ui);
+    if (!ui.geometry.isEmpty())
+        restoreGeometry(ui.geometry);
+    if (!ui.windowState.isEmpty())
+        restoreState(ui.windowState);
+
+    if (!haveUi || (ui.openTabs.isEmpty() && ui.activePage.isEmpty()))
+    {
+        if (preferJournalIfEmpty)
+        {
+            createJournalWindow();
+            ensureTabVisible(_journal, tr("Журнал"), AppIcons::journal());
+        }
+        else
+            applySessionGeometries();
+        return;
+    }
+
+    // Сначала открываем сохранённые вкладки без жёсткого фокуса.
+    foreach (const QString &key, ui.openTabs)
+        openTabByKey(key, false);
+
+    QString active = ui.activePage;
+    if (active.isEmpty() && !_pendingActiveId.isEmpty())
+        active = QString::fromUtf8("chat:") + _pendingActiveId;
+    if (active.isEmpty() && preferJournalIfEmpty)
+        active = QString::fromUtf8("journal");
+    if (!active.isEmpty())
+        openTabByKey(active, true);
+    else if (_tabs && _tabs->count() > 0)
+        _tabs->setCurrentIndex(0);
+}
+
+//----------------------------------------------
+
 void MainWindow::rememberChatNumber(QString title)
 {
     QRegExp re(QString::fromUtf8("^Чат\\s+(\\d+)$"));
@@ -2597,9 +2963,11 @@ void MainWindow::applyProjectDirectory(bool loadFileChanges, bool bindTree)
         _projectDock->setProjectRoot(root);
     updateWindowTitle();
     if (_settingsPage)
-    {
-        _settingsPage->setProjectPath(root);
         _settingsPage->refreshPermissionsList();
+    if (_projectSettingsPage)
+    {
+        _projectSettingsPage->setProjectPath(root);
+        _projectSettingsPage->reloadAll();
     }
     if (root.isEmpty())
     {
@@ -2736,6 +3104,8 @@ void MainWindow::updateProjectActions()
         _fileClearAction->setEnabled(hasProject && !_resetting);
     if (_showChatAction)
         _showChatAction->setEnabled(hasProject);
+    if (_projectSettingsAction)
+        _projectSettingsAction->setEnabled(hasProject);
 }
 
 //----------------------------------------------
@@ -2933,11 +3303,15 @@ void MainWindow::restoreSessionContent(ChatSession *session)
     Worker *worker = session->worker();
     if (!worker)
         return;
-    if (worker->state() == WorkerStateWaitingApproval)
+    if (worker->isWaitingSubtreeBudget())
+        widget->showSubtreeBudgetRequest(worker->subtreeBudgetPromptText());
+    else if (worker->state() == WorkerStateWaitingApproval)
         widget->showPermissionRequest(worker->permissionAction(),
                                       worker->permissionOfferAlways());
     else if (worker->state() == WorkerStateWaitingContinuation)
         widget->showContinuationRequest(worker->lastError());
+    else if (session->agent() && session->agent()->isWaitingToolBudget())
+        widget->showToolBudgetRequest(session->agent()->toolBudgetChunk());
     else
         widget->hidePermissionRequest();
 }

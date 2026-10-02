@@ -6,6 +6,7 @@
 #include "workermanager.h"
 //----------------------------------------------
 #include <QAction>
+#include <QActionGroup>
 #include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
@@ -24,6 +25,7 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPen>
+#include <QSet>
 #include <QStringList>
 #include <QWheelEvent>
 
@@ -38,24 +40,75 @@ static const qreal kPad        = 6;
 
 //----------------------------------------------
 
+static QFont nodeFont(const QWidget *widget)
+{
+    QFont f = widget ? widget->font() : QFont();
+    const int pt = f.pointSize();
+    if (pt > 0)
+        f.setPointSize(qMax(6, (pt * 2 + 1) / 3));
+    else
+    {
+        const int px = f.pixelSize();
+        if (px > 0)
+            f.setPixelSize(qMax(8, (px * 2 + 1) / 3));
+    }
+    return f;
+}
+
+//----------------------------------------------
+
+static QString profileLabel(Worker *worker)
+{
+    if (!worker)
+        return QString();
+    LlmProfile profile;
+    if (!worker->llmProfileId().isEmpty())
+        profile = AppSettings::instance()->profileById(worker->llmProfileId());
+    if (profile.id.isEmpty())
+        profile = AppSettings::instance()->profileForWorkerType(worker->type());
+    QString name = profile.name.trimmed();
+    if (name.isEmpty())
+        name = profile.model.trimmed();
+    if (name.isEmpty())
+        name = profile.id;
+    return name;
+}
+
+//----------------------------------------------
+
 static QString typeLabel(Worker *worker)
 {
     if (!worker)
         return QString::fromUtf8("Воркер");
+    QString role;
     if (worker->isRoot())
-        return QString::fromUtf8("Главный менеджер");
-    switch (worker->type())
+        role = QString::fromUtf8("Главный менеджер");
+    else
     {
-    case WorkerTypeExecutor:
-        return QString::fromUtf8("Исполнитель");
-    case WorkerTypeTester:
-        return QString::fromUtf8("Тестировщик");
-    case WorkerTypeTool:
-        return QString::fromUtf8("Инструмент");
-    case WorkerTypeManager:
-    default:
-        return QString::fromUtf8("Менеджер");
+        switch (worker->type())
+        {
+        case WorkerTypeExecutor:
+            role = QString::fromUtf8("Исполнитель");
+            break;
+        case WorkerTypeTester:
+            role = QString::fromUtf8("Тестировщик");
+            break;
+        case WorkerTypeTool:
+            role = QString::fromUtf8("Инструмент");
+            break;
+        case WorkerTypeManager:
+        default:
+            role = QString::fromUtf8("Менеджер");
+            break;
+        }
     }
+    if (worker->isGroupInterlocutor())
+        role += QString::fromUtf8(" · собеседник");
+    else if (worker->isGroupChief())
+        role += QString::fromUtf8(" · группа");
+    if (!worker->personName().isEmpty())
+        return worker->personName() + QString::fromUtf8(" · ") + role;
+    return role;
 }
 
 //----------------------------------------------
@@ -215,6 +268,37 @@ void WorkerGraphWidget::rebuild(WorkerManager *manager)
         const qreal toolsLeft = qMax(left, treeRight + kHGap * 2);
         layoutTools(toolsLeft, top);
     }
+
+    // Пунктирные рамки групп обсуждения.
+    QSet<QString> drawnGroups;
+    foreach (Worker *worker, manager->workers())
+    {
+        if (!worker || worker->groupId().isEmpty())
+            continue;
+        if (drawnGroups.contains(worker->groupId()))
+            continue;
+        drawnGroups.insert(worker->groupId());
+        QRectF box;
+        bool any = false;
+        foreach (Worker *member, manager->groupMembers(worker->groupId()))
+        {
+            if (!member || !member->property("graphX").isValid())
+                continue;
+            const QRectF r(member->property("graphX").toReal() - 10,
+                           member->property("graphY").toReal() - 10,
+                           kNodeWidth + 20, kNodeHeight + 20);
+            box = any ? box.united(r) : r;
+            any = true;
+        }
+        if (!any)
+            continue;
+        QPen pen(AppSettings::instance()->accentColor(), 1.6, Qt::DashLine);
+        QGraphicsRectItem *frame = _scene->addRect(box.adjusted(-4, -4, 4, 4),
+                                                   pen, Qt::NoBrush);
+        frame->setZValue(0);
+        frame->setFlag(QGraphicsItem::ItemIsSelectable, false);
+    }
+
     _scene->setSceneRect(_scene->itemsBoundingRect().adjusted(-20, -20, 20, 20));
     _rebuilding = false;
 }
@@ -268,10 +352,28 @@ qreal WorkerGraphWidget::layoutWorker(Worker *worker, qreal left, qreal top)
         return kNodeWidth;
     }
 
+    // Собеседников группы кладём рядом друг с другом, чтобы пунктирная
+    // рамка не захватывала обычных детей-исполнителей между ними.
+    QList<Worker *> peers;
+    QList<Worker *> others;
+    foreach (Worker *child, worker->children())
+    {
+        if (!child)
+            continue;
+        if (child->isGroupInterlocutor()
+            && !worker->groupId().isEmpty()
+            && child->groupId() == worker->groupId())
+            peers.append(child);
+        else
+            others.append(child);
+    }
+    QList<Worker *> ordered = peers;
+    ordered += others;
+
     qreal x = left;
     qreal childTop = top + kNodeHeight + kVGap;
     qreal total = 0;
-    foreach (Worker *child, worker->children())
+    foreach (Worker *child, ordered)
     {
         const qreal width = layoutWorker(child, x, childTop);
         x += width + kHGap;
@@ -282,7 +384,7 @@ qreal WorkerGraphWidget::layoutWorker(Worker *worker, qreal left, qreal top)
 
     const qreal nodeLeft = left + qMax(qreal(0), (total - kNodeWidth) / 2);
     addNode(worker, nodeLeft, top);
-    foreach (Worker *child, worker->children())
+    foreach (Worker *child, ordered)
         addEdge(worker, child);
     return qMax(total, kNodeWidth);
 }
@@ -310,11 +412,15 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
     rect->setCursor(Qt::PointingHandCursor);
     rect->setZValue(1);
 
-    const QFontMetrics fm(font());
+    const QFont labelFont = nodeFont(this);
+    const QFontMetrics fm(labelFont);
     const int textMaxW = int(kNodeWidth - kPad * 3 - kIconSize);
 
     QStringList lines;
     lines << typeLabel(worker);
+    const QString profileName = profileLabel(worker);
+    if (!profileName.isEmpty())
+        lines << elideLine(QString::fromUtf8("модель: ") + profileName, fm, textMaxW);
     QString tip;
     if (worker->isTool())
     {
@@ -342,9 +448,18 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
             lines << elideLine(task, fm, textMaxW);
         lines << stateLabel(worker->state());
         tip = worker->displayLabel();
+        if (!profileName.isEmpty())
+        {
+            if (!tip.isEmpty())
+                tip += QString::fromUtf8("\n");
+            tip += QString::fromUtf8("Профиль: ") + profileName;
+        }
+        if (!tip.isEmpty())
+            tip += QString::fromUtf8("\n");
+        tip += tr("Правый клик — сменить профиль модели");
     }
     QList<Worker *> waiting = worker->unfinishedChildren();
-    if (!waiting.isEmpty() && lines.size() < 4)
+    if (!waiting.isEmpty() && lines.size() < 5)
     {
         QStringList names;
         foreach (Worker *child, waiting)
@@ -352,7 +467,7 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
         lines << elideLine(QString::fromUtf8("ждёт: ") + names.join(QString::fromUtf8(", ")),
                            fm, textMaxW);
     }
-    while (lines.size() > 4)
+    while (lines.size() > 5)
         lines.removeLast();
 
     if (!tip.trimmed().isEmpty())
@@ -370,7 +485,7 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
     }
 
     QGraphicsTextItem *label = _scene->addText(lines.join(QChar('\n')));
-    label->setFont(font());
+    label->setFont(labelFont);
     label->setTextWidth(textMaxW);
     label->setPos(x + kPad * 2 + kIconSize, y + kPad - 2);
     label->setDefaultTextColor(AppSettings::instance()->isLightTheme()
@@ -455,6 +570,40 @@ void WorkerGraphWidget::contextMenuEvent(QContextMenuEvent *event)
     QMenu menu(this);
     QAction *openAction = menu.addAction(tr("Открыть чат"));
     menu.addSeparator();
+
+    QMenu *profileMenu = menu.addMenu(tr("Профиль модели"));
+    QString currentProfileId = worker->llmProfileId().trimmed();
+    if (currentProfileId.isEmpty())
+        currentProfileId = AppSettings::instance()->profileForWorkerType(worker->type()).id;
+    QActionGroup *profileGroup = new QActionGroup(profileMenu);
+    profileGroup->setExclusive(true);
+    const QList<LlmProfile> profiles = AppSettings::instance()->profiles();
+    if (profiles.isEmpty())
+    {
+        QAction *empty = profileMenu->addAction(tr("(нет профилей в настройках)"));
+        empty->setEnabled(false);
+    }
+    else
+    {
+        foreach (const LlmProfile &profile, profiles)
+        {
+            QString title = profile.name.trimmed();
+            if (title.isEmpty())
+                title = profile.model.trimmed();
+            if (title.isEmpty())
+                title = profile.id;
+            if (!profile.model.trimmed().isEmpty()
+                && profile.name.trimmed() != profile.model.trimmed())
+                title += QString::fromUtf8(" · ") + profile.model.trimmed();
+            QAction *act = profileMenu->addAction(title);
+            act->setCheckable(true);
+            act->setData(profile.id);
+            act->setChecked(profile.id == currentProfileId);
+            profileGroup->addAction(act);
+        }
+    }
+
+    menu.addSeparator();
     QAction *stopAction = menu.addAction(tr("Прервать воркер"));
     QAction *reportAction = 0;
     if (!worker->isRoot())
@@ -476,6 +625,12 @@ void WorkerGraphWidget::contextMenuEvent(QContextMenuEvent *event)
         emit reportToParentRequested(id);
     else if (removeAction && chosen == removeAction)
         emit toolRemoveRequested(id);
+    else if (profileGroup->actions().contains(chosen))
+    {
+        const QString profileId = chosen->data().toString().trimmed();
+        if (!profileId.isEmpty() && profileId != currentProfileId)
+            emit workerProfileChangeRequested(id, profileId);
+    }
 }
 
 //----------------------------------------------

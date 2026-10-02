@@ -37,6 +37,7 @@ HEADERS += \
     src/llmtypes.h \
     src/mainwindow.h \
     src/markdownformatter.h \
+    src/modelprofilepresets.h \
     src/openaicompatibleclient.h \
     src/projectbrief.h \
     src/projectfiletools.h \
@@ -70,6 +71,7 @@ SOURCES += \
     src/main.cpp \
     src/mainwindow.cpp \
     src/markdownformatter.cpp \
+    src/modelprofilepresets.cpp \
     src/openaicompatibleclient.cpp \
     src/projectbrief.cpp \
     src/projectfiletools.cpp \

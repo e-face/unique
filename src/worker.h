@@ -83,7 +83,24 @@ public:
     QString title() const;
     void setTitle(QString title);
     /**
-     * @brief Подпись для вкладки и схемы: title, иначе суть из task.
+     * @brief Уникальное «человеческое» имя воркера (Алексей, Мария…).
+     */
+    QString personName() const;
+    void setPersonName(QString name);
+    QString groupId() const;
+    void setGroupId(QString id);
+    GroupRole groupRole() const;
+    void setGroupRole(GroupRole role);
+    /**
+     * @brief Профиль модели из пресета; пусто — профиль роли по умолчанию.
+     */
+    QString llmProfileId() const;
+    void setLlmProfileId(QString id);
+    bool isGroupChief() const;
+    bool isGroupInterlocutor() const;
+    bool canSpawnChildren() const;
+    /**
+     * @brief Подпись для вкладки и схемы: имя · роль — задача.
      */
     QString displayLabel() const;
     /**
@@ -110,6 +127,34 @@ public:
     void beginToolRun(QString message);
     bool waitingForTool() const;
     void setWaitingForTool(bool waiting);
+    /**
+     * @brief После текущего batch инструментов остановиться (holdForExternal),
+     *        пока group-диалог не пришлёт follow-up на ваш ход/голос.
+     */
+    void parkForGroupDialogue();
+    void setVerification(bool present, bool passed, QString command, QString output,
+                         QString artifact, QString digest);
+    bool hasVerification() const;
+    bool verificationPassed() const;
+    QString verificationCommand() const;
+    QString verificationOutput() const;
+    QString verificationArtifact() const;
+    QString verificationDigest() const;
+    void noteToolBatch();
+    int toolBatchCount() const;
+    int subtreeToolBatches() const;
+    qint64 startedAtMs() const;
+    qint64 subtreeElapsedMs() const;
+    int subtreeBatchLimit() const;
+    qint64 subtreeMsLimit() const;
+    /**
+     * @brief Спросить пользователя: сбросить бюджет поддерева или запретить спавн.
+     *        Блокирует (QEventLoop), как askPermission.
+     */
+    bool requestSubtreeBudgetGrant(int grantBatches, qint64 grantMs);
+    void resolveSubtreeBudget(bool granted);
+    bool isWaitingSubtreeBudget() const;
+    QString subtreeBudgetPromptText() const;
 
     void applyPersistedState(WorkerState state, QString result,
                              QString lastError, QString lastAssistant,
@@ -156,6 +201,8 @@ signals:
     void permissionResolved();
     void continuationRequested(const QString &error);
     void continuationResolved();
+    void subtreeBudgetRequested(const QString &text);
+    void subtreeBudgetResolved();
 
 private slots:
     void sltBusyChanged(bool busy);
@@ -188,6 +235,10 @@ private:
     ChatSession  *_session;
     QString       _task;
     QString       _title;
+    QString       _personName;
+    QString       _groupId;
+    GroupRole     _groupRole;
+    QString       _llmProfileId;
     QString       _result;
     QString       _lastAssistant;
     QString       _lastError;
@@ -212,7 +263,23 @@ private:
     QString       _toolPurpose;
     bool          _toolStarted;
     int           _waitingForTool;
+    bool          _parkForGroupDialogue;
     QStringList   _changedFiles;
+    bool          _hasVerification;
+    bool          _verificationPassed;
+    QString       _verificationCommand;
+    QString       _verificationOutput;
+    QString       _verificationArtifact;
+    QString       _verificationDigest;
+    int           _toolBatchCount;
+    int           _subtreeBatchAllowance;
+    qint64        _startedAtMs;
+    qint64        _subtreeMsAllowance;
+    bool          _subtreeBudgetGranted;
+    bool          _subtreeBudgetLoopActive;
+    int           _pendingSubtreeGrantBatches;
+    qint64        _pendingSubtreeGrantMs;
+    QString       _subtreeBudgetPromptText;
 };
 
 #endif // WORKER_H

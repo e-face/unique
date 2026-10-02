@@ -36,6 +36,124 @@ enum WorkerState
 
 //----------------------------------------------
 
+/**
+ * @brief Роль воркера в группе обсуждения.
+ */
+enum GroupRole
+{
+    GroupRoleNone = 0,
+    /** Принимает задачи от родителя/пользователя, может ставить задачи детям. */
+    GroupRoleChief,
+    /** Собеседник: обсуждает и действует, но не ставит задачи детям. */
+    GroupRoleInterlocutor
+};
+
+//----------------------------------------------
+
+inline QString groupRoleToString(GroupRole role)
+{
+    switch (role)
+    {
+    case GroupRoleChief:
+        return QString::fromUtf8("chief");
+    case GroupRoleInterlocutor:
+        return QString::fromUtf8("interlocutor");
+    case GroupRoleNone:
+    default:
+        return QString::fromUtf8("none");
+    }
+}
+
+//----------------------------------------------
+
+inline GroupRole groupRoleFromString(QString value)
+{
+    if (value == QString::fromUtf8("chief"))
+        return GroupRoleChief;
+    if (value == QString::fromUtf8("interlocutor"))
+        return GroupRoleInterlocutor;
+    return GroupRoleNone;
+}
+
+//----------------------------------------------
+
+/**
+ * @brief Класс задач, которые решает пресет / профиль модели.
+ */
+enum WorkerTaskKind
+{
+    WorkerTaskKindLlm = 0,
+    WorkerTaskKindImageGeneration,
+    WorkerTaskKindSpeech,
+    WorkerTaskKindEmbedding,
+    WorkerTaskKindOther
+};
+
+//----------------------------------------------
+
+inline QString workerTaskKindToString(WorkerTaskKind kind)
+{
+    switch (kind)
+    {
+    case WorkerTaskKindImageGeneration:
+        return QString::fromUtf8("image_generation");
+    case WorkerTaskKindSpeech:
+        return QString::fromUtf8("speech");
+    case WorkerTaskKindEmbedding:
+        return QString::fromUtf8("embedding");
+    case WorkerTaskKindOther:
+        return QString::fromUtf8("other");
+    case WorkerTaskKindLlm:
+    default:
+        return QString::fromUtf8("llm");
+    }
+}
+
+//----------------------------------------------
+
+inline WorkerTaskKind workerTaskKindFromString(QString value)
+{
+    const QString v = value.trimmed().toLower();
+    if (v == QString::fromUtf8("image_generation")
+        || v == QString::fromUtf8("image")
+        || v == QString::fromUtf8("img"))
+        return WorkerTaskKindImageGeneration;
+    if (v == QString::fromUtf8("speech")
+        || v == QString::fromUtf8("audio")
+        || v == QString::fromUtf8("tts")
+        || v == QString::fromUtf8("stt"))
+        return WorkerTaskKindSpeech;
+    if (v == QString::fromUtf8("embedding")
+        || v == QString::fromUtf8("embeddings"))
+        return WorkerTaskKindEmbedding;
+    if (v == QString::fromUtf8("other"))
+        return WorkerTaskKindOther;
+    return WorkerTaskKindLlm;
+}
+
+//----------------------------------------------
+
+/**
+ * @brief Заранее заданный шаблон воркера: роль + профиль + класс задач.
+ *
+ * Уникальна комбинация type + profileId + taskKind.
+ */
+struct WorkerPreset
+{
+    WorkerPreset()
+        : type(WorkerTypeManager)
+        , taskKind(WorkerTaskKindLlm)
+    {
+    }
+
+    QString         id;
+    WorkerType      type;
+    QString         profileId;
+    WorkerTaskKind  taskKind;
+};
+
+//----------------------------------------------
+
 inline QString workerTypeToString(WorkerType type)
 {
     switch (type)

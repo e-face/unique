@@ -62,8 +62,12 @@ public:
 
     /** Файлы больше этого read_file не читает вовсе (только через фильтр). */
     static const int maxReadBytes;
-    /** Сколько символов read_file возвращает за один вызов. */
+    /** Сколько символов read_file возвращает за один файл. */
     static const int maxReadChunkChars;
+    /** Суммарный потолок символов на один вызов read_file (все paths). */
+    static const int maxReadCallChars;
+    /** Потолок символов stdout в ответе run_command (полный лог — в tmp). */
+    static const int maxCommandReplyChars;
     static const int maxWriteBytes;
     static const int maxListEntries;
 

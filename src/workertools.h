@@ -230,4 +230,164 @@ private:
     Worker *_owner;
 };
 
+//----------------------------------------------
+
+/**
+ * @brief Добавить собеседника в группу по preset_id из настроек.
+ */
+class AddGroupMemberTool : public AgentTool
+{
+public:
+    AddGroupMemberTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    WorkerManager *_manager;
+    Worker        *_owner;
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Сообщение прямому родителю/ребёнку (не для группы).
+ */
+class TalkToTool : public AgentTool
+{
+public:
+    TalkToTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    WorkerManager *_manager;
+    Worker        *_owner;
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Ждать своей очереди оратора / голосования / конца диалога группы.
+ */
+class GroupAwaitTool : public AgentTool
+{
+public:
+    GroupAwaitTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    WorkerManager *_manager;
+    Worker        *_owner;
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Реплика текущего оратора — рассылается всем членам группы.
+ */
+class GroupSpeakTool : public AgentTool
+{
+public:
+    GroupSpeakTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    WorkerManager *_manager;
+    Worker        *_owner;
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Передать роль оратора следующему участнику.
+ */
+class GroupEndTurnTool : public AgentTool
+{
+public:
+    GroupEndTurnTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    WorkerManager *_manager;
+    Worker        *_owner;
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Предложить итоговый результат группы на единогласное голосование.
+ */
+class GroupProposeTool : public AgentTool
+{
+public:
+    GroupProposeTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    WorkerManager *_manager;
+    Worker        *_owner;
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Голос за/против текущего предложения группы.
+ */
+class GroupVoteTool : public AgentTool
+{
+public:
+    GroupVoteTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    WorkerManager *_manager;
+    Worker        *_owner;
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Список участников своей группы.
+ */
+class ListGroupMembersTool : public AgentTool
+{
+public:
+    ListGroupMembersTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    WorkerManager *_manager;
+    Worker        *_owner;
+};
+
 #endif // WORKERTOOLS_H

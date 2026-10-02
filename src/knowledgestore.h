@@ -25,6 +25,11 @@ struct KnowledgeEntry
     QString workerType;
     QString task;
     QString lessons;
+    QString command;
+    QString error;
+    QString fix;
+    QString path;
+    QString tags;
     qint64  created;
     int     uses;
     bool    ok;
@@ -60,6 +65,8 @@ public:
     QString hintFor(WorkerType type, QString task);
 
     int count();
+    /** Сбросить кэш (после очистки/пересоздания ___project___). */
+    void invalidate();
 
 private:
     KnowledgeStore();

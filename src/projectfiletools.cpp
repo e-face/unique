@@ -4,6 +4,7 @@
 #include "filechangestore.h"
 #include "projectworkspace.h"
 #include "worker.h"
+#include "workermanager.h"
 //----------------------------------------------
 #include <QDir>
 #include <QFile>
@@ -12,6 +13,22 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QPair>
+
+//----------------------------------------------
+
+static bool claimPathForOwner(Worker *owner, ProjectWorkspace *workspace, QString absolute,
+                              QString *error)
+{
+    if (!owner || !workspace)
+        return true;
+    WorkerManager *manager = qobject_cast<WorkerManager *>(owner->parent());
+    if (!manager)
+        return true;
+    QString rel = workspace->toRelative(absolute);
+    if (rel.isEmpty())
+        rel = absolute;
+    return manager->claimFilePath(owner, rel, error);
+}
 
 //----------------------------------------------
 
@@ -265,6 +282,12 @@ QString CreateFileAgentTool::createOne(QString relPath, QString content, bool *o
             *ok = false;
         return error;
     }
+    if (!claimPathForOwner(_owner, _workspace, absolute, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
     if (QFileInfo(absolute).exists())
     {
         if (ok)
@@ -408,6 +431,12 @@ QString WriteFileAgentTool::writeOne(QString relPath, QString content, bool *ok)
             *ok = false;
         return error;
     }
+    if (!claimPathForOwner(_owner, _workspace, absolute, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
     if (!ensureParentDir(absolute, &error))
     {
         if (ok)
@@ -503,9 +532,9 @@ QString ReadFileAgentTool::name() const
 QString ReadFileAgentTool::description() const
 {
     return QString::fromUtf8(
-        "Read project text file(s) (~32 KB/call each). Prefer paths=[...] to load several "
-        "independent files in one call. Single path= still works. Use offset (1-based line) "
-        "and limit to continue a long file.");
+        "Read project text file(s) (~8 KB/file, ~12 KB/call). Prefer paths=[...] for several "
+        "independent files. Single path= still works. Use offset (1-based line) and limit to "
+        "continue a long file — truncated replies include a ready continuation call.");
 }
 
 //----------------------------------------------
@@ -586,8 +615,8 @@ QString ReadFileAgentTool::readOne(QString relPath, int offset, int limit, bool 
     const QString text = ProjectWorkspace::decodeText(file.readAll());
     file.close();
 
-    // Отдаём файл кусками: одна read_file на 128 КБ съедала четверть окна
-    // контекста и жила в истории до сжатия. Модель дочитывает по offset.
+    // Куски с готовой командой продолжения: модель не должна перечитывать файл
+    // целиком — один следующий read_file с offset восстанавливает хвост.
     const int startOffset = qMax(1, offset);
     const int lineLimit = qMax(0, limit);
     const QStringList lines = text.split(QChar('\n'));
@@ -602,6 +631,7 @@ QString ReadFileAgentTool::readOne(QString relPath, int offset, int limit, bool 
             .arg(total);
     }
 
+    const int chunkBudget = ProjectWorkspace::maxReadChunkChars;
     QString body;
     int end = start;
     while (end < total)
@@ -609,13 +639,12 @@ QString ReadFileAgentTool::readOne(QString relPath, int offset, int limit, bool 
         if (lineLimit > 0 && end - start >= lineLimit)
             break;
         const QString &line = lines.at(end);
-        if (end > start && body.size() + line.size() + 1 > ProjectWorkspace::maxReadChunkChars)
+        if (end > start && body.size() + line.size() + 1 > chunkBudget)
             break;
         if (end > start)
             body += QChar('\n');
-        if (line.size() > ProjectWorkspace::maxReadChunkChars)
-            body += line.left(ProjectWorkspace::maxReadChunkChars)
-                    + QString::fromUtf8("...[line clipped]");
+        if (line.size() > chunkBudget)
+            body += line.left(chunkBudget) + QString::fromUtf8("...[line clipped]");
         else
             body += line;
         ++end;
@@ -623,15 +652,35 @@ QString ReadFileAgentTool::readOne(QString relPath, int offset, int limit, bool 
 
     if (ok)
         *ok = true;
-    if (start == 0 && end >= total)
-        return body;
 
-    QString result = QString::fromUtf8("[lines %1-%2 of %3]\n").arg(start + 1).arg(end).arg(total);
+    const QString digest = QString::number(qHash(body), 16);
+    if (start == 0 && end >= total)
+    {
+        QString full = QString::fromUtf8("[path=%1 lines=1-%2 of %2 digest=%3]\n")
+                           .arg(relPath)
+                           .arg(total)
+                           .arg(digest);
+        full += body;
+        return full;
+    }
+
+    QString result = QString::fromUtf8("[path=%1 lines=%2-%3 of %4 digest=%5]\n")
+                         .arg(relPath)
+                         .arg(start + 1)
+                         .arg(end)
+                         .arg(total)
+                         .arg(digest);
     result += body;
     if (end < total)
-        result += QString::fromUtf8("\n... [%1 more lines; continue with offset=%2]")
+    {
+        result += QString::fromUtf8(
+                      "\n... [%1 more lines]\n"
+                      "Continue with ONE call (do not re-read from line 1):\n"
+                      "read_file path=\"%2\" offset=%3")
                       .arg(total - end)
+                      .arg(relPath)
                       .arg(end + 1);
+    }
     return result;
 }
 
@@ -685,14 +734,40 @@ QString ReadFileAgentTool::invoke(QString argumentsJson, bool *ok)
 
     QString report;
     int okCount = 0;
+    const int callBudget = ProjectWorkspace::maxReadCallChars;
     for (int i = 0; i < relPaths.size(); ++i)
     {
+        if (report.size() >= callBudget)
+        {
+            report += QString::fromUtf8(
+                          "\n[call budget exhausted; remaining paths not read]\n");
+            for (int j = i; j < relPaths.size(); ++j)
+            {
+                report += QString::fromUtf8(
+                              "Continue with ONE call: read_file path=\"%1\" offset=1\n")
+                              .arg(relPaths.at(j));
+            }
+            break;
+        }
         bool oneOk = false;
         const QString body = readOne(relPaths.at(i), offset, limit, &oneOk);
         if (oneOk)
             ++okCount;
-        report += QString::fromUtf8("===== %1 =====\n%2\n")
-                      .arg(relPaths.at(i), body);
+        QString chunk = QString::fromUtf8("===== %1 =====\n%2\n")
+                            .arg(relPaths.at(i), body);
+        if (report.size() + chunk.size() > callBudget && !report.isEmpty())
+        {
+            report += QString::fromUtf8(
+                          "\n[call budget exhausted; remaining paths not read]\n");
+            for (int j = i; j < relPaths.size(); ++j)
+            {
+                report += QString::fromUtf8(
+                              "Continue with ONE call: read_file path=\"%1\" offset=1\n")
+                              .arg(relPaths.at(j));
+            }
+            break;
+        }
+        report += chunk;
         if (i + 1 < relPaths.size())
             report += QChar('\n');
     }
@@ -757,6 +832,12 @@ QString DeleteFileAgentTool::invoke(QString argumentsJson, bool *ok)
     if (!confirmIfOutside(_owner, _workspace, absolute,
                           QString::fromUtf8("Удалить файл вне проекта:\n%1").arg(absolute),
                           &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (!claimPathForOwner(_owner, _workspace, absolute, &error))
     {
         if (ok)
             *ok = false;
@@ -870,6 +951,13 @@ QString RenameFileAgentTool::invoke(QString argumentsJson, bool *ok)
         || !confirmIfOutside(_owner, _workspace, toAbs,
                              QString::fromUtf8("Создать файл вне проекта:\n%1").arg(toAbs),
                              &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (!claimPathForOwner(_owner, _workspace, fromAbs, &error)
+        || !claimPathForOwner(_owner, _workspace, toAbs, &error))
     {
         if (ok)
             *ok = false;

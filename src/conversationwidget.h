@@ -3,6 +3,7 @@
 
 #include "llmtypes.h"
 //----------------------------------------------
+#include <QColor>
 #include <QElapsedTimer>
 #include <QFrame>
 #include <QList>
@@ -31,8 +32,16 @@ class ChatMessageFrame : public QFrame
 public:
     ChatMessageFrame(QString title, QString html, QString preview,
                      QString objectName, bool alignRight, bool collapsed,
-                     QWidget *parent = 0);
+                     QWidget *parent = 0, QString authorKey = QString());
     void applyTheme();
+    /**
+     * @brief Добавить абзац (экранированный текст) в уже существующее сообщение.
+     */
+    void appendEscapedParagraph(QString text);
+    /**
+     * @brief Добавить готовый HTML-абзац в уже существующее сообщение.
+     */
+    void appendHtmlParagraph(QString html, QString previewSource);
 
 protected:
     virtual void resizeEvent(QResizeEvent *event);
@@ -46,8 +55,10 @@ private:
     void fitDocumentHeight();
     QString collapsedHtml() const;
     QString expandedHtml() const;
+    QString titleBadgeHtml() const;
 
     QString      _title;
+    QString      _authorKey;
     QString      _bodyHtml;
     QString      _preview;
     QTextBrowser *_view;
@@ -62,6 +73,18 @@ private:
 //----------------------------------------------
 
 /**
+ * @brief Уникальный цвет имени автора (стабильный по имени, тёмные тона).
+ */
+namespace AuthorBadge
+{
+QString normalizeKey(QString author);
+QColor colorFor(QString authorKey);
+QString titleHtml(QString title, QString authorKey = QString());
+}
+
+//----------------------------------------------
+
+/**
  * @brief Элемент визуальной ленты чата (не обязательно совпадает с историей модели).
  */
 struct ChatDisplayItem
@@ -69,6 +92,7 @@ struct ChatDisplayItem
     QString kind;
     QString title;
     QString text;
+    QString authorKey;
 };
 
 //----------------------------------------------
@@ -92,9 +116,15 @@ public:
     void restoreFromHistory(const QList<LlmMessage> &history);
     void setUserInputEnabled(bool enabled);
     bool userInputEnabled() const;
+    /**
+     * @brief Подписи авторов в ленте (как в журнале): пользователь и этот воркер.
+     */
+    void setAuthorLabels(QString userAuthor, QString assistantAuthor);
     void showPermissionRequest(QString action, bool offerAlways = false);
     void hidePermissionRequest();
     void showContinuationRequest(QString error);
+    void showToolBudgetRequest(int chunk);
+    void showSubtreeBudgetRequest(QString text);
     void setStopEnabled(bool enabled);
     void setReportToParentVisible(bool visible);
     void applyTheme();
@@ -114,6 +144,7 @@ signals:
     void compactRequested();
     void permissionAnswered(bool approved, bool always, const QString &comment);
     void continuationAnswered(bool retry);
+    void subtreeBudgetAnswered(bool granted);
 
 public slots:
     void sltBusyChanged(bool busy);
@@ -130,28 +161,41 @@ private slots:
     void sltToolCallStarted(const QString &name, const QString &arguments);
     void sltToolCallFinished(const QString &name, const QString &result, bool ok);
     void sltNotice(const QString &text);
+    void sltForwardedContext(const QString &text);
     void sltFailed(const QString &error);
     void sltScrollToBottom();
     void sltScrollRangeChanged(int min, int max);
+    void sltScrollValueChanged(int value);
     void sltPermissionApprove();
     void sltPermissionAlways();
     void sltPermissionReject();
+    void sltToolBudgetExhausted(int chunk);
     void sltActivityTick();
 
 protected:
     QWidget *addBubble(QString title, QString html, QString preview, QString objectName,
-                       bool alignRight, bool collapsed);
+                       bool alignRight, bool collapsed, QString authorKey = QString());
     QWidget *addPlainBubble(QString title, QString text, QString objectName, bool alignRight,
-                            bool forceCollapsed = false, bool forceExpanded = false);
+                            bool forceCollapsed = false, bool forceExpanded = false,
+                            QString authorKey = QString());
     void removeBubble(QWidget *bubble);
+    void scheduleScrollToBottom();
+    bool isNearBottom() const;
+    bool isRestoring() const { return _restoring; }
+    void setPinBottom(bool pin) { _pinBottom = pin; }
+    bool pinBottom() const { return _pinBottom; }
+    QWidget *messagesHost() const { return _messagesHost; }
+    QVBoxLayout *messagesLayout() const { return _messagesLayout; }
 
 private:
-    void recordDisplay(QString kind, QString title, QString text);
+    void recordDisplay(QString kind, QString title, QString text,
+                       QString authorKey = QString());
     void replayDisplayItem(const ChatDisplayItem &item);
     void trimOldBubbles();
-    void scheduleScrollToBottom();
     void setActivity(QString text);
     void refreshActivity();
+    QString userAuthorLabel() const;
+    QString assistantAuthorLabel() const;
 
     Agent          *_agent;
     QLabel         *_contextLabel;
@@ -161,6 +205,8 @@ private:
     QString         _activityText;
     QString         _externalActivity;
     QString         _shownActivity;
+    QString         _userAuthor;
+    QString         _assistantAuthor;
     QProgressBar   *_contextBar;
     QPushButton    *_compactButton;
     QScrollArea    *_scroll;

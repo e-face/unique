@@ -42,6 +42,10 @@ struct ChatSnapshot
     QString toolPurpose;
     QString task;
     QString workerTitle;
+    QString personName;
+    QString groupId;
+    QString groupRole;
+    QString llmProfileId;
     QString result;
     QString workerState;
     QString lastError;
@@ -129,6 +133,19 @@ private:
 //----------------------------------------------
 
 /**
+ * @brief Состояние вкладок и окна для проекта.
+ */
+struct ProjectUiState
+{
+    QString     activePage;
+    QStringList openTabs;
+    QByteArray  geometry;
+    QByteArray  windowState;
+};
+
+//----------------------------------------------
+
+/**
  * @brief Запись и чтение списка открытых чатов.
  */
 class ChatStore
@@ -142,10 +159,13 @@ public:
     static bool loadChat(QString id, ChatSnapshot *shot);
     static bool saveChat(const ChatSnapshot &shot);
     static void removeChat(QString id);
+    static bool saveUiState(const ProjectUiState &ui);
+    static bool loadUiState(ProjectUiState *ui);
 
 private:
     static QString safeId(QString id);
     static QString indexPath();
+    static QString uiStatePath();
     static QString chatsDir();
     static QString chatFilePath(QString id);
     static QJsonObject snapshotMetaToJson(const ChatSnapshot &shot);
