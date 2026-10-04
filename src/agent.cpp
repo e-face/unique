@@ -683,12 +683,42 @@ void Agent::sendUserMessage(QString text, int ingress)
 
 //----------------------------------------------
 
-void Agent::beginUserTurn(QString text, int ingress)
+void Agent::sendUserMultimodal(QString text, QJsonArray contentParts, int ingress)
+{
+    QString trimmed = text.trimmed();
+    if (trimmed.isEmpty() && contentParts.isEmpty())
+        return;
+    if (trimmed.isEmpty())
+        trimmed = QString::fromUtf8("(multimodal attachment)");
+    if (_busy)
+    {
+        emit failed(tr("Агент занят предыдущим запросом."));
+        return;
+    }
+    if (!_client)
+    {
+        emit failed(tr("Клиент языковой модели не задан."));
+        return;
+    }
+
+    if (_history.isEmpty())
+        resetHistory();
+
+    beginUserTurn(trimmed, ingress, contentParts);
+    setBusy(true);
+    setPhase(PhaseChat);
+    maybeOptimizeThenComplete();
+}
+
+//----------------------------------------------
+
+void Agent::beginUserTurn(QString text, int ingress, QJsonArray contentParts)
 {
     _lastUserIngress = ingress;
     LlmMessage user;
     user.role = LlmRoleUser;
     user.content = text;
+    user.contentParts = contentParts;
     _history.append(user);
     emit userMessage(text);
 
@@ -845,7 +875,8 @@ void Agent::sltResponseReceived(const LlmResponse &response)
                       response.usage.totalTokens,
                       response.usage.cachedPromptTokens);
 
-    gateInspect(tr("Ответ модели"), responseAsText(response));
+    if (_inspectIo)
+        gateInspect(tr("Ответ модели"), responseAsText(response));
     if (!self)
         return;
 
@@ -1103,7 +1134,10 @@ void Agent::requestNextSummaryChunk()
                                                          !_taskAnchor.isEmpty());
     request.maxTokens = kSummaryMaxTokens;
     _lastEstimated = _optimizer.estimatePrompt(request.messages, QList<LlmTool>());
-    gateInspect(tr("Запрос сводки"), requestAsText(request));
+    // Не вызывать requestAsText(), пока Inspect выключен: аргумент считается
+    // до входа в gateInspect и на multimodal (base64) раздувает память до OOM.
+    if (_inspectIo)
+        gateInspect(tr("Запрос сводки"), requestAsText(request));
     if (!_client)
         return;
     _client->send(request);
@@ -1196,7 +1230,9 @@ void Agent::requestCompletion()
     request.tools = toolsForRequest();
     _lastEstimated = _optimizer.estimatePrompt(request.messages, request.tools);
     emitContextUsage();
-    gateInspect(tr("Запрос"), requestAsText(request));
+    // См. requestNextSummaryChunk: requestAsText только при Inspect.
+    if (_inspectIo)
+        gateInspect(tr("Запрос"), requestAsText(request));
     if (!_client)
         return;
     _client->send(request);

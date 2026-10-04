@@ -1,6 +1,7 @@
 #include "contextoptimizer.h"
 //----------------------------------------------
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QtGlobal>
 
 //----------------------------------------------
@@ -67,6 +68,23 @@ int ContextOptimizer::estimateMessage(const LlmMessage &message) const
     tokens += estimateText(message.reasoningContent);
     tokens += estimateText(message.name);
     tokens += estimateText(message.toolCallId);
+    // Multimodal: грубая оценка image_url (base64 ≈ 0.75 байта/символ, ~1 ток/4 символа).
+    for (int i = 0; i < message.contentParts.size(); ++i)
+    {
+        const QJsonObject part = message.contentParts.at(i).toObject();
+        const QString type = part.value(QString::fromUtf8("type")).toString();
+        if (type == QString::fromUtf8("text"))
+            tokens += estimateText(part.value(QString::fromUtf8("text")).toString());
+        else if (type == QString::fromUtf8("image_url"))
+        {
+            const QString url = part.value(QString::fromUtf8("image_url")).toObject()
+                                    .value(QString::fromUtf8("url")).toString();
+            // Верхняя граница ~1024 ток/картинка у DeepSeek Flash; не раздуваем смету.
+            tokens += qMin(1200, qMax(256, url.size() / 64));
+        }
+        else
+            tokens += 64;
+    }
     foreach (const LlmToolCall &call, message.toolCalls)
     {
         tokens += 12;

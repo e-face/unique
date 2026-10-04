@@ -6,6 +6,7 @@
 #include "appsettings.h"
 #include "balancedialog.h"
 #include "chatsession.h"
+#include "composerinput.h"
 #include "conversationwidget.h"
 #include "filechangestore.h"
 #include "journalwidget.h"
@@ -44,6 +45,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMimeDatabase>
+#include <QJsonObject>
+#include <QImage>
+#include <QPixmap>
+#include <QBuffer>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -316,16 +322,8 @@ MainWindow::MainWindow(QWidget *parent)
     , _nextConfirmAction(0)
     , _projectSettingsAction(0)
     , _inspectCheck(0)
+    , _composerBar(0)
     , _composer(0)
-    , _composerCapsLabel(0)
-    , _composerAttachLabel(0)
-    , _composerAttachImage(0)
-    , _composerAttachAudio(0)
-    , _composerAttachVideo(0)
-    , _composerAttachFile(0)
-    , _composerClearAttach(0)
-    , _composerSend(0)
-    , _composerStop(0)
     , _progressBar(0)
     , _chatSaveThread(0)
     , _lastPumpMs(0)
@@ -1055,6 +1053,13 @@ void MainWindow::ensureProjectStore()
 
 void MainWindow::sltSendRequested(const QString &text)
 {
+    sendRootComposerMessage(text);
+}
+
+//----------------------------------------------
+
+void MainWindow::sendRootComposerMessage(QString text, QJsonArray contentParts)
+{
     if (!hasOpenProject())
         return;
     ChatSession *session = rootSession();
@@ -1081,7 +1086,10 @@ void MainWindow::sltSendRequested(const QString &text)
         if (!prefix.isEmpty())
             session->agent()->injectContext(prefix);
     }
-    session->agent()->sendUserMessage(text);
+    if (!contentParts.isEmpty())
+        session->agent()->sendUserMultimodal(text, contentParts);
+    else
+        session->agent()->sendUserMessage(text);
     updateComposerState();
 }
 
@@ -2063,7 +2071,7 @@ void MainWindow::sltNextConfirmation()
 
 void MainWindow::sltComposerSend()
 {
-    if (!_composer || !_composerSend || !_composerSend->isEnabled())
+    if (!_composer || !_composerBar || !_composerBar->isSendEnabled())
         return;
     const QString text = _composer->toPlainText().trimmed();
     if (text.isEmpty() && _composerAttachments.isEmpty())
@@ -2145,84 +2153,300 @@ void MainWindow::sltComposerSend()
         return;
     }
 
-    // Главный чат: текст + список вложений для менеджера.
+    // LLM-чат: картинки → image_url; аудио → input_audio; текст → text;
+    // PDF/file → file; иначе путь для инструментов.
     QString message = text;
-    if (!_composerAttachments.isEmpty())
+    QJsonArray mediaParts;
+    QStringList pathOnly;
+    QStringList embeddedImages;
+    QStringList embeddedAudio;
+    QStringList embeddedFiles;
+    QStringList embeddedTexts;
+    // 32-bit процесс: тело запроса + копии QByteArray/QString; держим запас.
+    const int kMaxInlineBody = 8 * 1024 * 1024;
+    const int kMaxTextBytes = ProjectWorkspace::maxReadBytes;
+    const QString baseUrlLower = profile.baseUrl.toLower();
+    const bool qwenStyleAudio =
+        baseUrlLower.contains(QString::fromUtf8("dashscope"))
+        || baseUrlLower.contains(QString::fromUtf8("qwen"))
+        || profile.model.toLower().contains(QString::fromUtf8("qwen"));
+
+    foreach (const QString &path, _composerAttachments)
     {
-        message += QString::fromUtf8("\n\nAttached files (use as reference_path / path):\n");
-        foreach (const QString &path, _composerAttachments)
-            message += QString::fromUtf8("- %1\n").arg(path);
-        if (caps.requiresImageReference())
-            message += QString::fromUtf8(
-                "\nNote: image model requires reference_path — pass first attachment "
-                "to generate_image / run_tool.\n");
+        if (caps.acceptsImage() && isImageAttachmentPath(path))
+        {
+            QString encodeError;
+            const QString dataUrl = encodeProjectImageDataUrl(path, &encodeError);
+            if (dataUrl.isEmpty())
+            {
+                if (statusBar())
+                    statusBar()->showMessage(encodeError);
+                pathOnly.append(path);
+                continue;
+            }
+            if (dataUrl.size() > kMaxInlineBody)
+            {
+                if (statusBar())
+                    statusBar()->showMessage(
+                        tr("Картинка слишком большая для inline: %1 — только путь.")
+                            .arg(path));
+                pathOnly.append(path);
+                continue;
+            }
+            embeddedImages.append(path);
+            QJsonObject imageUrl;
+            imageUrl.insert(QString::fromUtf8("url"), dataUrl);
+            QJsonObject part;
+            part.insert(QString::fromUtf8("type"), QString::fromUtf8("image_url"));
+            part.insert(QString::fromUtf8("image_url"), imageUrl);
+            mediaParts.append(part);
+            continue;
+        }
+
+        if (caps.acceptsAudio() && isAudioAttachmentPath(path))
+        {
+            QString fmt;
+            QString encodeError;
+            const QString b64 = encodeProjectAudioBase64(path, &fmt, &encodeError);
+            if (b64.isEmpty())
+            {
+                if (statusBar())
+                    statusBar()->showMessage(encodeError);
+                pathOnly.append(path);
+                continue;
+            }
+            if (b64.size() > kMaxInlineBody)
+            {
+                if (statusBar())
+                    statusBar()->showMessage(
+                        tr("Аудио слишком большое для inline: %1 — только путь.")
+                            .arg(path));
+                pathOnly.append(path);
+                continue;
+            }
+            embeddedAudio.append(path);
+            // OpenAI: raw base64; Qwen OpenAI-compat: data:;base64,...
+            const QString dataField = qwenStyleAudio
+                ? QString::fromUtf8("data:;base64,%1").arg(b64)
+                : b64;
+            QJsonObject inputAudio;
+            inputAudio.insert(QString::fromUtf8("data"), dataField);
+            inputAudio.insert(QString::fromUtf8("format"), fmt);
+            QJsonObject part;
+            part.insert(QString::fromUtf8("type"), QString::fromUtf8("input_audio"));
+            part.insert(QString::fromUtf8("input_audio"), inputAudio);
+            mediaParts.append(part);
+            continue;
+        }
+
+        if (isPdfAttachmentPath(path))
+        {
+            QString encodeError;
+            const QString dataUrl = encodeProjectFileDataUrl(path, &encodeError);
+            if (!dataUrl.isEmpty() && dataUrl.size() <= kMaxInlineBody)
+            {
+                embeddedFiles.append(path);
+                QJsonObject fileObj;
+                fileObj.insert(QString::fromUtf8("filename"), QFileInfo(path).fileName());
+                fileObj.insert(QString::fromUtf8("file_data"), dataUrl);
+                QJsonObject part;
+                part.insert(QString::fromUtf8("type"), QString::fromUtf8("file"));
+                part.insert(QString::fromUtf8("file"), fileObj);
+                mediaParts.append(part);
+                continue;
+            }
+            if (statusBar() && !encodeError.isEmpty())
+                statusBar()->showMessage(encodeError);
+            pathOnly.append(path);
+            continue;
+        }
+
+        // Текст/код — вшиваем в content (работает на любой chat API).
+        {
+            QString readError;
+            const QString body = readProjectTextAttachment(path, kMaxTextBytes, &readError);
+            if (!body.isEmpty())
+            {
+                embeddedTexts.append(path);
+                QJsonObject part;
+                part.insert(QString::fromUtf8("type"), QString::fromUtf8("text"));
+                part.insert(QString::fromUtf8("text"),
+                            QString::fromUtf8("### Attached file: %1\n```\n%2\n```")
+                                .arg(path, body));
+                mediaParts.append(part);
+                continue;
+            }
+            // Текст не вышел (бинарь / ошибка) — пробуем file part ниже.
+            if (statusBar() && !readError.isEmpty() && isTextLikeAttachmentPath(path))
+                statusBar()->showMessage(readError);
+        }
+
+        // Прочий бинарь: если модель «принимает file» — file part, иначе путь.
+        if (caps.acceptsFile())
+        {
+            QString encodeError;
+            const QString dataUrl = encodeProjectFileDataUrl(path, &encodeError);
+            if (!dataUrl.isEmpty() && dataUrl.size() <= kMaxInlineBody)
+            {
+                embeddedFiles.append(path);
+                QJsonObject fileObj;
+                fileObj.insert(QString::fromUtf8("filename"), QFileInfo(path).fileName());
+                fileObj.insert(QString::fromUtf8("file_data"), dataUrl);
+                QJsonObject part;
+                part.insert(QString::fromUtf8("type"), QString::fromUtf8("file"));
+                part.insert(QString::fromUtf8("file"), fileObj);
+                mediaParts.append(part);
+                continue;
+            }
+        }
+        pathOnly.append(path);
     }
-    if (message.trimmed().isEmpty())
+
+    if (!pathOnly.isEmpty())
+    {
+        message += QString::fromUtf8(
+            "\n\nAttached files (paths — use tools if content was not inlined):\n");
+        foreach (const QString &path, pathOnly)
+            message += QString::fromUtf8("- %1\n").arg(path);
+    }
+    if (!embeddedImages.isEmpty())
+    {
+        message += QString::fromUtf8("\n\nAttached images (embedded for the model):\n");
+        foreach (const QString &path, embeddedImages)
+            message += QString::fromUtf8("- %1\n").arg(path);
+    }
+    if (!embeddedAudio.isEmpty())
+    {
+        message += QString::fromUtf8("\n\nAttached audio (embedded for the model):\n");
+        foreach (const QString &path, embeddedAudio)
+            message += QString::fromUtf8("- %1\n").arg(path);
+    }
+    if (!embeddedTexts.isEmpty())
+    {
+        message += QString::fromUtf8("\n\nAttached text files (content inlined):\n");
+        foreach (const QString &path, embeddedTexts)
+            message += QString::fromUtf8("- %1\n").arg(path);
+    }
+    if (!embeddedFiles.isEmpty())
+    {
+        message += QString::fromUtf8("\n\nAttached files (embedded for the model):\n");
+        foreach (const QString &path, embeddedFiles)
+            message += QString::fromUtf8("- %1\n").arg(path);
+    }
+
+    if (message.trimmed().isEmpty() && mediaParts.isEmpty())
         return;
+
+    if (!mediaParts.isEmpty() || !embeddedTexts.isEmpty())
+    {
+        QString prompt = text.trimmed();
+        if (prompt.isEmpty())
+        {
+            if (!embeddedAudio.isEmpty() && embeddedImages.isEmpty()
+                && embeddedTexts.isEmpty() && embeddedFiles.isEmpty())
+                prompt = tr("Проанализируй прикреплённое аудио и выполни задачу.");
+            else if (!embeddedImages.isEmpty() && embeddedTexts.isEmpty()
+                     && embeddedFiles.isEmpty() && embeddedAudio.isEmpty())
+                prompt = tr("Проанализируй прикреплённое изображение и выполни задачу.");
+            else
+                prompt = tr("Учти содержимое прикреплённых файлов и выполни задачу.");
+        }
+        if (!pathOnly.isEmpty())
+        {
+            prompt += QString::fromUtf8(
+                "\n\nAlso attached (paths for tools; content not inlined):\n");
+            foreach (const QString &path, pathOnly)
+                prompt += QString::fromUtf8("- %1\n").arg(path);
+        }
+        QJsonArray parts;
+        QJsonObject textPart;
+        textPart.insert(QString::fromUtf8("type"), QString::fromUtf8("text"));
+        textPart.insert(QString::fromUtf8("text"), prompt);
+        parts.append(textPart);
+        for (int i = 0; i < mediaParts.size(); ++i)
+            parts.append(mediaParts.at(i));
+        if (message.trimmed().isEmpty())
+            message = prompt;
+        _composer->clear();
+        _composerAttachments.clear();
+        updateComposerAttachmentsUi();
+        sendRootComposerMessage(message, parts);
+        return;
+    }
+
     _composer->clear();
     _composerAttachments.clear();
     updateComposerAttachmentsUi();
-    sltSendRequested(message);
+    sendRootComposerMessage(message);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerAttachPlus()
+{
+    if (!hasOpenProject())
+        return;
+
+    const LlmProfile profile = profileForComposerTarget();
+    const ModelCapabilities caps =
+        ModelCapabilityService::instance()->cachedOrHeuristic(profile);
+    ChatSession *session = currentSession();
+    Worker *worker = session ? session->worker() : 0;
+    const bool isMedia = worker && _workers
+                         && workerTaskKindIsMediaExecutor(_workers->modalityOf(worker));
+
+    QStringList filters;
+    if (caps.acceptsImage() || caps.allowsImageReference()
+        || profile.modality == WorkerTaskKindImageGeneration
+        || profile.modality == WorkerTaskKindVideoGeneration)
+        filters << tr("Изображения (*.png *.jpg *.jpeg *.webp *.gif *.bmp)");
+    if (caps.acceptsAudio() || profile.modality == WorkerTaskKindSpeech
+        || profile.modality == WorkerTaskKindAudioGeneration)
+        filters << tr("Аудио (*.wav *.mp3 *.m4a *.ogg *.flac *.aac *.webm)");
+    if (caps.acceptsVideo() || profile.modality == WorkerTaskKindVideoGeneration)
+        filters << tr("Видео (*.mp4 *.webm *.mov *.mkv *.avi)");
+    if (!isMedia)
+        filters << tr("Все файлы (*.*)");
+    if (filters.isEmpty())
+        filters << tr("Все файлы (*.*)");
+
+    const QStringList files = pickComposerAttachments(
+        filters.join(QString::fromUtf8(";;")),
+        tr("Прикрепить файлы"));
+    foreach (const QString &f, files)
+    {
+        if (!_composerAttachments.contains(f))
+            _composerAttachments.append(f);
+    }
+    updateComposerAttachmentsUi();
 }
 
 //----------------------------------------------
 
 void MainWindow::sltComposerAttachImage()
 {
-    const QStringList files = pickComposerAttachments(
-        tr("Изображения (*.png *.jpg *.jpeg *.webp *.gif *.bmp);;Все файлы (*.*)"),
-        tr("Прикрепить изображение"));
-    foreach (const QString &f, files)
-    {
-        if (!_composerAttachments.contains(f))
-            _composerAttachments.append(f);
-    }
-    updateComposerAttachmentsUi();
+    sltComposerAttachPlus();
 }
 
 //----------------------------------------------
 
 void MainWindow::sltComposerAttachAudio()
 {
-    const QStringList files = pickComposerAttachments(
-        tr("Аудио (*.wav *.mp3 *.m4a *.ogg *.flac *.aac *.webm);;Все файлы (*.*)"),
-        tr("Прикрепить аудио"));
-    foreach (const QString &f, files)
-    {
-        if (!_composerAttachments.contains(f))
-            _composerAttachments.append(f);
-    }
-    updateComposerAttachmentsUi();
+    sltComposerAttachPlus();
 }
 
 //----------------------------------------------
 
 void MainWindow::sltComposerAttachVideo()
 {
-    const QStringList files = pickComposerAttachments(
-        tr("Видео (*.mp4 *.webm *.mov *.mkv *.avi);;Все файлы (*.*)"),
-        tr("Прикрепить видео"));
-    foreach (const QString &f, files)
-    {
-        if (!_composerAttachments.contains(f))
-            _composerAttachments.append(f);
-    }
-    updateComposerAttachmentsUi();
+    sltComposerAttachPlus();
 }
 
 //----------------------------------------------
 
 void MainWindow::sltComposerAttachFile()
 {
-    const QStringList files = pickComposerAttachments(
-        tr("Все файлы (*.*)"),
-        tr("Прикрепить файл"));
-    foreach (const QString &f, files)
-    {
-        if (!_composerAttachments.contains(f))
-            _composerAttachments.append(f);
-    }
-    updateComposerAttachmentsUi();
+    sltComposerAttachPlus();
 }
 
 //----------------------------------------------
@@ -2231,6 +2455,365 @@ void MainWindow::sltComposerClearAttachments()
 {
     _composerAttachments.clear();
     updateComposerAttachmentsUi();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerRemoveAttachment(int index)
+{
+    if (index < 0 || index >= _composerAttachments.size())
+        return;
+    _composerAttachments.removeAt(index);
+    updateComposerAttachmentsUi();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerFilesDropped(const QStringList &absolutePaths)
+{
+    addComposerAbsoluteFiles(absolutePaths);
+}
+
+//----------------------------------------------
+
+void MainWindow::addComposerAbsoluteFiles(const QStringList &absolutePaths)
+{
+    if (!hasOpenProject() || !_workspace)
+        return;
+    foreach (const QString &abs, absolutePaths)
+    {
+        QString error;
+        const QString rel = importAttachmentIntoProject(abs, &error);
+        if (rel.isEmpty())
+        {
+            if (statusBar() && !error.isEmpty())
+                statusBar()->showMessage(error);
+            continue;
+        }
+        if (!_composerAttachments.contains(rel))
+            _composerAttachments.append(rel);
+    }
+    updateComposerAttachmentsUi();
+}
+
+//----------------------------------------------
+
+bool MainWindow::isImageAttachmentPath(QString path)
+{
+    const QString lower = path.toLower();
+    return lower.endsWith(QString::fromUtf8(".png"))
+           || lower.endsWith(QString::fromUtf8(".jpg"))
+           || lower.endsWith(QString::fromUtf8(".jpeg"))
+           || lower.endsWith(QString::fromUtf8(".webp"))
+           || lower.endsWith(QString::fromUtf8(".gif"))
+           || lower.endsWith(QString::fromUtf8(".bmp"));
+}
+
+//----------------------------------------------
+
+bool MainWindow::isAudioAttachmentPath(QString path)
+{
+    const QString lower = path.toLower();
+    return lower.endsWith(QString::fromUtf8(".wav"))
+           || lower.endsWith(QString::fromUtf8(".mp3"))
+           || lower.endsWith(QString::fromUtf8(".mpeg"))
+           || lower.endsWith(QString::fromUtf8(".mpga"))
+           || lower.endsWith(QString::fromUtf8(".m4a"))
+           || lower.endsWith(QString::fromUtf8(".ogg"))
+           || lower.endsWith(QString::fromUtf8(".flac"))
+           || lower.endsWith(QString::fromUtf8(".aac"))
+           || lower.endsWith(QString::fromUtf8(".webm"))
+           || lower.endsWith(QString::fromUtf8(".opus"));
+}
+
+//----------------------------------------------
+
+QString MainWindow::audioFormatForPath(QString path)
+{
+    const QString lower = path.toLower();
+    if (lower.endsWith(QString::fromUtf8(".wav")))
+        return QString::fromUtf8("wav");
+    if (lower.endsWith(QString::fromUtf8(".mp3"))
+        || lower.endsWith(QString::fromUtf8(".mpeg"))
+        || lower.endsWith(QString::fromUtf8(".mpga")))
+        return QString::fromUtf8("mp3");
+    if (lower.endsWith(QString::fromUtf8(".m4a")))
+        return QString::fromUtf8("m4a");
+    if (lower.endsWith(QString::fromUtf8(".ogg")))
+        return QString::fromUtf8("ogg");
+    if (lower.endsWith(QString::fromUtf8(".flac")))
+        return QString::fromUtf8("flac");
+    if (lower.endsWith(QString::fromUtf8(".aac")))
+        return QString::fromUtf8("aac");
+    if (lower.endsWith(QString::fromUtf8(".webm")))
+        return QString::fromUtf8("webm");
+    if (lower.endsWith(QString::fromUtf8(".opus")))
+        return QString::fromUtf8("opus");
+    return QString::fromUtf8("wav");
+}
+
+//----------------------------------------------
+
+QString MainWindow::encodeProjectAudioBase64(QString relativePath, QString *formatOut,
+                                            QString *error) const
+{
+    if (formatOut)
+        *formatOut = audioFormatForPath(relativePath);
+    if (!_workspace || !_workspace->isSet())
+    {
+        if (error)
+            *error = tr("Проект не открыт.");
+        return QString();
+    }
+    QString abs;
+    QString resolveError;
+    if (!_workspace->resolvePath(relativePath, true, false, &abs, &resolveError)
+        || abs.isEmpty())
+    {
+        if (error)
+            *error = resolveError.isEmpty()
+                ? tr("Файл не найден: %1").arg(relativePath)
+                : resolveError;
+        return QString();
+    }
+    QFile file(abs);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        if (error)
+            *error = tr("Не удалось прочитать %1: %2")
+                         .arg(relativePath, file.errorString());
+        return QString();
+    }
+    const QByteArray bytes = file.readAll();
+    file.close();
+    if (bytes.isEmpty())
+    {
+        if (error)
+            *error = tr("Пустой аудиофайл: %1").arg(relativePath);
+        return QString();
+    }
+    return QString::fromLatin1(bytes.toBase64());
+}
+
+//----------------------------------------------
+
+bool MainWindow::isPdfAttachmentPath(QString path)
+{
+    return path.toLower().endsWith(QString::fromUtf8(".pdf"));
+}
+
+//----------------------------------------------
+
+bool MainWindow::isTextLikeAttachmentPath(QString path)
+{
+    const QString lower = path.toLower();
+    static const char *kExt[] = {
+        ".txt", ".md", ".markdown", ".json", ".jsonl", ".csv", ".tsv",
+        ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+        ".log", ".py", ".pyw", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs",
+        ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".cs", ".java",
+        ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".kts", ".scala",
+        ".sql", ".html", ".htm", ".css", ".scss", ".less", ".vue", ".svelte",
+        ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".cmake", ".make",
+        ".mk", ".gradle", ".properties", ".env", ".gitignore", ".dockerfile",
+        ".pro", ".pri", ".qml", ".qrc", ".ui", ".svg", ".tex", ".rst",
+        ".diff", ".patch", ".r", ".m", ".mm", 0
+    };
+    for (int i = 0; kExt[i]; ++i)
+    {
+        if (lower.endsWith(QString::fromUtf8(kExt[i])))
+            return true;
+    }
+    // Файлы без расширения / с редким расширением — по MIME text/*
+    return false;
+}
+
+//----------------------------------------------
+
+QString MainWindow::readProjectTextAttachment(QString relativePath, int maxBytes,
+                                             QString *error) const
+{
+    if (!_workspace || !_workspace->isSet())
+    {
+        if (error)
+            *error = tr("Проект не открыт.");
+        return QString();
+    }
+    QString abs;
+    QString resolveError;
+    if (!_workspace->resolvePath(relativePath, true, false, &abs, &resolveError)
+        || abs.isEmpty())
+    {
+        if (error)
+            *error = resolveError.isEmpty()
+                ? tr("Файл не найден: %1").arg(relativePath)
+                : resolveError;
+        return QString();
+    }
+    QFile file(abs);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        if (error)
+            *error = tr("Не удалось прочитать %1: %2")
+                         .arg(relativePath, file.errorString());
+        return QString();
+    }
+    QByteArray bytes = file.read(qMax(1, maxBytes) + 1);
+    file.close();
+    if (bytes.isEmpty())
+    {
+        if (error)
+            *error = tr("Пустой файл: %1").arg(relativePath);
+        return QString();
+    }
+    const bool truncated = bytes.size() > maxBytes;
+    if (truncated)
+        bytes = bytes.left(maxBytes);
+    // Бинарный мусор (нулевые байты) — не вшиваем как текст.
+    if (bytes.contains('\0'))
+    {
+        if (error)
+            *error = tr("Бинарный файл, не встраивается как текст: %1").arg(relativePath);
+        return QString();
+    }
+    QString text = ProjectWorkspace::decodeText(bytes);
+    if (truncated)
+        text += QString::fromUtf8("\n\n…[truncated]…");
+    return text;
+}
+
+//----------------------------------------------
+
+QString MainWindow::encodeProjectFileDataUrl(QString relativePath, QString *error) const
+{
+    if (!_workspace || !_workspace->isSet())
+    {
+        if (error)
+            *error = tr("Проект не открыт.");
+        return QString();
+    }
+    QString abs;
+    QString resolveError;
+    if (!_workspace->resolvePath(relativePath, true, false, &abs, &resolveError)
+        || abs.isEmpty())
+    {
+        if (error)
+            *error = resolveError.isEmpty()
+                ? tr("Файл не найден: %1").arg(relativePath)
+                : resolveError;
+        return QString();
+    }
+    QFile file(abs);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        if (error)
+            *error = tr("Не удалось прочитать %1: %2")
+                         .arg(relativePath, file.errorString());
+        return QString();
+    }
+    const QByteArray bytes = file.readAll();
+    file.close();
+    if (bytes.isEmpty())
+    {
+        if (error)
+            *error = tr("Пустой файл: %1").arg(relativePath);
+        return QString();
+    }
+    QMimeDatabase mimeDb;
+    QString mime = mimeDb.mimeTypeForFile(abs).name();
+    if (mime.isEmpty() || mime == QString::fromUtf8("application/octet-stream"))
+    {
+        if (isPdfAttachmentPath(relativePath))
+            mime = QString::fromUtf8("application/pdf");
+        else if (isImageAttachmentPath(relativePath))
+            mime = QString::fromUtf8("image/png");
+        else
+            mime = QString::fromUtf8("application/octet-stream");
+    }
+    return QString::fromUtf8("data:%1;base64,%2")
+        .arg(mime, QString::fromLatin1(bytes.toBase64()));
+}
+
+//----------------------------------------------
+
+QString MainWindow::encodeProjectImageDataUrl(QString relativePath, QString *error) const
+{
+    if (!_workspace || !_workspace->isSet())
+    {
+        if (error)
+            *error = tr("Проект не открыт.");
+        return QString();
+    }
+    QString abs;
+    QString resolveError;
+    if (!_workspace->resolvePath(relativePath, true, false, &abs, &resolveError)
+        || abs.isEmpty())
+    {
+        if (error)
+            *error = resolveError.isEmpty()
+                ? tr("Файл не найден: %1").arg(relativePath)
+                : resolveError;
+        return QString();
+    }
+    QFile file(abs);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        if (error)
+            *error = tr("Не удалось прочитать %1: %2")
+                         .arg(relativePath, file.errorString());
+        return QString();
+    }
+    QByteArray bytes = file.readAll();
+    file.close();
+    if (bytes.isEmpty())
+    {
+        if (error)
+            *error = tr("Пустое изображение: %1").arg(relativePath);
+        return QString();
+    }
+
+    QString mime = QString::fromUtf8("image/jpeg");
+    // Сжимаем крупные кадры: иначе base64 + копии тела на 32-bit валят процесс.
+    QImage image;
+    if (image.loadFromData(bytes))
+    {
+        const int kMaxSide = 2048;
+        if (image.width() > kMaxSide || image.height() > kMaxSide)
+            image = image.scaled(kMaxSide, kMaxSide, Qt::KeepAspectRatio,
+                                 Qt::SmoothTransformation);
+        QByteArray encoded;
+        QBuffer buffer(&encoded);
+        buffer.open(QIODevice::WriteOnly);
+        int quality = 85;
+        if (!image.save(&buffer, "JPEG", quality))
+        {
+            buffer.close();
+            encoded.clear();
+            buffer.open(QIODevice::WriteOnly);
+            if (image.save(&buffer, "PNG"))
+                mime = QString::fromUtf8("image/png");
+        }
+        buffer.close();
+        if (!encoded.isEmpty())
+            bytes = encoded;
+        else
+        {
+            QMimeDatabase mimeDb;
+            mime = mimeDb.mimeTypeForFile(abs).name();
+            if (mime.isEmpty() || !mime.startsWith(QString::fromUtf8("image/")))
+                mime = QString::fromUtf8("image/png");
+        }
+    }
+    else
+    {
+        QMimeDatabase mimeDb;
+        mime = mimeDb.mimeTypeForFile(abs).name();
+        if (mime.isEmpty() || !mime.startsWith(QString::fromUtf8("image/")))
+            mime = QString::fromUtf8("image/png");
+    }
+
+    return QString::fromUtf8("data:%1;base64,%2")
+        .arg(mime, QString::fromLatin1(bytes.toBase64()));
 }
 
 //----------------------------------------------
@@ -2313,15 +2896,31 @@ LlmProfile MainWindow::profileForComposerTarget() const
 
 //----------------------------------------------
 
+QPixmap MainWindow::composerThumbForPath(QString relativePath) const
+{
+    if (!_workspace || !_workspace->isSet() || !isImageAttachmentPath(relativePath))
+        return QPixmap();
+    QString abs;
+    QString error;
+    if (!_workspace->resolvePath(relativePath, true, false, &abs, &error) || abs.isEmpty())
+        return QPixmap();
+    QPixmap pix;
+    if (!pix.load(abs))
+        return QPixmap();
+    return pix;
+}
+
+//----------------------------------------------
+
 void MainWindow::updateComposerAttachmentsUi()
 {
-    if (!_composerAttachLabel)
+    if (!_composerBar)
         return;
-    if (_composerAttachments.isEmpty())
-        _composerAttachLabel->setText(tr("Вложений нет"));
-    else
-        _composerAttachLabel->setText(tr("Вложения: %1")
-                                          .arg(_composerAttachments.join(QString::fromUtf8(", "))));
+    QList<QPixmap> thumbs;
+    thumbs.reserve(_composerAttachments.size());
+    foreach (const QString &path, _composerAttachments)
+        thumbs.append(composerThumbForPath(path));
+    _composerBar->setAttachments(_composerAttachments, thumbs);
 }
 
 //----------------------------------------------
@@ -2424,65 +3023,23 @@ void MainWindow::setupUi()
     _tabBlinkTimer->setInterval(480);
     connect(_tabBlinkTimer, SIGNAL(timeout()), this, SLOT(sltTabBlink()));
 
-    _composer = new QPlainTextEdit(central);
-    _composer->setPlaceholderText(L("composer.placeholder"));
-    _composer->setMaximumHeight(110);
-    _composer->installEventFilter(this);
-    _composerCapsLabel = new QLabel(central);
-    _composerCapsLabel->setWordWrap(true);
-    _composerCapsLabel->setStyleSheet(QString::fromUtf8("color: gray; font-size: 11px;"));
-    _composerAttachLabel = new QLabel(central);
-    _composerAttachLabel->setWordWrap(true);
-    _composerAttachImage = new QPushButton(tr("Картинка"), central);
-    _composerAttachAudio = new QPushButton(tr("Аудио"), central);
-    _composerAttachVideo = new QPushButton(tr("Видео"), central);
-    _composerAttachFile = new QPushButton(tr("Файл"), central);
-    _composerClearAttach = new QPushButton(tr("Очистить вложения"), central);
-    _composerAttachImage->setToolTip(
-        tr("Изображение для vision/VL/omni моделей (мультимодальный вход)"));
-    _composerAttachAudio->setToolTip(tr("Аудио, если модель принимает audio"));
-    _composerAttachVideo->setToolTip(tr("Видео, если модель принимает video"));
-    _composerAttachFile->setToolTip(
-        tr("Файл проекта: путь попадёт в сообщение, агент прочитает через инструменты"));
-    connect(_composerAttachImage, SIGNAL(clicked()), this, SLOT(sltComposerAttachImage()));
-    connect(_composerAttachAudio, SIGNAL(clicked()), this, SLOT(sltComposerAttachAudio()));
-    connect(_composerAttachVideo, SIGNAL(clicked()), this, SLOT(sltComposerAttachVideo()));
-    connect(_composerAttachFile, SIGNAL(clicked()), this, SLOT(sltComposerAttachFile()));
-    connect(_composerClearAttach, SIGNAL(clicked()), this, SLOT(sltComposerClearAttachments()));
-    _composerSend = new QPushButton(L("composer.send"), central);
-    _composerStop = new QPushButton(L("composer.stop"), central);
-    _composerStop->setEnabled(false);
-    _composerStop->setToolTip(L("composer.stopTip"));
-    connect(_composerSend, SIGNAL(clicked()), this, SLOT(sltComposerSend()));
-    connect(_composerStop, SIGNAL(clicked()), this, SLOT(sltComposerStop()));
-
-    QHBoxLayout *attachButtons = new QHBoxLayout();
-    attachButtons->addWidget(_composerAttachImage);
-    attachButtons->addWidget(_composerAttachAudio);
-    attachButtons->addWidget(_composerAttachVideo);
-    attachButtons->addWidget(_composerAttachFile);
-    attachButtons->addWidget(_composerClearAttach);
-    attachButtons->addStretch();
-
-    QVBoxLayout *composerLeft = new QVBoxLayout();
-    composerLeft->addWidget(_composerCapsLabel);
-    composerLeft->addLayout(attachButtons);
-    composerLeft->addWidget(_composerAttachLabel);
-    composerLeft->addWidget(_composer, 1);
-
-    QVBoxLayout *composerButtons = new QVBoxLayout();
-    composerButtons->addWidget(_composerSend);
-    composerButtons->addWidget(_composerStop);
-    composerButtons->addStretch();
-
-    QHBoxLayout *composerLayout = new QHBoxLayout();
-    composerLayout->addLayout(composerLeft, 1);
-    composerLayout->addLayout(composerButtons);
+    _composerBar = new ComposerInput(central);
+    _composer = _composerBar->editor();
+    if (_composer)
+        _composer->installEventFilter(this);
+    _composerBar->setPlaceholder(L("composer.placeholder"));
+    connect(_composerBar, SIGNAL(sendClicked()), this, SLOT(sltComposerSend()));
+    connect(_composerBar, SIGNAL(stopClicked()), this, SLOT(sltComposerStop()));
+    connect(_composerBar, SIGNAL(plusClicked()), this, SLOT(sltComposerAttachPlus()));
+    connect(_composerBar, SIGNAL(removeAttachmentRequested(int)),
+            this, SLOT(sltComposerRemoveAttachment(int)));
+    connect(_composerBar, SIGNAL(filesDropped(QStringList)),
+            this, SLOT(sltComposerFilesDropped(QStringList)));
 
     QVBoxLayout *root = new QVBoxLayout(central);
     root->setContentsMargins(6, 6, 6, 6);
     root->addWidget(_tabs, 1);
-    root->addLayout(composerLayout);
+    root->addWidget(_composerBar);
 
     _projectDock = new ProjectTreeDock(this);
     addDockWidget(Qt::LeftDockWidgetArea, _projectDock);
@@ -2631,15 +3188,8 @@ void MainWindow::retranslateUi()
         _nextConfirmAction->setText(L("toolbar.nextConfirm"));
         _nextConfirmAction->setToolTip(L("toolbar.nextConfirmTip"));
     }
-    if (_composer)
-        _composer->setPlaceholderText(L("composer.placeholder"));
-    if (_composerSend)
-        _composerSend->setText(L("composer.send"));
-    if (_composerStop)
-    {
-        _composerStop->setText(L("composer.stop"));
-        _composerStop->setToolTip(L("composer.stopTip"));
-    }
+    if (_composerBar)
+        _composerBar->setPlaceholder(L("composer.placeholder"));
     QToolBar *toolbar = findChild<QToolBar *>(QString::fromUtf8("mainToolBar"));
     if (toolbar)
         toolbar->setWindowTitle(L("toolbar.title"));
@@ -3762,6 +4312,8 @@ void MainWindow::applyAppStyle()
 
     if (_projectDock)
         _projectDock->applyTheme();
+    if (_composerBar)
+        _composerBar->applyTheme(panel, input, text, border, muted, accent);
 
     foreach (ChatSession *session, _sessions)
     {
@@ -3818,7 +4370,7 @@ void MainWindow::restoreSessionContent(ChatSession *session)
 
 void MainWindow::updateComposerState()
 {
-    if (!_composer || !_composerSend || !_composerStop)
+    if (!_composer || !_composerBar)
         return;
 
     ChatSession *session = currentSession();
@@ -3844,10 +4396,11 @@ void MainWindow::updateComposerState()
     const bool canSend = hasOpenProject() && session && targetOk && !_resetting
                          && !busy && !waiting;
     const bool active = anyWorkActive();
-    _composer->setReadOnly(!canSend);
-    _composer->setEnabled(hasOpenProject() && session && !_resetting);
-    _composerSend->setEnabled(canSend);
-    _composerStop->setEnabled(active && !_resetting);
+    const bool composerOn = hasOpenProject() && session && !_resetting;
+    _composerBar->setReadOnly(!canSend);
+    _composerBar->setComposerEnabled(composerOn);
+    _composerBar->setSendEnabled(canSend);
+    _composerBar->setStopEnabled(active && !_resetting);
     setAllStopEnabled(active && !_resetting);
 
     const LlmProfile profile = profileForComposerTarget();
@@ -3858,68 +4411,38 @@ void MainWindow::updateComposerState()
         && caps.source == QString::fromUtf8("heuristic"))
         caps = ModelCapabilityService::instance()->capabilitiesFor(profile);
 
-    if (_composerCapsLabel)
-    {
-        QString line = tr("Модель: %1 · входы: %2")
-                           .arg(profile.model.trimmed().isEmpty()
-                                    ? tr("(не задана)")
-                                    : profile.model.trimmed(),
-                                caps.inputModalities.isEmpty()
-                                    ? QString::fromUtf8("text")
-                                    : caps.inputModalities.join(QString::fromUtf8(" + ")));
-        if (caps.requiresImageReference())
-            line += tr(" · нужна референс-картинка");
-        else if (caps.acceptsImage() || caps.allowsImageReference())
-            line += tr(" · можно прикрепить картинку");
-        if (caps.acceptsFile() && !isMedia)
-            line += tr(" · файлы через инструменты");
-        _composerCapsLabel->setText(line);
-    }
+    QString hint = tr("Auto");
+    if (!profile.model.trimmed().isEmpty())
+        hint = profile.model.trimmed();
+    QString tip = tr("Модель: %1\nВходы: %2")
+                      .arg(profile.model.trimmed().isEmpty()
+                               ? tr("(не задана)")
+                               : profile.model.trimmed(),
+                           caps.inputModalities.isEmpty()
+                               ? QString::fromUtf8("text")
+                               : caps.inputModalities.join(QString::fromUtf8(" + ")));
+    if (caps.requiresImageReference())
+        tip += tr("\nНужна референс-картинка");
+    _composerBar->setCapsHint(hint, tip);
 
-    const bool showImage = caps.acceptsImage() || caps.allowsImageReference()
-                           || profile.modality == WorkerTaskKindImageGeneration
-                           || profile.modality == WorkerTaskKindVideoGeneration;
-    const bool showAudio = caps.acceptsAudio()
-                           || profile.modality == WorkerTaskKindSpeech
-                           || profile.modality == WorkerTaskKindAudioGeneration;
-    const bool showVideo = caps.acceptsVideo()
-                           || profile.modality == WorkerTaskKindVideoGeneration;
-    // Файл — для LLM-агентов (путь в сообщение → read_file), не для чистых media.
-    const bool showFile = !isMedia
-                          && (caps.acceptsFile()
-                              || profile.modality == WorkerTaskKindLlm
-                              || profile.modality == WorkerTaskKindDecisions
-                              || isRoot);
-    if (_composerAttachImage)
-        _composerAttachImage->setVisible(showImage);
-    if (_composerAttachAudio)
-        _composerAttachAudio->setVisible(showAudio);
-    if (_composerAttachVideo)
-        _composerAttachVideo->setVisible(showVideo);
-    if (_composerAttachFile)
-        _composerAttachFile->setVisible(showFile);
-    if (_composerClearAttach)
-        _composerClearAttach->setVisible(showImage || showAudio || showVideo || showFile);
-    if (_composerAttachLabel)
-        _composerAttachLabel->setVisible(showImage || showAudio || showVideo || showFile);
     updateComposerAttachmentsUi();
 
     if (!hasOpenProject())
-        _composer->setPlaceholderText(tr("Откройте или создайте проект"));
+        _composerBar->setPlaceholder(tr("Откройте или создайте проект"));
     else if (!session)
-        _composer->setPlaceholderText(tr("Нет чата"));
+        _composerBar->setPlaceholder(tr("Нет чата"));
     else if (!targetOk)
-        _composer->setPlaceholderText(
+        _composerBar->setPlaceholder(
             tr("Переключитесь на главный чат или media-воркера для ввода"));
     else if (!canSend)
-        _composer->setPlaceholderText(
+        _composerBar->setPlaceholder(
             tr("Чат занят: ожидание модели или дочерних воркеров…"));
     else if (isMedia)
-        _composer->setPlaceholderText(
-            tr("Запрос media-воркеру… Enter — отправить (с вложениями при необходимости)"));
+        _composerBar->setPlaceholder(
+            tr("Запрос media-воркеру… Enter — отправить, можно перетащить файлы"));
     else
-        _composer->setPlaceholderText(
-            tr("Сообщение в главный чат…  Enter — отправить, Shift+Enter — новая строка"));
+        _composerBar->setPlaceholder(
+            tr("Сообщение… Enter — отправить, Shift+Enter — строка, перетащите файлы сюда"));
 }
 
 //----------------------------------------------

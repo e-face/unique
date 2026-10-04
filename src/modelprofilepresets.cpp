@@ -31,15 +31,25 @@ QList<ModelProfilePreset> knownModelProfilePresets()
     list << makePreset(QString::fromUtf8("DeepSeek"), QString::fromUtf8("DeepSeek Chat"),
                        WorkerTaskKindLlm, QString::fromUtf8("https://api.deepseek.com"),
                        QString::fromUtf8("deepseek-chat"),
-                       QString::fromUtf8("/user/balance"));
+                       QString::fromUtf8("/user/balance"), QString(),
+                       QString::fromUtf8("Text-only LLM: coding and agent tool use"));
     list << makePreset(QString::fromUtf8("DeepSeek"), QString::fromUtf8("DeepSeek Reasoner"),
                        WorkerTaskKindLlm, QString::fromUtf8("https://api.deepseek.com"),
                        QString::fromUtf8("deepseek-reasoner"),
-                       QString::fromUtf8("/user/balance"));
+                       QString::fromUtf8("/user/balance"), QString(),
+                       QString::fromUtf8("Deep reasoning / hard bugs (text-only)"));
+    list << makePreset(QString::fromUtf8("DeepSeek"), QString::fromUtf8("DeepSeek Flash (V4.1)"),
+                       WorkerTaskKindLlm, QString::fromUtf8("https://api.deepseek.com"),
+                       QString::fromUtf8("deepseek-flash"),
+                       QString::fromUtf8("/user/balance"), QString(),
+                       QString::fromUtf8(
+                           "Multimodal LLM: text + image input, text output"));
     list << makePreset(QString::fromUtf8("DeepSeek"), QString::fromUtf8("DeepSeek V4 Flash"),
                        WorkerTaskKindLlm, QString::fromUtf8("https://api.deepseek.com"),
                        QString::fromUtf8("deepseek-v4-flash"),
-                       QString::fromUtf8("/user/balance"));
+                       QString::fromUtf8("/user/balance"), QString(),
+                       QString::fromUtf8(
+                           "Alias of Flash: text + image input (routes to V4.1-Flash)"));
 
     list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("GPT-4.1"),
                        WorkerTaskKindLlm, QString::fromUtf8("https://api.openai.com/v1"),

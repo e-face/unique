@@ -25,6 +25,7 @@ HEADERS += \
     src/appsettings.h \
     src/balancedialog.h \
     src/chatsession.h \
+    src/composerinput.h \
     src/contextoptimizer.h \
     src/conversationwidget.h \
     src/debugagenttools.h \
@@ -63,6 +64,7 @@ SOURCES += \
     src/appsettings.cpp \
     src/balancedialog.cpp \
     src/chatsession.cpp \
+    src/composerinput.cpp \
     src/contextoptimizer.cpp \
     src/conversationwidget.cpp \
     src/debugagenttools.cpp \

@@ -5,6 +5,7 @@
 #include "workertypes.h"
 //----------------------------------------------
 #include <QIcon>
+#include <QJsonArray>
 #include <QList>
 #include <QMainWindow>
 #include <QString>
@@ -12,6 +13,7 @@
 #include <QtGlobal>
 
 class ChatSession;
+class ComposerInput;
 class ConversationWidget;
 class JournalWidget;
 class ProjectTreeDock;
@@ -110,11 +112,14 @@ private slots:
     void sltNextConfirmation();
     void sltComposerSend();
     void sltComposerStop();
+    void sltComposerAttachPlus();
     void sltComposerAttachImage();
     void sltComposerAttachAudio();
     void sltComposerAttachVideo();
     void sltComposerAttachFile();
     void sltComposerClearAttachments();
+    void sltComposerRemoveAttachment(int index);
+    void sltComposerFilesDropped(const QStringList &absolutePaths);
     void sltStopAll();
     void sltFlushSaveChats();
     void sltChatSaveFinished();
@@ -200,8 +205,22 @@ private:
     void applyAppStyle();
     void updateComposerState();
     void updateComposerAttachmentsUi();
+    void addComposerAbsoluteFiles(const QStringList &absolutePaths);
     QStringList pickComposerAttachments(QString filter, QString title);
     QString importAttachmentIntoProject(QString absolutePath, QString *error);
+    QPixmap composerThumbForPath(QString relativePath) const;
+    QString encodeProjectImageDataUrl(QString relativePath, QString *error) const;
+    QString encodeProjectFileDataUrl(QString relativePath, QString *error) const;
+    QString encodeProjectAudioBase64(QString relativePath, QString *formatOut,
+                                     QString *error) const;
+    QString readProjectTextAttachment(QString relativePath, int maxBytes,
+                                     QString *error) const;
+    static bool isImageAttachmentPath(QString path);
+    static bool isAudioAttachmentPath(QString path);
+    static bool isPdfAttachmentPath(QString path);
+    static bool isTextLikeAttachmentPath(QString path);
+    static QString audioFormatForPath(QString path);
+    void sendRootComposerMessage(QString text, QJsonArray contentParts = QJsonArray());
     LlmProfile profileForComposerTarget() const;
     void stopAllWork();
     bool anyWorkActive() const;
@@ -253,16 +272,8 @@ private:
     QAction             *_nextConfirmAction;
     QAction             *_projectSettingsAction;
     QCheckBox           *_inspectCheck;
+    ComposerInput       *_composerBar;
     QPlainTextEdit      *_composer;
-    QLabel              *_composerCapsLabel;
-    QLabel              *_composerAttachLabel;
-    QPushButton         *_composerAttachImage;
-    QPushButton         *_composerAttachAudio;
-    QPushButton         *_composerAttachVideo;
-    QPushButton         *_composerAttachFile;
-    QPushButton         *_composerClearAttach;
-    QPushButton         *_composerSend;
-    QPushButton         *_composerStop;
     QStringList          _composerAttachments;
     QProgressBar        *_progressBar;
     QThread             *_chatSaveThread;

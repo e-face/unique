@@ -175,9 +175,20 @@ ModelCapabilities ModelCapabilityService::heuristicFor(const LlmProfile &profile
         caps.inputModalities << QString::fromUtf8("file"); // пути → read_file / инструменты
         caps.outputModalities << QString::fromUtf8("text");
 
-        // Vision / multimodal LLM (не путать с обычным deepseek-chat / qwen-plus).
+        // Vision / multimodal LLM.
+        // DeepSeek V4.1 Flash (и алиасы deepseek-flash / deepseek-v4-flash*) —
+        // нативный image+text; deepseek-chat / reasoner — только текст.
+        const bool deepseekVision =
+            model == QString::fromUtf8("deepseek-flash")
+            || model.startsWith(QString::fromUtf8("deepseek-v4-flash"))
+            || model.startsWith(QString::fromUtf8("deepseek-v4.1"))
+            || model.startsWith(QString::fromUtf8("deepseek-v4_1"))
+            || (blob.contains(QString::fromUtf8("deepseek"))
+                && (blob.contains(QString::fromUtf8("vision"))
+                    || blob.contains(QString::fromUtf8("vl"))));
         const bool visionHint =
-            blob.contains(QString::fromUtf8("vision"))
+            deepseekVision
+            || blob.contains(QString::fromUtf8("vision"))
             || blob.contains(QString::fromUtf8("-vl"))
             || blob.contains(QString::fromUtf8("_vl"))
             || blob.contains(QString::fromUtf8("vl-"))
@@ -186,9 +197,11 @@ ModelCapabilities ModelCapabilityService::heuristicFor(const LlmProfile &profile
             || blob.contains(QString::fromUtf8("qwen2.5-vl"))
             || blob.contains(QString::fromUtf8("qwen3-vl"))
             || blob.contains(QString::fromUtf8("qwen-vl"))
+            || blob.contains(QString::fromUtf8("qwen2.5-omni"))
             || blob.contains(QString::fromUtf8("omni"))
             || blob.contains(QString::fromUtf8("4o"))
             || blob.contains(QString::fromUtf8("gpt-4.1"))
+            || blob.contains(QString::fromUtf8("gpt-5"))
             || blob.contains(QString::fromUtf8("gemini"))
             || blob.contains(QString::fromUtf8("claude-3"))
             || blob.contains(QString::fromUtf8("claude-sonnet"))
@@ -203,9 +216,10 @@ ModelCapabilities ModelCapabilityService::heuristicFor(const LlmProfile &profile
             caps.inputModalities << QString::fromUtf8("image");
 
         if (blob.contains(QString::fromUtf8("omni"))
-            || blob.contains(QString::fromUtf8("audio"))
             || blob.contains(QString::fromUtf8("qwen2-audio"))
-            || blob.contains(QString::fromUtf8("gpt-4o-audio")))
+            || blob.contains(QString::fromUtf8("gpt-4o-audio"))
+            || (blob.contains(QString::fromUtf8("audio"))
+                && !blob.contains(QString::fromUtf8("whisper"))))
             caps.inputModalities << QString::fromUtf8("audio");
 
         if (blob.contains(QString::fromUtf8("omni"))
@@ -284,23 +298,108 @@ static QString joinApi(QString baseUrl, QString path)
 
 //----------------------------------------------
 
+static void appendModality(QStringList *list, QString modality)
+{
+    if (!list)
+        return;
+    const QString m = modality.trimmed().toLower();
+    if (m.isEmpty() || list->contains(m))
+        return;
+    // Нормализация синонимов каталогов.
+    if (m == QString::fromUtf8("images") || m == QString::fromUtf8("vision"))
+    {
+        if (!list->contains(QString::fromUtf8("image")))
+            list->append(QString::fromUtf8("image"));
+        return;
+    }
+    if (m == QString::fromUtf8("audios"))
+    {
+        if (!list->contains(QString::fromUtf8("audio")))
+            list->append(QString::fromUtf8("audio"));
+        return;
+    }
+    if (m == QString::fromUtf8("videos"))
+    {
+        if (!list->contains(QString::fromUtf8("video")))
+            list->append(QString::fromUtf8("video"));
+        return;
+    }
+    list->append(m);
+}
+
+//----------------------------------------------
+
+static void applyModalityArray(QStringList *list, const QJsonValue &val)
+{
+    if (!list)
+        return;
+    if (val.isArray())
+    {
+        const QJsonArray arr = val.toArray();
+        for (int i = 0; i < arr.size(); ++i)
+            appendModality(list, arr.at(i).toString());
+        return;
+    }
+    // "text+image" / "text,image"
+    if (val.isString())
+    {
+        QString s = val.toString().toLower();
+        s.replace(QChar('+'), QChar(','));
+        s.replace(QChar('|'), QChar(','));
+        s.replace(QChar(' '), QChar(','));
+        foreach (const QString &token, s.split(QChar(',')))
+            appendModality(list, token);
+    }
+}
+
+//----------------------------------------------
+
 static void applyArchitecture(ModelCapabilities *caps, const QJsonObject &arch)
 {
     if (!caps)
         return;
-    const QJsonArray in = arch.value(QString::fromUtf8("input_modalities")).toArray();
-    for (int i = 0; i < in.size(); ++i)
+    applyModalityArray(&caps->inputModalities,
+                       arch.value(QString::fromUtf8("input_modalities")));
+    applyModalityArray(&caps->outputModalities,
+                       arch.value(QString::fromUtf8("output_modalities")));
+}
+
+//----------------------------------------------
+
+/**
+ * @brief Modalities с корня объекта модели (DeepSeek /models) и из architecture (OpenRouter).
+ */
+static void applyModelModalities(ModelCapabilities *caps, const QJsonObject &obj)
+{
+    if (!caps)
+        return;
+    // DeepSeek: input_modalities / output_modalities на корне.
+    applyModalityArray(&caps->inputModalities,
+                       obj.value(QString::fromUtf8("input_modalities")));
+    applyModalityArray(&caps->outputModalities,
+                       obj.value(QString::fromUtf8("output_modalities")));
+    // Иногда modalities / supported_input_modalities.
+    applyModalityArray(&caps->inputModalities,
+                       obj.value(QString::fromUtf8("modalities")));
+    applyModalityArray(&caps->inputModalities,
+                       obj.value(QString::fromUtf8("supported_input_modalities")));
+    applyModalityArray(&caps->outputModalities,
+                       obj.value(QString::fromUtf8("supported_output_modalities")));
+
+    const QJsonObject arch = obj.value(QString::fromUtf8("architecture")).toObject();
+    if (!arch.isEmpty())
+        applyArchitecture(caps, arch);
+
+    // Старый OpenRouter: architecture.modality = "text+image->text"
+    const QString modality = arch.value(QString::fromUtf8("modality")).toString().toLower();
+    if (!modality.isEmpty()
+        && caps->inputModalities.isEmpty())
     {
-        const QString m = in.at(i).toString().trimmed().toLower();
-        if (!m.isEmpty() && !caps->inputModalities.contains(m))
-            caps->inputModalities.append(m);
-    }
-    const QJsonArray out = arch.value(QString::fromUtf8("output_modalities")).toArray();
-    for (int i = 0; i < out.size(); ++i)
-    {
-        const QString m = out.at(i).toString().trimmed().toLower();
-        if (!m.isEmpty() && !caps->outputModalities.contains(m))
-            caps->outputModalities.append(m);
+        const int arrow = modality.indexOf(QString::fromUtf8("->"));
+        const QString inPart = arrow >= 0 ? modality.left(arrow) : modality;
+        applyModalityArray(&caps->inputModalities, inPart);
+        if (arrow >= 0)
+            applyModalityArray(&caps->outputModalities, modality.mid(arrow + 2));
     }
 }
 
@@ -367,7 +466,7 @@ static ModelCapabilities parseImagesModelObject(const QJsonObject &obj)
 {
     ModelCapabilities caps;
     caps.source = QString::fromUtf8("openrouter_images");
-    applyArchitecture(&caps, obj.value(QString::fromUtf8("architecture")).toObject());
+    applyModelModalities(&caps, obj);
     applySupportedParameters(&caps, obj.value(QString::fromUtf8("supported_parameters")));
     if (caps.inputModalities.isEmpty())
         caps.inputModalities << QString::fromUtf8("text");
@@ -382,38 +481,61 @@ static ModelCapabilities parseImagesModelObject(const QJsonObject &obj)
 static ModelCapabilities parseLlmModelObject(const QJsonObject &obj)
 {
     ModelCapabilities caps;
-    caps.source = QString::fromUtf8("openrouter_models");
-    applyArchitecture(&caps, obj.value(QString::fromUtf8("architecture")).toObject());
+    caps.source = QString::fromUtf8("provider_models");
+    applyModelModalities(&caps, obj);
     applySupportedParameters(&caps, obj.value(QString::fromUtf8("supported_parameters")));
-    // Старый формат: architecture.modality = "text+image->text"
-    const QString modality = obj.value(QString::fromUtf8("architecture")).toObject()
-                                 .value(QString::fromUtf8("modality")).toString().toLower();
-    if (!modality.isEmpty() && caps.inputModalities.isEmpty())
-    {
-        const int arrow = modality.indexOf(QString::fromUtf8("->"));
-        const QString inPart = arrow >= 0 ? modality.left(arrow) : modality;
-        foreach (const QString &token, inPart.split(QChar('+')))
-        {
-            const QString t = token.trimmed();
-            if (!t.isEmpty())
-                caps.inputModalities.append(t);
-        }
-        if (arrow >= 0)
-        {
-            foreach (const QString &token, modality.mid(arrow + 2).split(QChar('+')))
-            {
-                const QString t = token.trimmed();
-                if (!t.isEmpty())
-                    caps.outputModalities.append(t);
-            }
-        }
-    }
+    // Если провайдер отдал только id без modalities — не помечаем known,
+    // чтобы сработали OpenRouter enrich / эвристика.
+    const bool hadModalities = !caps.inputModalities.isEmpty()
+                               || !caps.outputModalities.isEmpty()
+                               || obj.contains(QString::fromUtf8("input_modalities"))
+                               || obj.contains(QString::fromUtf8("output_modalities"))
+                               || obj.contains(QString::fromUtf8("architecture"))
+                               || obj.contains(QString::fromUtf8("modalities"));
+    if (!hadModalities)
+        return ModelCapabilities();
+
     if (caps.inputModalities.isEmpty())
         caps.inputModalities << QString::fromUtf8("text");
     if (caps.outputModalities.isEmpty())
         caps.outputModalities << QString::fromUtf8("text");
     caps.known = true;
+    // DeepSeek и др.: корень объекта — надёжнее OpenRouter-обёртки.
+    if (obj.contains(QString::fromUtf8("input_modalities"))
+        || obj.contains(QString::fromUtf8("output_modalities")))
+        caps.source = QString::fromUtf8("provider_models");
+    else if (obj.contains(QString::fromUtf8("architecture")))
+        caps.source = QString::fromUtf8("openrouter_models");
     return caps;
+}
+
+//----------------------------------------------
+
+static bool onlyTextLikeInputs(const ModelCapabilities &caps)
+{
+    foreach (const QString &m, caps.inputModalities)
+    {
+        const QString t = m.toLower();
+        if (t != QString::fromUtf8("text") && t != QString::fromUtf8("file"))
+            return false;
+    }
+    return !caps.inputModalities.isEmpty() || caps.known;
+}
+
+//----------------------------------------------
+
+static void mergeMissingModalities(ModelCapabilities *dest, const ModelCapabilities &src)
+{
+    if (!dest)
+        return;
+    foreach (const QString &m, src.inputModalities)
+        appendModality(&dest->inputModalities, m);
+    foreach (const QString &m, src.outputModalities)
+        appendModality(&dest->outputModalities, m);
+    if (src.inputReferencesMin > dest->inputReferencesMin)
+        dest->inputReferencesMin = src.inputReferencesMin;
+    if (src.inputReferencesMax > dest->inputReferencesMax)
+        dest->inputReferencesMax = src.inputReferencesMax;
 }
 
 //----------------------------------------------
@@ -556,30 +678,44 @@ ModelCapabilities ModelCapabilityService::capabilitiesFor(const LlmProfile &prof
         caps = fetchOpenRouterModels(profile);
     }
 
-    // DeepSeek/DashScope/Qwen native /models часто без architecture —
-    // уточняем по публичному каталогу OpenRouter (vl/omni/vision).
-    if (!openRouter
-        && (!caps.known
-            || (caps.inputModalities.size() == 1
-                && caps.inputModalities.first() == QString::fromUtf8("text"))))
+    // DeepSeek/DashScope: если /models без modalities или только text —
+    // добираем image/audio/video из OpenRouter и эвристики по имени.
+    const ModelCapabilities guessed = heuristicFor(profile);
+    if (!openRouter && (!caps.known || onlyTextLikeInputs(caps)))
     {
         const ModelCapabilities pub = fetchOpenRouterPublicByModel(profile.model);
         if (pub.known
             && (pub.acceptsImage() || pub.acceptsAudio() || pub.acceptsVideo()))
-            caps = pub;
+        {
+            if (!caps.known)
+                caps = pub;
+            else
+                mergeMissingModalities(&caps, pub);
+        }
     }
 
     if (!caps.known)
-        caps = heuristicFor(profile);
-    else
+        caps = guessed;
+    else if (onlyTextLikeInputs(caps)
+             && (guessed.acceptsImage() || guessed.acceptsAudio()
+                 || guessed.acceptsVideo()))
     {
-        // У LLM-агента файлы всегда доступны через инструменты проекта.
-        if ((profile.modality == WorkerTaskKindLlm
-             || profile.modality == WorkerTaskKindDecisions
-             || profile.modality == WorkerTaskKindOther)
-            && !caps.inputModalities.contains(QString::fromUtf8("file")))
-            caps.inputModalities.append(QString::fromUtf8("file"));
+        // Алиасы вроде deepseek-v4-flash → V4.1-Flash (vision), пока каталог
+        // ещё отдаёт только text: подмешиваем эвристику.
+        mergeMissingModalities(&caps, guessed);
+        if (caps.source.isEmpty())
+            caps.source = QString::fromUtf8("heuristic_merge");
+        else
+            caps.source += QString::fromUtf8("+heuristic");
     }
+
+    // У LLM-агента файлы всегда доступны через инструменты проекта.
+    if ((profile.modality == WorkerTaskKindLlm
+         || profile.modality == WorkerTaskKindDecisions
+         || profile.modality == WorkerTaskKindOther)
+        && !caps.inputModalities.contains(QString::fromUtf8("file"),
+                                          Qt::CaseInsensitive))
+        caps.inputModalities.append(QString::fromUtf8("file"));
 
     _cache.insert(key, caps);
     return caps;

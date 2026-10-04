@@ -5,6 +5,7 @@
 #include "llmtypes.h"
 #include "workertypes.h"
 //----------------------------------------------
+#include <QJsonArray>
 #include <QList>
 #include <QObject>
 #include <QStringList>
@@ -112,6 +113,11 @@ public slots:
      */
     void sendUserMessage(QString text, int ingress = 0);
     /**
+     * @brief User-сообщение с multimodal content (text + image_url и т.п.).
+     * @a text — подпись для UI/сводок; @a contentParts уходит в API как content[].
+     */
+    void sendUserMultimodal(QString text, QJsonArray contentParts, int ingress = 0);
+    /**
      * @brief Ответ на исчерпание лимита вызовов функций.
      * @param continueWork true — добавить ещё столько же вызовов и продолжить;
      *                     false — запросить финальный ответ / complete_task.
@@ -183,7 +189,7 @@ private:
     void finishCompactFallback(QString reason);
     void continueAfterCompact();
     void clearCompactState();
-    void beginUserTurn(QString text, int ingress);
+    void beginUserTurn(QString text, int ingress, QJsonArray contentParts = QJsonArray());
     QList<LlmMessage> anchorMessages() const;
     bool isAnchorMessage(const LlmMessage &message) const;
     void requestCompletion();

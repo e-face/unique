@@ -12,7 +12,8 @@
 /**
  * @brief Что модель умеет принимать/отдавать и какие параметры API допустимы.
  *
- * Источник: OpenRouter /images/models или /models; иначе эвристика по modality+имени.
+ * Источник: provider /models (в т.ч. DeepSeek input_modalities),
+ * OpenRouter /images/models|/models; иначе эвристика по modality+имени.
  */
 struct ModelCapabilities
 {

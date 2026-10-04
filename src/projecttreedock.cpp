@@ -245,6 +245,10 @@ public:
         : QTreeView(parent)
     {
         setObjectName(QString::fromUtf8("projectTree"));
+        setDragEnabled(true);
+        setDragDropMode(QAbstractItemView::DragOnly);
+        setDefaultDropAction(Qt::CopyAction);
+        setSelectionMode(QAbstractItemView::ExtendedSelection);
     }
 
 protected:

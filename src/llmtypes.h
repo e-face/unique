@@ -1,10 +1,11 @@
 #ifndef LLMTYPES_H
 #define LLMTYPES_H
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QMetaType>
 #include <QString>
-#include <QJsonObject>
 
 //----------------------------------------------
 
@@ -39,6 +40,10 @@ struct LlmToolCall
 
 /**
  * @brief Сообщение диалога.
+ *
+ * @a content — текст (UI, сводки, эвристика токенов).
+ * @a contentParts — multimodal content для Chat Completions (text / image_url);
+ *                   если не пусто, в API уходит массив parts вместо строки content.
  */
 struct LlmMessage
 {
@@ -47,11 +52,12 @@ struct LlmMessage
     {
     }
 
-    LlmRole           role;
-    QString           content;
-    QString           name;
-    QString           toolCallId;
-    QString           reasoningContent;
+    LlmRole            role;
+    QString            content;
+    QJsonArray         contentParts;
+    QString            name;
+    QString            toolCallId;
+    QString            reasoningContent;
     QList<LlmToolCall> toolCalls;
 };
 

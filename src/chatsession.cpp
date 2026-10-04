@@ -15,6 +15,7 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QUuid>
 #include <QtGlobal>
 
@@ -374,11 +375,66 @@ QString ChatStore::filePath()
 
 //----------------------------------------------
 
+static QJsonArray contentPartsForStorage(const QJsonArray &parts)
+{
+    // На диск не пишем base64 media — иначе save-поток и JSON чата раздуваются
+    // до десятков МБ и на 32-bit часто валят процесс.
+    QJsonArray out;
+    for (int i = 0; i < parts.size(); ++i)
+    {
+        QJsonObject part = parts.at(i).toObject();
+        const QString type = part.value(QString::fromUtf8("type")).toString();
+        if (type == QString::fromUtf8("image_url"))
+        {
+            QJsonObject imageUrl = part.value(QString::fromUtf8("image_url")).toObject();
+            const QString url = imageUrl.value(QString::fromUtf8("url")).toString();
+            imageUrl.insert(QString::fromUtf8("url"),
+                            QString::fromUtf8("[omitted image, %1 chars]").arg(url.size()));
+            part.insert(QString::fromUtf8("image_url"), imageUrl);
+        }
+        else if (type == QString::fromUtf8("input_audio"))
+        {
+            QJsonObject audio = part.value(QString::fromUtf8("input_audio")).toObject();
+            const QString data = audio.value(QString::fromUtf8("data")).toString();
+            audio.insert(QString::fromUtf8("data"),
+                         QString::fromUtf8("[omitted audio, %1 chars]").arg(data.size()));
+            part.insert(QString::fromUtf8("input_audio"), audio);
+        }
+        else if (type == QString::fromUtf8("file"))
+        {
+            QJsonObject file = part.value(QString::fromUtf8("file")).toObject();
+            if (file.contains(QString::fromUtf8("file_data")))
+            {
+                const QString data = file.value(QString::fromUtf8("file_data")).toString();
+                file.insert(QString::fromUtf8("file_data"),
+                            QString::fromUtf8("[omitted file, %1 chars]").arg(data.size()));
+                part.insert(QString::fromUtf8("file"), file);
+            }
+        }
+        else if (type == QString::fromUtf8("text"))
+        {
+            QString text = part.value(QString::fromUtf8("text")).toString();
+            if (text.size() > 200000)
+            {
+                part.insert(QString::fromUtf8("text"),
+                            text.left(200000) + QString::fromUtf8("\n…[truncated]…"));
+            }
+        }
+        out.append(part);
+    }
+    return out;
+}
+
+//----------------------------------------------
+
 QJsonObject ChatStore::messageToJson(const LlmMessage &message)
 {
     QJsonObject object;
     object.insert(QString::fromUtf8("role"), llmRoleToString(message.role));
     object.insert(QString::fromUtf8("content"), message.content);
+    if (!message.contentParts.isEmpty())
+        object.insert(QString::fromUtf8("content_parts"),
+                      contentPartsForStorage(message.contentParts));
     if (!message.name.isEmpty())
         object.insert(QString::fromUtf8("name"), message.name);
     if (!message.toolCallId.isEmpty())
@@ -408,7 +464,25 @@ LlmMessage ChatStore::messageFromJson(const QJsonObject &object)
 {
     LlmMessage message;
     message.role = llmRoleFromString(object.value(QString::fromUtf8("role")).toString());
-    message.content = object.value(QString::fromUtf8("content")).toString();
+    const QJsonValue contentVal = object.value(QString::fromUtf8("content"));
+    if (contentVal.isArray())
+    {
+        message.contentParts = contentVal.toArray();
+        // Текст для UI: склеить text-части.
+        QStringList texts;
+        for (int i = 0; i < message.contentParts.size(); ++i)
+        {
+            const QJsonObject part = message.contentParts.at(i).toObject();
+            if (part.value(QString::fromUtf8("type")).toString()
+                == QString::fromUtf8("text"))
+                texts.append(part.value(QString::fromUtf8("text")).toString());
+        }
+        message.content = texts.join(QChar('\n'));
+    }
+    else
+        message.content = contentVal.toString();
+    if (object.contains(QString::fromUtf8("content_parts")))
+        message.contentParts = object.value(QString::fromUtf8("content_parts")).toArray();
     message.name = object.value(QString::fromUtf8("name")).toString();
     message.toolCallId = object.value(QString::fromUtf8("tool_call_id")).toString();
     message.reasoningContent = object.value(QString::fromUtf8("reasoning_content")).toString();

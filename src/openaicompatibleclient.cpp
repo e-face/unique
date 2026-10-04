@@ -422,9 +422,70 @@ void OpenAiCompatibleClient::send(const LlmRequest &request)
 
 //----------------------------------------------
 
+static QJsonArray redactContentPartsForInspect(const QJsonArray &parts)
+{
+    QJsonArray out;
+    for (int i = 0; i < parts.size(); ++i)
+    {
+        QJsonObject part = parts.at(i).toObject();
+        const QString type = part.value(QString::fromUtf8("type")).toString();
+        if (type == QString::fromUtf8("image_url"))
+        {
+            QJsonObject imageUrl = part.value(QString::fromUtf8("image_url")).toObject();
+            const QString url = imageUrl.value(QString::fromUtf8("url")).toString();
+            imageUrl.insert(QString::fromUtf8("url"),
+                            QString::fromUtf8("[image data omitted, %1 chars]")
+                                .arg(url.size()));
+            part.insert(QString::fromUtf8("image_url"), imageUrl);
+        }
+        else if (type == QString::fromUtf8("input_audio"))
+        {
+            QJsonObject audio = part.value(QString::fromUtf8("input_audio")).toObject();
+            const QString data = audio.value(QString::fromUtf8("data")).toString();
+            audio.insert(QString::fromUtf8("data"),
+                         QString::fromUtf8("[audio data omitted, %1 chars]")
+                             .arg(data.size()));
+            part.insert(QString::fromUtf8("input_audio"), audio);
+        }
+        else if (type == QString::fromUtf8("file"))
+        {
+            QJsonObject file = part.value(QString::fromUtf8("file")).toObject();
+            if (file.contains(QString::fromUtf8("file_data")))
+            {
+                const QString data = file.value(QString::fromUtf8("file_data")).toString();
+                file.insert(QString::fromUtf8("file_data"),
+                            QString::fromUtf8("[file data omitted, %1 chars]")
+                                .arg(data.size()));
+                part.insert(QString::fromUtf8("file"), file);
+            }
+        }
+        else if (type == QString::fromUtf8("text"))
+        {
+            QString text = part.value(QString::fromUtf8("text")).toString();
+            if (text.size() > 4000)
+            {
+                part.insert(QString::fromUtf8("text"),
+                            text.left(4000) + QString::fromUtf8("\n…[truncated]…"));
+            }
+        }
+        out.append(part);
+    }
+    return out;
+}
+
+//----------------------------------------------
+
 QString OpenAiCompatibleClient::encodeRequestText(const LlmRequest &request) const
 {
-    const QByteArray body = buildBody(request);
+    // Без редактирования base64 Inspect/логи съедают сотни МБ (32-bit → OOM).
+    LlmRequest view = request;
+    for (int i = 0; i < view.messages.size(); ++i)
+    {
+        if (!view.messages.at(i).contentParts.isEmpty())
+            view.messages[i].contentParts =
+                redactContentPartsForInspect(view.messages.at(i).contentParts);
+    }
+    const QByteArray body = buildBody(view);
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
     if (parseError.error != QJsonParseError::NoError)
@@ -636,7 +697,9 @@ QJsonObject OpenAiCompatibleClient::messageToJson(const LlmMessage &message) con
 
     if (!message.toolCalls.isEmpty())
     {
-        if (message.content.isEmpty())
+        if (!message.contentParts.isEmpty())
+            object.insert(QString::fromUtf8("content"), message.contentParts);
+        else if (message.content.isEmpty())
             object.insert(QString::fromUtf8("content"), QJsonValue::Null);
         else
             object.insert(QString::fromUtf8("content"), message.content);
@@ -655,6 +718,10 @@ QJsonObject OpenAiCompatibleClient::messageToJson(const LlmMessage &message) con
             calls.append(item);
         }
         object.insert(QString::fromUtf8("tool_calls"), calls);
+    }
+    else if (!message.contentParts.isEmpty())
+    {
+        object.insert(QString::fromUtf8("content"), message.contentParts);
     }
     else
     {
