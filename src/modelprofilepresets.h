@@ -25,7 +25,8 @@ struct ModelProfilePreset
     QString        model;
     QString        balanceUrl;
     QString        balanceJsonPath;
-    QString        hint;
+    /** Краткое назначение модели — копируется в LlmProfile.purpose. */
+    QString        purpose;
 };
 
 //----------------------------------------------

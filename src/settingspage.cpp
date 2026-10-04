@@ -1,5 +1,6 @@
 #include "settingspage.h"
 //----------------------------------------------
+#include "applocale.h"
 #include "appsettings.h"
 #include "modelprofilepresets.h"
 #include "openaicompatibleclient.h"
@@ -27,16 +28,52 @@
 
 //----------------------------------------------
 
+static void setFormLabelText(QFormLayout *form, QWidget *field, const QString &text)
+{
+    if (!form || !field)
+        return;
+    QWidget *w = form->labelForField(field);
+    if (QLabel *lab = qobject_cast<QLabel *>(w))
+        lab->setText(text);
+}
+
+//----------------------------------------------
+
 SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     : QScrollArea(parent)
     , _kind(kind)
+    , _viewBox(0)
+    , _apiBox(0)
+    , _profilesRefBox(0)
+    , _workersBox(0)
+    , _projectBox(0)
+    , _securityBox(0)
+    , _appearanceBox(0)
+    , _languageGroup(0)
+    , _languageCombo(0)
     , _hintLabel(0)
+    , _presetHint(0)
+    , _limitsHint(0)
+    , _budgetHint(0)
+    , _rootHint(0)
+    , _profilesRefHint(0)
+    , _permissionsHeadingLabel(0)
+    , _profileForm(0)
+    , _presetForm(0)
+    , _rootForm(0)
+    , _limitsForm(0)
+    , _budgetsForm(0)
+    , _appearanceForm(0)
+    , _languageForm(0)
+    , _revokeButton(0)
+    , _applyAppearanceButton(0)
     , _profileList(0)
     , _profileNameEdit(0)
     , _profileUrlEdit(0)
     , _profileModelEdit(0)
     , _profileTokenEdit(0)
     , _profileModalityCombo(0)
+    , _profilePurposeEdit(0)
     , _profileBalanceUrlEdit(0)
     , _profileBalancePathEdit(0)
     , _addProfileButton(0)
@@ -76,6 +113,9 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
         _roleCapSpin[i] = 0;
         _roleCapHint[i] = 0;
         _roleCapModelButton[i] = 0;
+        _roleRowLabel[i] = 0;
+        _roleFuncLabel[i] = 0;
+        _roleContextLabel[i] = 0;
     }
 
     setWidgetResizable(true);
@@ -87,6 +127,8 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     root->setSpacing(14);
     root->addWidget(buildHintBox());
     if (_kind == SettingsKindDefaults)
+        root->addWidget(buildLanguageBox());
+    if (_kind == SettingsKindDefaults)
         root->addWidget(buildApiBox());
     else
         root->addWidget(buildProfilesRefBox());
@@ -95,20 +137,20 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
         root->addWidget(buildProjectBox());
     else
     {
-        QGroupBox *viewBox = new QGroupBox(tr("Отображение"), this);
+        _viewBox = new QGroupBox(tr("Отображение"), this);
         _showForwardedCheck = new QCheckBox(
-            tr("Показывать пересылаемый контекст между воркерами"), viewBox);
+            tr("Показывать пересылаемый контекст между воркерами"), _viewBox);
         _showForwardedCheck->setToolTip(
             tr("Отчёты дочерних воркеров и прочий пересылаемый контекст "
                "в чатах воркеров и в журнале. На историю модели не влияет."));
-        _inspectCheck = new QCheckBox(tr("Просмотр запросов и ответов"), viewBox);
+        _inspectCheck = new QCheckBox(tr("Просмотр запросов и ответов"), _viewBox);
         _inspectCheck->setToolTip(tr("Каждый текстовый запрос и каждый ответ модели "
                                      "показываются в модальном окне. Пока окно открыто, "
                                      "данные в модель не отправляются."));
-        QVBoxLayout *viewLay = new QVBoxLayout(viewBox);
+        QVBoxLayout *viewLay = new QVBoxLayout(_viewBox);
         viewLay->addWidget(_showForwardedCheck);
         viewLay->addWidget(_inspectCheck);
-        root->addWidget(viewBox);
+        root->addWidget(_viewBox);
         connect(_showForwardedCheck, SIGNAL(toggled(bool)),
                 this, SLOT(sltShowForwardedToggled(bool)));
     }
@@ -130,6 +172,8 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     connect(settings, SIGNAL(profilesChanged()), this, SLOT(loadPresets()));
     connect(OpenAiCompatibleClient::catalogHub(), SIGNAL(contextWindowChanged()),
             this, SLOT(sltCatalogWindowsUpdated()));
+    connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
+            this, SLOT(retranslateUi()));
     requestContextCatalogs();
 }
 
@@ -154,26 +198,11 @@ void SettingsPage::reloadAll()
     if (_hintLabel)
     {
         if (_kind == SettingsKindDefaults)
-        {
-            _hintLabel->setText(
-                tr("Настройки программы: каталог config рядом с exe. Здесь "
-                   "хранятся профили моделей (config/ai). Новый проект получает "
-                   "ссылки на эти профили; оформление интерфейса задаётся только "
-                   "здесь."));
-        }
+            _hintLabel->setText(L("settings.hint.defaults"));
         else if (ready)
-        {
-            _hintLabel->setText(
-                tr("Настройки открытого проекта: каталог ___project___. Пресеты "
-                   "и лимиты хранятся здесь и ссылаются на профили из настроек "
-                   "программы (без копий тел профилей в папке проекта)."));
-        }
+            _hintLabel->setText(L("settings.hint.project"));
         else
-        {
-            _hintLabel->setText(
-                tr("Проект не открыт: настройки проекта недоступны. "
-                   "Откройте или создайте проект через меню «Файл»."));
-        }
+            _hintLabel->setText(L("settings.hint.noProject"));
     }
     loadAppearance();
     loadControlFlags();
@@ -209,6 +238,370 @@ QWidget *SettingsPage::buildHintBox()
     layout->setContentsMargins(10, 8, 10, 8);
     layout->addWidget(_hintLabel);
     return frame;
+}
+
+//----------------------------------------------
+
+QWidget *SettingsPage::buildLanguageBox()
+{
+    _languageGroup = new QGroupBox(L("settings.language.title"), this);
+    _languageForm = new QFormLayout(_languageGroup);
+    _languageCombo = new QComboBox(_languageGroup);
+    AppLocale *locale = AppLocale::instance();
+    const QStringList codes = locale->availableLanguages();
+    foreach (const QString &code, codes)
+    {
+        if (code != QString::fromUtf8("ru")
+            && code != QString::fromUtf8("en")
+            && code != QString::fromUtf8("zh"))
+            continue;
+        _languageCombo->addItem(locale->languageDisplayName(code), code);
+    }
+    const QString current = AppSettings::instance()->uiLanguage();
+    const int idx = _languageCombo->findData(current);
+    if (idx >= 0)
+        _languageCombo->setCurrentIndex(idx);
+    _languageForm->addRow(L("settings.language.label"), _languageCombo);
+    connect(_languageCombo, SIGNAL(currentIndexChanged(int)),
+            this, SLOT(sltLanguageComboChanged(int)));
+    return _languageGroup;
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltLanguageComboChanged(int index)
+{
+    if (!_languageCombo || index < 0)
+        return;
+    const QString code = _languageCombo->itemData(index).toString();
+    if (code.isEmpty())
+        return;
+    if (code == AppLocale::instance()->language())
+        return;
+    AppSettings::instance()->setUiLanguage(code);
+}
+
+//----------------------------------------------
+
+void SettingsPage::retranslateUi()
+{
+    if (_languageGroup)
+        _languageGroup->setTitle(L("settings.language.title"));
+    if (_languageForm && _languageCombo)
+        setFormLabelText(_languageForm, _languageCombo, L("settings.language.label"));
+    if (_languageCombo && _languageGroup)
+    {
+        const QSignalBlocker blocker(_languageCombo);
+        const QString current = AppLocale::instance()->language();
+        for (int i = 0; i < _languageCombo->count(); ++i)
+        {
+            const QString code = _languageCombo->itemData(i).toString();
+            Q_UNUSED(code);
+            _languageCombo->setItemText(i, AppLocale::instance()->languageDisplayName(
+                                            _languageCombo->itemData(i).toString()));
+        }
+        const int idx = _languageCombo->findData(current);
+        if (idx >= 0)
+            _languageCombo->setCurrentIndex(idx);
+    }
+
+    if (_viewBox)
+        _viewBox->setTitle(tr("Отображение"));
+    if (_showForwardedCheck)
+    {
+        _showForwardedCheck->setText(
+            tr("Показывать пересылаемый контекст между воркерами"));
+        _showForwardedCheck->setToolTip(
+            tr("Отчёты дочерних воркеров и прочий пересылаемый контекст "
+               "в чатах воркеров и в журнале. На историю модели не влияет."));
+    }
+    if (_inspectCheck)
+    {
+        _inspectCheck->setText(tr("Просмотр запросов и ответов"));
+        _inspectCheck->setToolTip(
+            tr("Каждый текстовый запрос и каждый ответ модели "
+               "показываются в модальном окне. Пока окно открыто, "
+               "данные в модель не отправляются."));
+    }
+
+    if (_apiBox)
+        _apiBox->setTitle(tr("Профили моделей"));
+    if (_profileNameEdit)
+        _profileNameEdit->setPlaceholderText(tr("имя профиля"));
+    if (_profileModelEdit)
+        _profileModelEdit->setPlaceholderText(tr("идентификатор модели"));
+    if (_profileTokenEdit)
+        _profileTokenEdit->setPlaceholderText(tr("токен API"));
+    if (_profileBalanceUrlEdit)
+        _profileBalanceUrlEdit->setPlaceholderText(
+            tr("пусто = авто; DeepSeek /user/balance, Qwen /api/v1/quotas"));
+    if (_profileBalancePathEdit)
+        _profileBalancePathEdit->setPlaceholderText(
+            tr("опц. путь JSON: data.credits или balance_infos.0.total_balance"));
+    if (_addProfileButton)
+        _addProfileButton->setText(tr("Добавить"));
+    if (_removeProfileButton)
+        _removeProfileButton->setText(tr("Удалить"));
+    if (_profileForm)
+    {
+        setFormLabelText(_profileForm, _profileNameEdit, tr("Имя профиля:"));
+        setFormLabelText(_profileForm, _profileUrlEdit, tr("Адрес API:"));
+        setFormLabelText(_profileForm, _profileModelEdit, tr("Модель:"));
+        setFormLabelText(_profileForm, _profileTokenEdit, tr("Токен:"));
+        setFormLabelText(_profileForm, _profileModalityCombo, tr("Класс задач API:"));
+        setFormLabelText(_profileForm, _profilePurposeEdit, tr("Назначение модели:"));
+        setFormLabelText(_profileForm, _profileBalanceUrlEdit, tr("URL баланса:"));
+        setFormLabelText(_profileForm, _profileBalancePathEdit, tr("JSON путь баланса:"));
+    }
+    if (_profilePurposeEdit)
+        _profilePurposeEdit->setPlaceholderText(
+            tr("кратко: для какой задачи эта модель, напр. генерация картинок / сегментация"));
+    if (_profileModalityCombo)
+    {
+        const QSignalBlocker blocker(_profileModalityCombo);
+        for (int i = 0; i < _profileModalityCombo->count(); ++i)
+        {
+            const int kind = _profileModalityCombo->itemData(i).toInt();
+            QString text;
+            switch (WorkerTaskKind(kind))
+            {
+            case WorkerTaskKindImageGeneration:
+                text = tr("Генерация изображений");
+                break;
+            case WorkerTaskKindSpeech:
+                text = tr("Речь (TTS/STT)");
+                break;
+            case WorkerTaskKindAudioGeneration:
+                text = tr("Генерация аудио");
+                break;
+            case WorkerTaskKindVideoGeneration:
+                text = tr("Генерация видео");
+                break;
+            case WorkerTaskKindEmbedding:
+                text = tr("Эмбеддинги");
+                break;
+            case WorkerTaskKindDecisions:
+                text = tr("Decisions (решения)");
+                break;
+            case WorkerTaskKindOther:
+                text = tr("Другое");
+                break;
+            case WorkerTaskKindLlm:
+            default:
+                text = tr("LLM (текст / агент)");
+                break;
+            }
+            _profileModalityCombo->setItemText(i, text);
+        }
+    }
+
+    if (_profilesRefBox)
+        _profilesRefBox->setTitle(tr("Профили моделей"));
+    if (_profilesRefHint)
+        _profilesRefHint->setText(L("settings.hint.profilesRef"));
+
+    if (_workersBox)
+        _workersBox->setTitle(tr("Воркеры"));
+    if (_presetHint)
+        _presetHint->setText(L("settings.hint.presets"));
+    if (_addPresetButton)
+        _addPresetButton->setText(tr("Добавить"));
+    if (_removePresetButton)
+        _removePresetButton->setText(tr("Удалить"));
+    if (_presetForm)
+    {
+        setFormLabelText(_presetForm, _presetTypeCombo, tr("Тип воркера:"));
+        setFormLabelText(_presetForm, _presetTaskKindCombo, tr("Класс задач:"));
+        setFormLabelText(_presetForm, _presetProfileCombo, tr("Профиль модели:"));
+    }
+    if (_presetTypeCombo)
+    {
+        const QSignalBlocker blocker(_presetTypeCombo);
+        for (int i = 0; i < _presetTypeCombo->count(); ++i)
+        {
+            const WorkerType type = WorkerType(_presetTypeCombo->itemData(i).toInt());
+            QString text;
+            switch (type)
+            {
+            case WorkerTypeExecutor:
+                text = tr("Исполнитель");
+                break;
+            case WorkerTypeTester:
+                text = tr("Тестировщик");
+                break;
+            case WorkerTypeTool:
+                text = tr("Инструмент");
+                break;
+            case WorkerTypeManager:
+            default:
+                text = tr("Менеджер");
+                break;
+            }
+            _presetTypeCombo->setItemText(i, text);
+        }
+    }
+    if (_presetTaskKindCombo)
+    {
+        const QSignalBlocker blocker(_presetTaskKindCombo);
+        for (int i = 0; i < _presetTaskKindCombo->count(); ++i)
+        {
+            const WorkerTaskKind kind = WorkerTaskKind(_presetTaskKindCombo->itemData(i).toInt());
+            QString text;
+            switch (kind)
+            {
+            case WorkerTaskKindImageGeneration:
+                text = tr("Генерация изображений");
+                break;
+            case WorkerTaskKindSpeech:
+                text = tr("Речь (TTS/STT)");
+                break;
+            case WorkerTaskKindAudioGeneration:
+                text = tr("Генерация аудио");
+                break;
+            case WorkerTaskKindVideoGeneration:
+                text = tr("Генерация видео");
+                break;
+            case WorkerTaskKindEmbedding:
+                text = tr("Эмбеддинги");
+                break;
+            case WorkerTaskKindDecisions:
+                text = tr("Decisions (решения)");
+                break;
+            case WorkerTaskKindOther:
+                text = tr("Другое");
+                break;
+            case WorkerTaskKindLlm:
+            default:
+                text = tr("LLM (текст / агент)");
+                break;
+            }
+            _presetTaskKindCombo->setItemText(i, text);
+        }
+    }
+    if (_rootPresetCombo)
+    {
+        _rootPresetCombo->setToolTip(
+            tr("Пресет главного менеджера при создании проекта и очистке сеанса. "
+               "Можно выбрать только пресет с ролью «Менеджер»."));
+    }
+    if (_rootHint)
+        _rootHint->setText(L("settings.hint.root"));
+    if (_rootForm && _rootPresetCombo)
+        setFormLabelText(_rootForm, _rootPresetCombo, tr("Пресет главного менеджера:"));
+
+    if (_limitsHint)
+        _limitsHint->setText(L("settings.hint.limits"));
+    if (_maxDepthSpin)
+        _maxDepthSpin->setToolTip(tr("Главный чат — уровень 0. Менеджер на уровне N-1 "
+                                       "может создавать только исполнителей и тестировщиков."));
+    if (_maxConcurrentSpin)
+        _maxConcurrentSpin->setToolTip(tr("Сколько воркеров одновременно обращаются к модели. "
+                                          "Остальные стоят в очереди и стартуют, когда "
+                                          "освобождается место."));
+    if (_llmTimeoutSpin)
+    {
+        _llmTimeoutSpin->setSuffix(tr(" с"));
+        _llmTimeoutSpin->setToolTip(tr("Сколько ждать ответ модели на один запрос. "
+                                       "Если сервер молчит дольше, запрос прерывается "
+                                       "с ошибкой таймаута, а не висит бесконечно."));
+    }
+    if (_limitsForm)
+    {
+        setFormLabelText(_limitsForm, _maxDepthSpin, tr("Максимальная глубина вложенности:"));
+        setFormLabelText(_limitsForm, _maxConcurrentSpin,
+                         tr("Одновременно работающих воркеров:"));
+        setFormLabelText(_limitsForm, _llmTimeoutSpin, tr("Таймаут ответа модели:"));
+    }
+
+    if (_budgetHint)
+        _budgetHint->setText(L("settings.hint.budgets"));
+    static const char *roleTitles[4] = {
+        QT_TR_NOOP("Менеджер"),
+        QT_TR_NOOP("Исполнитель"),
+        QT_TR_NOOP("Тестировщик"),
+        QT_TR_NOOP("Инструмент")
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        if (_roleRowLabel[i])
+            _roleRowLabel[i]->setText(tr(roleTitles[i]) + QString::fromUtf8(":"));
+        if (_roleFuncLabel[i])
+            _roleFuncLabel[i]->setText(tr("функции:"));
+        if (_roleContextLabel[i])
+            _roleContextLabel[i]->setText(tr("контекст:"));
+        if (_roleIterSpin[i])
+        {
+            _roleIterSpin[i]->setToolTip(tr("Максимум вызовов функций за ход (до 10000). "
+                                             "После лимита воркер обязан завершить задачу."));
+        }
+        if (_roleCapSpin[i])
+        {
+            _roleCapSpin[i]->setSpecialValueText(tr("окно модели"));
+            _roleCapSpin[i]->setToolTip(tr("0 — использовать полное окно модели. "
+                                            "Можно ввести точное число токенов, включая "
+                                            "максимум модели."));
+        }
+        if (_roleCapModelButton[i])
+        {
+            _roleCapModelButton[i]->setText(tr("окно модели"));
+            _roleCapModelButton[i]->setToolTip(
+                tr("Подставить максимальный контекст модели этой роли."));
+        }
+    }
+
+    if (_projectBox)
+        _projectBox->setTitle(tr("Проект"));
+
+    if (_securityBox)
+        _securityBox->setTitle(tr("Контроль действий"));
+    if (_shellControlCheck)
+    {
+        _shellControlCheck->setText(tr("Контроль командной строки"));
+        _shellControlCheck->setToolTip(
+            tr("Запрашивать подтверждение перед выполнением команд. "
+               "Список «всегда» относится к этому набору настроек."));
+    }
+    if (_outsideFilesControlCheck)
+    {
+        _outsideFilesControlCheck->setText(
+            tr("Контроль изменения файлов вне рабочей директории"));
+        _outsideFilesControlCheck->setToolTip(
+            tr("Запрашивать подтверждение при создании, изменении или удалении "
+               "файлов вне проекта."));
+    }
+    if (_systemSettingsControlCheck)
+    {
+        _systemSettingsControlCheck->setText(tr("Контроль изменения настроек системы"));
+        _systemSettingsControlCheck->setToolTip(
+            tr("Запрашивать подтверждение для команд, затрагивающих системные настройки "
+               "(reg, netsh, sc и т.п.), даже если контроль командной строки выключен."));
+    }
+    if (_permissionsHeadingLabel)
+        _permissionsHeadingLabel->setText(tr("Выданные разрешения «всегда»:"));
+    if (_revokeButton)
+        _revokeButton->setText(tr("Отозвать разрешение"));
+
+    if (_appearanceBox)
+        _appearanceBox->setTitle(tr("Оформление"));
+    if (_applyAppearanceButton)
+        _applyAppearanceButton->setText(tr("Применить оформление"));
+    if (_appearanceForm)
+    {
+        setFormLabelText(_appearanceForm, _fontSpin, tr("Размер шрифта:"));
+        setFormLabelText(_appearanceForm, _textColorButton, tr("Цвет текста:"));
+        setFormLabelText(_appearanceForm, _windowColorButton, tr("Цвет фона:"));
+        setFormLabelText(_appearanceForm, _panelColorButton, tr("Цвет панелей:"));
+        setFormLabelText(_appearanceForm, _accentColorButton, tr("Цвет акцента:"));
+        setFormLabelText(_appearanceForm, _chatUserColorButton,
+                         tr("Чат: сообщения пользователя:"));
+        setFormLabelText(_appearanceForm, _chatAssistantColorButton,
+                         tr("Чат: сообщения ассистента:"));
+        setFormLabelText(_appearanceForm, _chatOtherColorButton,
+                         tr("Чат: прочие сообщения:"));
+    }
+
+    reloadAll();
+    updateRoleCapHints();
 }
 
 //----------------------------------------------
@@ -468,6 +861,7 @@ void SettingsPage::loadCurrentProfileFields()
     const QSignalBlocker b3(_profileModelEdit);
     const QSignalBlocker b4(_profileTokenEdit);
     const QSignalBlocker bMod(_profileModalityCombo);
+    const QSignalBlocker bPurpose(_profilePurposeEdit);
     const QSignalBlocker b5(_profileBalanceUrlEdit);
     const QSignalBlocker b6(_profileBalancePathEdit);
     if (_profileNameEdit)
@@ -485,6 +879,8 @@ void SettingsPage::loadCurrentProfileFields()
             index = 0;
         _profileModalityCombo->setCurrentIndex(index);
     }
+    if (_profilePurposeEdit)
+        _profilePurposeEdit->setText(profile.purpose);
     if (_profileBalanceUrlEdit)
         _profileBalanceUrlEdit->setText(profile.balanceUrl);
     if (_profileBalancePathEdit)
@@ -541,7 +937,8 @@ void SettingsPage::commitCurrentProfile()
 
 QWidget *SettingsPage::buildApiBox()
 {
-    QGroupBox *box = new QGroupBox(tr("Профили моделей"), this);
+    _apiBox = new QGroupBox(tr("Профили моделей"), this);
+    QGroupBox *box = _apiBox;
     _profileList = new QListWidget(box);
     _profileList->setMinimumWidth(180);
     _profileList->setMinimumHeight(140);
@@ -561,8 +958,14 @@ QWidget *SettingsPage::buildApiBox()
     _profileModalityCombo->addItem(tr("Генерация изображений"),
                                    int(WorkerTaskKindImageGeneration));
     _profileModalityCombo->addItem(tr("Речь (TTS/STT)"), int(WorkerTaskKindSpeech));
+    _profileModalityCombo->addItem(tr("Генерация аудио"), int(WorkerTaskKindAudioGeneration));
+    _profileModalityCombo->addItem(tr("Генерация видео"), int(WorkerTaskKindVideoGeneration));
     _profileModalityCombo->addItem(tr("Эмбеддинги"), int(WorkerTaskKindEmbedding));
+    _profileModalityCombo->addItem(tr("Decisions (решения)"), int(WorkerTaskKindDecisions));
     _profileModalityCombo->addItem(tr("Другое"), int(WorkerTaskKindOther));
+    _profilePurposeEdit = new QLineEdit(box);
+    _profilePurposeEdit->setPlaceholderText(
+        tr("кратко: для какой задачи эта модель, напр. генерация картинок / сегментация"));
     _profileBalanceUrlEdit = new QLineEdit(box);
     _profileBalanceUrlEdit->setPlaceholderText(
         tr("пусто = авто; DeepSeek /user/balance, Qwen /api/v1/quotas"));
@@ -581,6 +984,8 @@ QWidget *SettingsPage::buildApiBox()
     connect(_profileTokenEdit, SIGNAL(editingFinished()), this, SLOT(sltProfileFieldChanged()));
     connect(_profileModalityCombo, SIGNAL(currentIndexChanged(int)),
             this, SLOT(sltProfileFieldChanged()));
+    connect(_profilePurposeEdit, SIGNAL(editingFinished()),
+            this, SLOT(sltProfileFieldChanged()));
     connect(_profileBalanceUrlEdit, SIGNAL(editingFinished()),
             this, SLOT(sltProfileFieldChanged()));
     connect(_profileBalancePathEdit, SIGNAL(editingFinished()),
@@ -588,14 +993,15 @@ QWidget *SettingsPage::buildApiBox()
     connect(_addProfileButton, SIGNAL(clicked()), this, SLOT(sltAddProfile()));
     connect(_removeProfileButton, SIGNAL(clicked()), this, SLOT(sltRemoveProfile()));
 
-    QFormLayout *form = new QFormLayout();
-    form->addRow(tr("Имя профиля:"), _profileNameEdit);
-    form->addRow(tr("Адрес API:"), _profileUrlEdit);
-    form->addRow(tr("Модель:"), _profileModelEdit);
-    form->addRow(tr("Токен:"), _profileTokenEdit);
-    form->addRow(tr("Класс задач API:"), _profileModalityCombo);
-    form->addRow(tr("URL баланса:"), _profileBalanceUrlEdit);
-    form->addRow(tr("JSON путь баланса:"), _profileBalancePathEdit);
+    _profileForm = new QFormLayout();
+    _profileForm->addRow(tr("Имя профиля:"), _profileNameEdit);
+    _profileForm->addRow(tr("Адрес API:"), _profileUrlEdit);
+    _profileForm->addRow(tr("Модель:"), _profileModelEdit);
+    _profileForm->addRow(tr("Токен:"), _profileTokenEdit);
+    _profileForm->addRow(tr("Класс задач API:"), _profileModalityCombo);
+    _profileForm->addRow(tr("Назначение модели:"), _profilePurposeEdit);
+    _profileForm->addRow(tr("URL баланса:"), _profileBalanceUrlEdit);
+    _profileForm->addRow(tr("JSON путь баланса:"), _profileBalancePathEdit);
 
     QHBoxLayout *buttons = new QHBoxLayout();
     buttons->addWidget(_addProfileButton);
@@ -603,7 +1009,7 @@ QWidget *SettingsPage::buildApiBox()
     buttons->addStretch();
 
     QVBoxLayout *right = new QVBoxLayout();
-    right->addLayout(form);
+    right->addLayout(_profileForm);
     right->addLayout(buttons);
     right->addStretch();
 
@@ -620,15 +1026,12 @@ QWidget *SettingsPage::buildApiBox()
 
 QWidget *SettingsPage::buildProfilesRefBox()
 {
-    QGroupBox *box = new QGroupBox(tr("Профили моделей"), this);
-    QLabel *hint = new QLabel(
-        tr("Полные профили (URL, модель, токен) хранятся только в настройках "
-           "программы (config/ai). В проекте пресеты воркеров ссылаются на них "
-           "по идентификатору — выберите нужный профиль в комбобоксе пресета."),
-        box);
-    hint->setWordWrap(true);
+    _profilesRefBox = new QGroupBox(tr("Профили моделей"), this);
+    QGroupBox *box = _profilesRefBox;
+    _profilesRefHint = new QLabel(L("settings.hint.profilesRef"), box);
+    _profilesRefHint->setWordWrap(true);
     QVBoxLayout *layout = new QVBoxLayout(box);
-    layout->addWidget(hint);
+    layout->addWidget(_profilesRefHint);
     return box;
 }
 
@@ -636,17 +1039,13 @@ QWidget *SettingsPage::buildProfilesRefBox()
 
 QWidget *SettingsPage::buildWorkersBox()
 {
-    QGroupBox *box = new QGroupBox(tr("Воркеры"), this);
+    _workersBox = new QGroupBox(tr("Воркеры"), this);
+    QGroupBox *box = _workersBox;
     QVBoxLayout *layout = new QVBoxLayout(box);
 
-    QLabel *presetHint = new QLabel(
-        tr("Пресеты воркеров: тип роли + класс задач + ссылка на профиль модели "
-           "из настроек программы. У профиля свой класс задач API (modality): "
-           "LLM, изображения, речь, эмбеддинги. Менеджер выбирает preset_id в "
-           "delegate_task и add_group_member под задачу. Уникальна комбинация "
-           "тип+класс задач+профиль."), box);
-    presetHint->setWordWrap(true);
-    layout->addWidget(presetHint);
+    _presetHint = new QLabel(L("settings.hint.presets"), box);
+    _presetHint->setWordWrap(true);
+    layout->addWidget(_presetHint);
 
     _presetList = new QListWidget(box);
     _presetList->setMinimumWidth(180);
@@ -663,7 +1062,10 @@ QWidget *SettingsPage::buildWorkersBox()
     _presetTaskKindCombo->addItem(tr("Генерация изображений"),
                                   int(WorkerTaskKindImageGeneration));
     _presetTaskKindCombo->addItem(tr("Речь (TTS/STT)"), int(WorkerTaskKindSpeech));
+    _presetTaskKindCombo->addItem(tr("Генерация аудио"), int(WorkerTaskKindAudioGeneration));
+    _presetTaskKindCombo->addItem(tr("Генерация видео"), int(WorkerTaskKindVideoGeneration));
     _presetTaskKindCombo->addItem(tr("Эмбеддинги"), int(WorkerTaskKindEmbedding));
+    _presetTaskKindCombo->addItem(tr("Decisions (решения)"), int(WorkerTaskKindDecisions));
     _presetTaskKindCombo->addItem(tr("Другое"), int(WorkerTaskKindOther));
 
     _presetProfileCombo = new QComboBox(box);
@@ -683,10 +1085,10 @@ QWidget *SettingsPage::buildWorkersBox()
     connect(_addPresetButton, SIGNAL(clicked()), this, SLOT(sltAddPreset()));
     connect(_removePresetButton, SIGNAL(clicked()), this, SLOT(sltRemovePreset()));
 
-    QFormLayout *presetForm = new QFormLayout();
-    presetForm->addRow(tr("Тип воркера:"), _presetTypeCombo);
-    presetForm->addRow(tr("Класс задач:"), _presetTaskKindCombo);
-    presetForm->addRow(tr("Профиль модели:"), _presetProfileCombo);
+    _presetForm = new QFormLayout();
+    _presetForm->addRow(tr("Тип воркера:"), _presetTypeCombo);
+    _presetForm->addRow(tr("Класс задач:"), _presetTaskKindCombo);
+    _presetForm->addRow(tr("Профиль модели:"), _presetProfileCombo);
 
     QHBoxLayout *presetButtons = new QHBoxLayout();
     presetButtons->addWidget(_addPresetButton);
@@ -694,7 +1096,7 @@ QWidget *SettingsPage::buildWorkersBox()
     presetButtons->addStretch();
 
     QVBoxLayout *presetRight = new QVBoxLayout();
-    presetRight->addLayout(presetForm);
+    presetRight->addLayout(_presetForm);
     presetRight->addLayout(presetButtons);
     presetRight->addStretch();
 
@@ -712,15 +1114,12 @@ QWidget *SettingsPage::buildWorkersBox()
                "Можно выбрать только пресет с ролью «Менеджер»."));
         connect(_rootPresetCombo, SIGNAL(currentIndexChanged(int)),
                 this, SLOT(sltRootPresetChanged()));
-        QLabel *rootHint = new QLabel(
-            tr("Главный менеджер нового проекта: только пресет с ролью «Менеджер» "
-               "(профиль модели). Копируется в проект при создании."),
-            box);
-        rootHint->setWordWrap(true);
-        layout->addWidget(rootHint);
-        QFormLayout *rootForm = new QFormLayout();
-        rootForm->addRow(tr("Пресет главного менеджера:"), _rootPresetCombo);
-        layout->addLayout(rootForm);
+        _rootHint = new QLabel(L("settings.hint.root"), box);
+        _rootHint->setWordWrap(true);
+        layout->addWidget(_rootHint);
+        _rootForm = new QFormLayout();
+        _rootForm->addRow(tr("Пресет главного менеджера:"), _rootPresetCombo);
+        layout->addLayout(_rootForm);
     }
 
     QFrame *line = new QFrame(box);
@@ -728,13 +1127,9 @@ QWidget *SettingsPage::buildWorkersBox()
     line->setFrameShadow(QFrame::Sunken);
     layout->addWidget(line);
 
-    QLabel *limitsHint = new QLabel(
-        tr("Ограничения дерева воркеров. Модели получают их в первом сообщении, "
-           "а не в системном промпте (так префикс кешируется у провайдера): "
-           "на последнем уровне менеджер раздаёт работу только исполнителям, "
-           "лишние воркеры ждут в очереди."), box);
-    limitsHint->setWordWrap(true);
-    layout->addWidget(limitsHint);
+    _limitsHint = new QLabel(L("settings.hint.limits"), box);
+    _limitsHint->setWordWrap(true);
+    layout->addWidget(_limitsHint);
 
     _maxDepthSpin = new QSpinBox(box);
     _maxDepthSpin->setRange(1, 8);
@@ -760,21 +1155,16 @@ QWidget *SettingsPage::buildWorkersBox()
     connect(_llmTimeoutSpin, SIGNAL(valueChanged(int)),
             this, SLOT(sltWorkerLimitsChanged()));
 
-    QFormLayout *limits = new QFormLayout();
-    limits->setContentsMargins(0, 0, 0, 0);
-    limits->addRow(tr("Максимальная глубина вложенности:"), _maxDepthSpin);
-    limits->addRow(tr("Одновременно работающих воркеров:"), _maxConcurrentSpin);
-    limits->addRow(tr("Таймаут ответа модели:"), _llmTimeoutSpin);
-    layout->addLayout(limits);
+    _limitsForm = new QFormLayout();
+    _limitsForm->setContentsMargins(0, 0, 0, 0);
+    _limitsForm->addRow(tr("Максимальная глубина вложенности:"), _maxDepthSpin);
+    _limitsForm->addRow(tr("Одновременно работающих воркеров:"), _maxConcurrentSpin);
+    _limitsForm->addRow(tr("Таймаут ответа модели:"), _llmTimeoutSpin);
+    layout->addLayout(_limitsForm);
 
-    QLabel *budgetHint = new QLabel(
-        tr("Бюджеты ролей: сколько вызовов функций за один ход и потолок "
-           "контекста в токенах. 0 или кнопка «окно модели» берут полный "
-           "контекст модели из пресета этой роли (в том числе 1M у Qwen). "
-           "Сжатие истории у всех ролей одинаковое: сводку пишет сама модель, "
-           "формулировка задачи от родителя остаётся дословно."), box);
-    budgetHint->setWordWrap(true);
-    layout->addWidget(budgetHint);
+    _budgetHint = new QLabel(L("settings.hint.budgets"), box);
+    _budgetHint->setWordWrap(true);
+    layout->addWidget(_budgetHint);
 
     static const char *roleTitles[4] = {
         QT_TR_NOOP("Менеджер"),
@@ -782,8 +1172,8 @@ QWidget *SettingsPage::buildWorkersBox()
         QT_TR_NOOP("Тестировщик"),
         QT_TR_NOOP("Инструмент")
     };
-    QFormLayout *budgets = new QFormLayout();
-    budgets->setContentsMargins(0, 0, 0, 0);
+    _budgetsForm = new QFormLayout();
+    _budgetsForm->setContentsMargins(0, 0, 0, 0);
     for (int i = 0; i < 4; ++i)
     {
         _roleIterSpin[i] = new QSpinBox(box);
@@ -815,10 +1205,13 @@ QWidget *SettingsPage::buildWorkersBox()
         _roleCapHint[i] = new QLabel(box);
         _roleCapHint[i]->setWordWrap(true);
 
+        _roleFuncLabel[i] = new QLabel(tr("функции:"), box);
+        _roleContextLabel[i] = new QLabel(tr("контекст:"), box);
+        _roleRowLabel[i] = new QLabel(tr(roleTitles[i]) + QString::fromUtf8(":"), box);
         QHBoxLayout *row = new QHBoxLayout();
-        row->addWidget(new QLabel(tr("функции:"), box));
+        row->addWidget(_roleFuncLabel[i]);
         row->addWidget(_roleIterSpin[i]);
-        row->addWidget(new QLabel(tr("контекст:"), box));
+        row->addWidget(_roleContextLabel[i]);
         row->addWidget(_roleCapSpin[i]);
         row->addWidget(_roleCapModelButton[i]);
         QVBoxLayout *cell = new QVBoxLayout();
@@ -826,9 +1219,9 @@ QWidget *SettingsPage::buildWorkersBox()
         cell->setSpacing(2);
         cell->addLayout(row);
         cell->addWidget(_roleCapHint[i]);
-        budgets->addRow(tr(roleTitles[i]) + QString::fromUtf8(":"), cell);
+        _budgetsForm->addRow(_roleRowLabel[i], cell);
     }
-    layout->addLayout(budgets);
+    layout->addLayout(_budgetsForm);
     return box;
 }
 
@@ -871,8 +1264,17 @@ QString SettingsPage::presetListLabel(const WorkerPreset &preset) const
     case WorkerTaskKindSpeech:
         taskName = tr("Speech");
         break;
+    case WorkerTaskKindAudioGeneration:
+        taskName = tr("Audio");
+        break;
+    case WorkerTaskKindVideoGeneration:
+        taskName = tr("Video");
+        break;
     case WorkerTaskKindEmbedding:
         taskName = tr("Embedding");
+        break;
+    case WorkerTaskKindDecisions:
+        taskName = tr("Decisions");
         break;
     case WorkerTaskKindOther:
         taskName = tr("Other");
@@ -906,6 +1308,14 @@ void SettingsPage::fillPresetProfileCombo()
         QString title = profile.name.trimmed();
         if (title.isEmpty())
             title = profile.id;
+        const QString purpose = profile.purpose.trimmed().simplified();
+        if (!purpose.isEmpty())
+        {
+            QString shortPurpose = purpose;
+            if (shortPurpose.size() > 48)
+                shortPurpose = shortPurpose.left(45) + QString::fromUtf8("...");
+            title += QString::fromUtf8(" — ") + shortPurpose;
+        }
         _presetProfileCombo->addItem(title, profile.id);
     }
     int index = _presetProfileCombo->findData(current);
@@ -1115,10 +1525,12 @@ void SettingsPage::sltAddPreset()
     QList<WorkerTaskKind> taskOrder;
     static const WorkerTaskKind kTaskKinds[] = {
         WorkerTaskKindLlm, WorkerTaskKindImageGeneration, WorkerTaskKindSpeech,
-        WorkerTaskKindEmbedding, WorkerTaskKindOther
+        WorkerTaskKindAudioGeneration, WorkerTaskKindVideoGeneration,
+        WorkerTaskKindEmbedding, WorkerTaskKindDecisions, WorkerTaskKindOther
     };
+    const int kTaskKindCount = int(sizeof(kTaskKinds) / sizeof(kTaskKinds[0]));
     taskOrder.append(preferTask);
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < kTaskKindCount; ++i)
     {
         if (kTaskKinds[i] != preferTask)
             taskOrder.append(kTaskKinds[i]);
@@ -1224,6 +1636,8 @@ void SettingsPage::sltProfileFieldChanged()
         profile.apiKey = _profileTokenEdit->text().trimmed();
     if (_profileModalityCombo)
         profile.modality = WorkerTaskKind(_profileModalityCombo->currentData().toInt());
+    if (_profilePurposeEdit)
+        profile.purpose = _profilePurposeEdit->text().trimmed();
     if (_profileBalanceUrlEdit)
         profile.balanceUrl = _profileBalanceUrlEdit->text().trimmed();
     if (_profileBalancePathEdit)
@@ -1291,7 +1705,10 @@ bool SettingsPage::pickModelProfilePreset(LlmProfile *outProfile)
     filter->addItem(tr("LLM"), int(WorkerTaskKindLlm));
     filter->addItem(tr("Изображения"), int(WorkerTaskKindImageGeneration));
     filter->addItem(tr("Речь"), int(WorkerTaskKindSpeech));
+    filter->addItem(tr("Аудио"), int(WorkerTaskKindAudioGeneration));
+    filter->addItem(tr("Видео"), int(WorkerTaskKindVideoGeneration));
     filter->addItem(tr("Эмбеддинги"), int(WorkerTaskKindEmbedding));
+    filter->addItem(tr("Decisions"), int(WorkerTaskKindDecisions));
     filter->addItem(tr("Другое"), int(WorkerTaskKindOther));
 
     QListWidget *list = new QListWidget(&dialog);
@@ -1354,8 +1771,8 @@ bool SettingsPage::pickModelProfilePreset(LlmProfile *outProfile)
                                 p.model);
         if (!p.balanceUrl.trimmed().isEmpty())
             text += tr("\nБаланс: %1").arg(p.balanceUrl);
-        if (!p.hint.trimmed().isEmpty())
-            text += QString::fromUtf8("\n") + p.hint;
+        if (!p.purpose.trimmed().isEmpty())
+            text += tr("\nНазначение: %1").arg(p.purpose);
         detail->setText(text);
     };
 
@@ -1400,6 +1817,7 @@ bool SettingsPage::pickModelProfilePreset(LlmProfile *outProfile)
     outProfile->baseUrl = p.baseUrl;
     outProfile->model = p.model;
     outProfile->modality = p.modality;
+    outProfile->purpose = p.purpose;
     outProfile->balanceUrl = p.balanceUrl;
     outProfile->balanceJsonPath = p.balanceJsonPath;
     outProfile->apiKey.clear();
@@ -1424,7 +1842,8 @@ void SettingsPage::sltRemoveProfile()
 
 QWidget *SettingsPage::buildProjectBox()
 {
-    QGroupBox *box = new QGroupBox(tr("Проект"), this);
+    _projectBox = new QGroupBox(tr("Проект"), this);
+    QGroupBox *box = _projectBox;
     box->setObjectName(QString::fromUtf8("projectBox"));
     _projectPathLabel = new QLabel(box);
     _projectPathLabel->setWordWrap(true);
@@ -1440,7 +1859,8 @@ QWidget *SettingsPage::buildProjectBox()
 
 QWidget *SettingsPage::buildSecurityBox()
 {
-    QGroupBox *box = new QGroupBox(tr("Контроль действий"), this);
+    _securityBox = new QGroupBox(tr("Контроль действий"), this);
+    QGroupBox *box = _securityBox;
 
     _shellControlCheck = new QCheckBox(tr("Контроль командной строки"), box);
     _shellControlCheck->setToolTip(
@@ -1462,16 +1882,18 @@ QWidget *SettingsPage::buildSecurityBox()
 
     _permissionsList = new QListWidget(box);
     _permissionsList->setMinimumHeight(120);
-    QPushButton *revoke = new QPushButton(tr("Отозвать разрешение"), box);
-    connect(revoke, SIGNAL(clicked()), this, SLOT(sltRevokePermission()));
+    _revokeButton = new QPushButton(tr("Отозвать разрешение"), box);
+    connect(_revokeButton, SIGNAL(clicked()), this, SLOT(sltRevokePermission()));
+
+    _permissionsHeadingLabel = new QLabel(tr("Выданные разрешения «всегда»:"), box);
 
     QVBoxLayout *layout = new QVBoxLayout(box);
     layout->addWidget(_shellControlCheck);
     layout->addWidget(_outsideFilesControlCheck);
     layout->addWidget(_systemSettingsControlCheck);
-    layout->addWidget(new QLabel(tr("Выданные разрешения «всегда»:"), box));
+    layout->addWidget(_permissionsHeadingLabel);
     layout->addWidget(_permissionsList, 1);
-    layout->addWidget(revoke);
+    layout->addWidget(_revokeButton);
     return box;
 }
 
@@ -1546,7 +1968,8 @@ void SettingsPage::sltShowForwardedToggled(bool enabled)
 
 QWidget *SettingsPage::buildAppearanceBox()
 {
-    QGroupBox *box = new QGroupBox(tr("Оформление"), this);
+    _appearanceBox = new QGroupBox(tr("Оформление"), this);
+    QGroupBox *box = _appearanceBox;
     _fontSpin = new QSpinBox(box);
     _fontSpin->setRange(8, 24);
     _fontSpin->setSuffix(QString::fromUtf8(" pt"));
@@ -1557,7 +1980,7 @@ QWidget *SettingsPage::buildAppearanceBox()
     _chatUserColorButton = new QPushButton(box);
     _chatAssistantColorButton = new QPushButton(box);
     _chatOtherColorButton = new QPushButton(box);
-    QPushButton *apply = new QPushButton(tr("Применить оформление"), box);
+    _applyAppearanceButton = new QPushButton(tr("Применить оформление"), box);
     connect(_textColorButton, SIGNAL(clicked()), this, SLOT(sltPickTextColor()));
     connect(_windowColorButton, SIGNAL(clicked()), this, SLOT(sltPickWindowColor()));
     connect(_panelColorButton, SIGNAL(clicked()), this, SLOT(sltPickPanelColor()));
@@ -1566,18 +1989,18 @@ QWidget *SettingsPage::buildAppearanceBox()
     connect(_chatAssistantColorButton, SIGNAL(clicked()),
             this, SLOT(sltPickChatAssistantColor()));
     connect(_chatOtherColorButton, SIGNAL(clicked()), this, SLOT(sltPickChatOtherColor()));
-    connect(apply, SIGNAL(clicked()), this, SLOT(sltApplyAppearance()));
+    connect(_applyAppearanceButton, SIGNAL(clicked()), this, SLOT(sltApplyAppearance()));
 
-    QFormLayout *form = new QFormLayout(box);
-    form->addRow(tr("Размер шрифта:"), _fontSpin);
-    form->addRow(tr("Цвет текста:"), _textColorButton);
-    form->addRow(tr("Цвет фона:"), _windowColorButton);
-    form->addRow(tr("Цвет панелей:"), _panelColorButton);
-    form->addRow(tr("Цвет акцента:"), _accentColorButton);
-    form->addRow(tr("Чат: сообщения пользователя:"), _chatUserColorButton);
-    form->addRow(tr("Чат: сообщения ассистента:"), _chatAssistantColorButton);
-    form->addRow(tr("Чат: прочие сообщения:"), _chatOtherColorButton);
-    form->addRow(QString(), apply);
+    _appearanceForm = new QFormLayout(box);
+    _appearanceForm->addRow(tr("Размер шрифта:"), _fontSpin);
+    _appearanceForm->addRow(tr("Цвет текста:"), _textColorButton);
+    _appearanceForm->addRow(tr("Цвет фона:"), _windowColorButton);
+    _appearanceForm->addRow(tr("Цвет панелей:"), _panelColorButton);
+    _appearanceForm->addRow(tr("Цвет акцента:"), _accentColorButton);
+    _appearanceForm->addRow(tr("Чат: сообщения пользователя:"), _chatUserColorButton);
+    _appearanceForm->addRow(tr("Чат: сообщения ассистента:"), _chatAssistantColorButton);
+    _appearanceForm->addRow(tr("Чат: прочие сообщения:"), _chatOtherColorButton);
+    _appearanceForm->addRow(QString(), _applyAppearanceButton);
     return box;
 }
 

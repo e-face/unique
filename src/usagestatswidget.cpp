@@ -1,25 +1,27 @@
 #include "usagestatswidget.h"
 //----------------------------------------------
+#include "applocale.h"
+//----------------------------------------------
 #include <QPainter>
 #include <QPaintEvent>
 #include <QtGlobal>
 
 //----------------------------------------------
 
-static QString roleTitle(const QString &role)
+QString UsageStatsWidget::roleTitle(const QString &role) const
 {
     if (role == QString::fromUtf8("root"))
-        return QString::fromUtf8("Главный менеджер");
+        return tr("Главный менеджер");
     if (role == QString::fromUtf8("manager"))
-        return QString::fromUtf8("Менеджеры");
+        return tr("Менеджеры");
     if (role == QString::fromUtf8("executor"))
-        return QString::fromUtf8("Исполнители");
+        return tr("Исполнители");
     if (role == QString::fromUtf8("tester"))
-        return QString::fromUtf8("Тестировщики");
+        return tr("Тестировщики");
     if (role == QString::fromUtf8("tool"))
-        return QString::fromUtf8("Инструменты");
+        return tr("Инструменты");
     if (role == QString::fromUtf8("other"))
-        return QString::fromUtf8("Прочее");
+        return tr("Прочее");
     return role;
 }
 
@@ -55,6 +57,15 @@ UsageStatsWidget::UsageStatsWidget(QWidget *parent)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_OpaquePaintEvent, false);
+    connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
+            this, SLOT(retranslateUi()));
+}
+
+//----------------------------------------------
+
+void UsageStatsWidget::retranslateUi()
+{
+    update();
 }
 
 //----------------------------------------------
@@ -131,10 +142,10 @@ void UsageStatsWidget::paintEvent(QPaintEvent *event)
                                 ? (100.0 * _stats.cachedPromptTokens / _stats.promptTokens)
                                 : 0.0;
     const Kpi kpis[4] = {
-        { QString::fromUtf8("Запросы"), formatCount(_stats.requestCount), promptC },
-        { QString::fromUtf8("Prompt"), formatCount(_stats.promptTokens), promptC },
-        { QString::fromUtf8("Completion"), formatCount(_stats.completionTokens), complC },
-        { QString::fromUtf8("Всего"), formatCount(_stats.totalTokens),
+        { tr("Запросы"), formatCount(_stats.requestCount), promptC },
+        { tr("Prompt"), formatCount(_stats.promptTokens), promptC },
+        { tr("Completion"), formatCount(_stats.completionTokens), complC },
+        { tr("Всего"), formatCount(_stats.totalTokens),
           QColor(QString::fromUtf8(light ? "#7c3aed" : "#c586c0")) }
     };
     for (int i = 0; i < 4; ++i)
@@ -167,7 +178,7 @@ void UsageStatsWidget::paintEvent(QPaintEvent *event)
     p.setFont(font());
     p.setPen(muted);
     p.drawText(QRect(pad, y, w - pad * 2, 18), Qt::AlignLeft | Qt::AlignVCenter,
-               QString::fromUtf8("Состав токенов"));
+               tr("Состав токенов"));
     y += 22;
 
     const qint64 mixTotal = qMax(qint64(1), _stats.promptTokens + _stats.completionTokens);
@@ -212,7 +223,7 @@ void UsageStatsWidget::paintEvent(QPaintEvent *event)
     p.setFont(small);
     p.setPen(muted);
     p.drawText(QRect(pad, y, barW, 16), Qt::AlignLeft | Qt::AlignVCenter,
-               QString::fromUtf8("prompt %1  ·  completion %2  ·  кеш префикса %3%")
+               tr("prompt %1  ·  completion %2  ·  кеш префикса %3%")
                    .arg(formatCount(_stats.promptTokens))
                    .arg(formatCount(_stats.completionTokens))
                    .arg(cachePct, 0, 'f', 1));
@@ -222,7 +233,7 @@ void UsageStatsWidget::paintEvent(QPaintEvent *event)
     p.setFont(font());
     p.setPen(muted);
     p.drawText(QRect(pad, y, w - pad * 2, 18), Qt::AlignLeft | Qt::AlignVCenter,
-               QString::fromUtf8("По ролям"));
+               tr("По ролям"));
     y += 22;
 
     qint64 maxRoleTokens = 1;
@@ -238,7 +249,7 @@ void UsageStatsWidget::paintEvent(QPaintEvent *event)
     {
         p.setPen(muted);
         p.drawText(QRect(pad, y, w - pad * 2, 20), Qt::AlignLeft | Qt::AlignVCenter,
-                   QString::fromUtf8("Пока нет данных"));
+                   tr("Пока нет данных"));
         y += 24;
     }
     else

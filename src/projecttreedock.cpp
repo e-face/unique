@@ -476,6 +476,20 @@ void ProjectTreeDock::showEmptyState()
 
 //----------------------------------------------
 
+void ProjectTreeDock::retranslateUi()
+{
+    if (_root.isEmpty())
+    {
+        setWindowTitle(tr("Проект"));
+        if (_emptyLabel)
+            _emptyLabel->setText(tr("Проект не открыт"));
+    }
+    else
+        setWindowTitle(tr("Проект — %1").arg(QDir(_root).dirName()));
+}
+
+//----------------------------------------------
+
 void ProjectTreeDock::bindTreeModel()
 {
     if (!_tree || !_proxy)

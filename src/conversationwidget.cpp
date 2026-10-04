@@ -1,6 +1,7 @@
 #include "conversationwidget.h"
 //----------------------------------------------
 #include "agent.h"
+#include "applocale.h"
 #include "appsettings.h"
 #include "markdownformatter.h"
 //----------------------------------------------
@@ -34,6 +35,7 @@
 // Сколько пузырей держим в виджете и сколько записей ленты храним на диске.
 static const int kMaxVisibleBubbles  = 250;
 static const int kMaxDisplayLogItems = 1500;
+static const int kLiveActionHeight   = 24;
 
 //----------------------------------------------
 
@@ -332,7 +334,7 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     : QWidget(parent)
     , _agent(0)
     , _contextLabel(0)
-    , _activityLabel(0)
+    , _liveActionLine(0)
     , _activityTimer(0)
     , _contextBar(0)
     , _compactButton(0)
@@ -355,6 +357,9 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     , _restoring(false)
     , _userInputEnabled(true)
     , _scrollScheduled(false)
+    , _contextUsedTokens(0)
+    , _contextLimitTokens(0)
+    , _contextCompacting(false)
 {
     _contextLabel = new QLabel(tr("Контекст: —"), this);
     _contextBar = new QProgressBar(this);
@@ -364,10 +369,6 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     _contextBar->setFixedHeight(8);
     _contextBar->setMaximumWidth(220);
 
-    // Чем сейчас занят агент и как долго: ответ модели, функция, дети.
-    _activityLabel = new QLabel(this);
-    _activityLabel->setObjectName(QString::fromUtf8("activityLabel"));
-    _activityLabel->hide();
     _activityTimer = new QTimer(this);
     _activityTimer->setInterval(1000);
     connect(_activityTimer, SIGNAL(timeout()), this, SLOT(sltActivityTick()));
@@ -394,7 +395,6 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     QHBoxLayout *contextRow = new QHBoxLayout();
     contextRow->addWidget(_contextBar);
     contextRow->addWidget(_contextLabel, 1);
-    contextRow->addWidget(_activityLabel);
     contextRow->addWidget(_compactButton);
     contextRow->addWidget(_interruptButton);
     contextRow->addWidget(_reportButton);
@@ -406,6 +406,18 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     _messagesLayout->setContentsMargins(0, 0, 0, 0);
     _messagesLayout->setSpacing(2);
     _messagesLayout->addStretch(1);
+
+    _liveActionLine = new QLabel(_messagesHost);
+    _liveActionLine->setObjectName(QString::fromUtf8("chatLiveAction"));
+    _liveActionLine->setWordWrap(false);
+    _liveActionLine->setTextInteractionFlags(Qt::NoTextInteraction);
+    _liveActionLine->setFixedHeight(kLiveActionHeight);
+    _liveActionLine->setMinimumHeight(kLiveActionHeight);
+    _liveActionLine->setMaximumHeight(kLiveActionHeight);
+    _liveActionLine->setContentsMargins(12, 0, 12, 0);
+    _liveActionLine->setText(QString::fromUtf8(" "));
+    _liveActionLine->show();
+    _messagesLayout->addWidget(_liveActionLine, 0, Qt::AlignTop);
 
     _scroll = new QScrollArea(this);
     _scroll->setWidgetResizable(true);
@@ -478,6 +490,80 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     root->addWidget(_inputHost);
 
     applyTheme();
+
+    connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
+            this, SLOT(retranslateUi()));
+}
+
+//----------------------------------------------
+
+void ConversationWidget::retranslateUi()
+{
+    if (_compactButton)
+    {
+        _compactButton->setText(tr("Сжать контекст"));
+        _compactButton->setToolTip(tr("Свернуть старую историю в краткое содержание, "
+                                      "чтобы продолжить беседу в окне модели."));
+    }
+    if (_interruptButton)
+    {
+        _interruptButton->setText(tr("Прервать"));
+        _interruptButton->setToolTip(tr("Принудительно остановить этот воркер, "
+                                        "включая зависшую команду."));
+    }
+    if (_reportButton)
+    {
+        _reportButton->setText(tr("Отчёт родителю"));
+        _reportButton->setToolTip(tr("Прервать работу и сразу отправить родителю "
+                                     "текущий отчёт."));
+    }
+    if (_sendButton)
+        _sendButton->setText(tr("Отправить"));
+    if (_stopButton)
+    {
+        _stopButton->setText(tr("Стоп"));
+        _stopButton->setToolTip(tr("Остановить работу во всех чатах"));
+    }
+    if (_input)
+        _input->setPlaceholderText(
+            tr("Сообщение…  Enter — отправить, Shift+Enter — новая строка"));
+    if (_approveButton)
+        _approveButton->setText(tr("Разрешить"));
+    if (_alwaysButton)
+    {
+        _alwaysButton->setText(tr("Всегда"));
+        _alwaysButton->setToolTip(tr("Разрешать эту программу во всём приложении, "
+                                      "пока пути и действие остаются в каталоге проекта"));
+    }
+    if (_rejectButton)
+        _rejectButton->setText(tr("Отклонить"));
+
+    if (_contextLabel)
+    {
+        if (_contextCompacting)
+            _contextLabel->setText(tr("Сжатие контекста — сохраняем суть беседы…"));
+        else if (_contextLimitTokens <= 0 && _contextUsedTokens > 0)
+        {
+            _contextLabel->setText(
+                tr("Контекст: %1 ток. (лимит неизвестен)").arg(_contextUsedTokens));
+        }
+        else if (_contextLimitTokens <= 0)
+            _contextLabel->setText(tr("Контекст: —"));
+        else
+        {
+            const int permille = (int)qBound(qint64(0),
+                                            qint64(_contextUsedTokens) * 1000
+                                                / qint64(_contextLimitTokens),
+                                            qint64(1000));
+            const int percent = (permille + 5) / 10;
+            const int reserve = qMax(0, _contextLimitTokens - _contextUsedTokens);
+            _contextLabel->setText(tr("Контекст: %1 / %2 ток. (%3%) · запас %4")
+                                   .arg(_contextUsedTokens)
+                                   .arg(_contextLimitTokens)
+                                   .arg(percent)
+                                   .arg(reserve));
+        }
+    }
 }
 
 //----------------------------------------------
@@ -531,11 +617,14 @@ void ConversationWidget::clearMessages()
             QLayoutItem *item = _messagesLayout->itemAt(i);
             if (!item || !item->widget())
                 continue;
+            if (item->widget() == _liveActionLine)
+                continue;
             _messagesLayout->takeAt(i);
             item->widget()->deleteLater();
             delete item;
         }
     }
+    ensureLiveActionAtEnd();
     if (!_restoring)
         _displayLog.clear();
 }
@@ -989,6 +1078,8 @@ void ConversationWidget::applyTheme()
                       .replace(QString::fromUtf8("%PERMBORDER%"), permBorder)
                       .replace(QString::fromUtf8("%PERMBTN%"), permBtn));
 
+    applyChatLiveActionStyle();
+
     if (_messagesLayout)
     {
         for (int i = 0; i < _messagesLayout->count(); ++i)
@@ -1047,7 +1138,7 @@ void ConversationWidget::setActivity(QString text)
 
 void ConversationWidget::refreshActivity()
 {
-    if (!_activityLabel || !_activityTimer)
+    if (!_liveActionLine || !_activityTimer)
         return;
     const QString shown = _externalActivity.isEmpty() ? _activityText : _externalActivity;
     if (shown != _shownActivity)
@@ -1058,13 +1149,12 @@ void ConversationWidget::refreshActivity()
     if (shown.isEmpty())
     {
         _activityTimer->stop();
-        _activityLabel->hide();
-        _activityLabel->clear();
+        _liveActionLine->setText(QString::fromUtf8(" "));
+        applyChatLiveActionStyle();
         return;
     }
     if (!_activityTimer->isActive())
         _activityTimer->start();
-    _activityLabel->show();
     sltActivityTick();
 }
 
@@ -1072,7 +1162,7 @@ void ConversationWidget::refreshActivity()
 
 void ConversationWidget::sltActivityTick()
 {
-    if (!_activityLabel || _shownActivity.isEmpty())
+    if (!_liveActionLine || _shownActivity.isEmpty())
         return;
     const qint64 seconds = _activityClock.isValid() ? _activityClock.elapsed() / 1000 : 0;
     QString elapsed;
@@ -1080,13 +1170,66 @@ void ConversationWidget::sltActivityTick()
         elapsed = tr("%1 мин %2 с").arg(seconds / 60).arg(seconds % 60, 2, 10, QChar('0'));
     else
         elapsed = tr("%1 с").arg(seconds);
-    _activityLabel->setText(QString::fromUtf8("%1 \xC2\xB7 %2").arg(_shownActivity, elapsed));
+    _liveActionLine->setText(QString::fromUtf8("%1 \xC2\xB7 %2").arg(_shownActivity, elapsed));
+    applyChatLiveActionStyle();
+}
+
+//----------------------------------------------
+
+void ConversationWidget::ensureLiveActionAtEnd()
+{
+    if (!_liveActionLine || !_messagesLayout)
+        return;
+    _messagesLayout->removeWidget(_liveActionLine);
+    _messagesLayout->addWidget(_liveActionLine, 0, Qt::AlignTop);
+    _liveActionLine->setFixedHeight(kLiveActionHeight);
+    _liveActionLine->show();
+}
+
+//----------------------------------------------
+
+void ConversationWidget::applyChatLiveActionStyle()
+{
+    if (!_liveActionLine)
+        return;
+    AppSettings *s = AppSettings::instance();
+    QColor c = s->mutedTextColor();
+    if (_shownActivity.isEmpty())
+        c.setAlpha(0);
+    _liveActionLine->setStyleSheet(
+        QString::fromUtf8(
+            "QLabel#chatLiveAction { color:rgba(%1,%2,%3,%4); font-style:italic; "
+            "background:transparent; border:none; min-height:%5px; max-height:%5px; }")
+            .arg(c.red())
+            .arg(c.green())
+            .arg(c.blue())
+            .arg(c.alpha())
+            .arg(kLiveActionHeight));
+}
+
+//----------------------------------------------
+
+void ConversationWidget::setChatLiveActionVisible(bool visible)
+{
+    if (!_liveActionLine)
+        return;
+    if (visible)
+    {
+        _liveActionLine->setFixedHeight(kLiveActionHeight);
+        _liveActionLine->show();
+    }
+    else
+        _liveActionLine->hide();
 }
 
 //----------------------------------------------
 
 void ConversationWidget::sltContextUsageChanged(int usedTokens, int limitTokens)
 {
+    _contextUsedTokens = usedTokens;
+    _contextLimitTokens = limitTokens;
+    _contextCompacting = false;
+
     if (limitTokens <= 0)
     {
         _contextBar->setValue(0);
@@ -1126,13 +1269,23 @@ void ConversationWidget::sltContextUsageChanged(int usedTokens, int limitTokens)
 
 void ConversationWidget::sltCompactingChanged(bool compacting)
 {
+    _contextCompacting = compacting;
     if (compacting)
     {
         _contextLabel->setText(tr("Сжатие контекста — сохраняем суть беседы…"));
         setActivity(tr("Сжатие контекста"));
     }
-    else if (_agent && _agent->isBusy())
-        setActivity(tr("Ожидание ответа модели"));
+    else
+    {
+        if (_agent && _agent->isBusy())
+            setActivity(tr("Ожидание ответа модели"));
+        else if (_contextLimitTokens > 0)
+            sltContextUsageChanged(_contextUsedTokens, _contextLimitTokens);
+        else if (_contextUsedTokens > 0)
+            sltContextUsageChanged(_contextUsedTokens, _contextLimitTokens);
+        else if (_contextLabel)
+            _contextLabel->setText(tr("Контекст: —"));
+    }
 }
 
 //----------------------------------------------
@@ -1249,8 +1402,12 @@ void ConversationWidget::sltToolCallFinished(const QString &name, const QString 
                    false, false, false, title);
     _pendingToolName.clear();
     _pendingToolArgs.clear();
+    // Media-executor вызывает invokeTool без setBusy — иначе таймер
+    // «Выполняется функция …» продолжает тикать после завершения.
     if (_agent && _agent->isBusy())
         setActivity(tr("Ожидание ответа модели"));
+    else
+        setActivity(QString());
 }
 
 //----------------------------------------------
@@ -1324,13 +1481,13 @@ void ConversationWidget::trimOldBubbles()
         return;
     // В layout есть растяжка без виджета — её пропускаем, удаляем самый
     // старый пузырь (первый элемент с виджетом).
-    while (_messagesLayout->count() > kMaxVisibleBubbles + 1)
+    while (_messagesLayout->count() > kMaxVisibleBubbles + 2)
     {
         int index = -1;
         for (int i = 0; i < _messagesLayout->count(); ++i)
         {
             QLayoutItem *probe = _messagesLayout->itemAt(i);
-            if (probe && probe->widget())
+            if (probe && probe->widget() && probe->widget() != _liveActionLine)
             {
                 index = i;
                 break;
@@ -1384,6 +1541,7 @@ QWidget *ConversationWidget::addBubble(QString title, QString html, QString prev
                                                    alignRight, collapsed, _messagesHost,
                                                    authorKey);
     _messagesLayout->addWidget(frame, 0, Qt::AlignTop);
+    ensureLiveActionAtEnd();
     trimOldBubbles();
     if (!_restoring && _pinBottom)
         scheduleScrollToBottom();

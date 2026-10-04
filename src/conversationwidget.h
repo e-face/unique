@@ -135,6 +135,8 @@ public:
      *        (ожидание детей, разрешения, очередь). Пусто — снять.
      */
     void setExternalActivity(QString text);
+    /** Скрыть строку активности чата (в журнале своя строка). */
+    void setChatLiveActionVisible(bool visible);
 
 signals:
     void sendRequested(const QString &text);
@@ -147,6 +149,7 @@ signals:
     void subtreeBudgetAnswered(bool granted);
 
 public slots:
+    void retranslateUi();
     void sltBusyChanged(bool busy);
     void sltContextUsageChanged(int usedTokens, int limitTokens);
     void sltCompactingChanged(bool compacting);
@@ -186,6 +189,8 @@ protected:
     bool pinBottom() const { return _pinBottom; }
     QWidget *messagesHost() const { return _messagesHost; }
     QVBoxLayout *messagesLayout() const { return _messagesLayout; }
+    void ensureLiveActionAtEnd();
+    void applyChatLiveActionStyle();
 
 private:
     void recordDisplay(QString kind, QString title, QString text,
@@ -199,7 +204,7 @@ private:
 
     Agent          *_agent;
     QLabel         *_contextLabel;
-    QLabel         *_activityLabel;
+    QLabel         *_liveActionLine;
     QTimer         *_activityTimer;
     QElapsedTimer   _activityClock;
     QString         _activityText;
@@ -231,6 +236,9 @@ private:
     bool            _restoring;
     bool            _userInputEnabled;
     bool            _scrollScheduled;
+    int             _contextUsedTokens;
+    int             _contextLimitTokens;
+    bool            _contextCompacting;
 };
 
 #endif // CONVERSATIONWIDGET_H

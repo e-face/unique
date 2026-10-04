@@ -85,7 +85,10 @@ enum WorkerTaskKind
     WorkerTaskKindLlm = 0,
     WorkerTaskKindImageGeneration,
     WorkerTaskKindSpeech,
+    WorkerTaskKindAudioGeneration,
+    WorkerTaskKindVideoGeneration,
     WorkerTaskKindEmbedding,
+    WorkerTaskKindDecisions,
     WorkerTaskKindOther
 };
 
@@ -99,8 +102,14 @@ inline QString workerTaskKindToString(WorkerTaskKind kind)
         return QString::fromUtf8("image_generation");
     case WorkerTaskKindSpeech:
         return QString::fromUtf8("speech");
+    case WorkerTaskKindAudioGeneration:
+        return QString::fromUtf8("audio_generation");
+    case WorkerTaskKindVideoGeneration:
+        return QString::fromUtf8("video_generation");
     case WorkerTaskKindEmbedding:
         return QString::fromUtf8("embedding");
+    case WorkerTaskKindDecisions:
+        return QString::fromUtf8("decisions");
     case WorkerTaskKindOther:
         return QString::fromUtf8("other");
     case WorkerTaskKindLlm:
@@ -119,16 +128,57 @@ inline WorkerTaskKind workerTaskKindFromString(QString value)
         || v == QString::fromUtf8("img"))
         return WorkerTaskKindImageGeneration;
     if (v == QString::fromUtf8("speech")
-        || v == QString::fromUtf8("audio")
         || v == QString::fromUtf8("tts")
-        || v == QString::fromUtf8("stt"))
+        || v == QString::fromUtf8("stt")
+        || v == QString::fromUtf8("asr"))
         return WorkerTaskKindSpeech;
+    if (v == QString::fromUtf8("audio_generation")
+        || v == QString::fromUtf8("audio")
+        || v == QString::fromUtf8("music")
+        || v == QString::fromUtf8("sound"))
+        return WorkerTaskKindAudioGeneration;
+    if (v == QString::fromUtf8("video_generation")
+        || v == QString::fromUtf8("video"))
+        return WorkerTaskKindVideoGeneration;
     if (v == QString::fromUtf8("embedding")
         || v == QString::fromUtf8("embeddings"))
         return WorkerTaskKindEmbedding;
+    if (v == QString::fromUtf8("decisions")
+        || v == QString::fromUtf8("decision"))
+        return WorkerTaskKindDecisions;
     if (v == QString::fromUtf8("other"))
         return WorkerTaskKindOther;
     return WorkerTaskKindLlm;
+}
+
+//----------------------------------------------
+
+/**
+ * @brief Медиа/векторные modality: без chat tool_calls — прямой executor.
+ */
+inline bool workerTaskKindIsMediaExecutor(WorkerTaskKind kind)
+{
+    switch (kind)
+    {
+    case WorkerTaskKindImageGeneration:
+    case WorkerTaskKindSpeech:
+    case WorkerTaskKindAudioGeneration:
+    case WorkerTaskKindVideoGeneration:
+    case WorkerTaskKindEmbedding:
+        return true;
+    default:
+        return false;
+    }
+}
+
+//----------------------------------------------
+
+/**
+ * @brief Нужен обычный LLM chat-цикл (tool_calls).
+ */
+inline bool workerTaskKindUsesAgentChat(WorkerTaskKind kind)
+{
+    return !workerTaskKindIsMediaExecutor(kind);
 }
 
 //----------------------------------------------

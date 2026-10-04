@@ -1,6 +1,7 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "appsettings.h"
 #include "workertypes.h"
 //----------------------------------------------
 #include <QIcon>
@@ -83,6 +84,7 @@ private slots:
     void sltWorkerTreeChanged();
     void sltWorkerActivated(const QString &id);
     void sltToolRemoveRequested(const QString &id);
+    void sltWorkerRemoveRequested(const QString &id);
     void sltWorkerForceStop();
     void sltWorkerForceReport();
     void sltWorkerForceStopById(const QString &id);
@@ -108,6 +110,11 @@ private slots:
     void sltNextConfirmation();
     void sltComposerSend();
     void sltComposerStop();
+    void sltComposerAttachImage();
+    void sltComposerAttachAudio();
+    void sltComposerAttachVideo();
+    void sltComposerAttachFile();
+    void sltComposerClearAttachments();
     void sltStopAll();
     void sltFlushSaveChats();
     void sltChatSaveFinished();
@@ -119,6 +126,7 @@ private slots:
     void updateBusyTabs();
     void sltRefreshWorkerUi();
     void sltResumeProjectSwitch();
+    void sltLocaleChanged(const QString &code);
 
 private:
     /**
@@ -134,6 +142,7 @@ private:
     void rebuildGraphIfVisible();
     void setupUi();
     void setupMenus();
+    void retranslateUi();
     ChatSession *createSession(QString id, QString title);
     void attachSessionUi(ChatSession *session);
     void createGraphWindow();
@@ -190,6 +199,10 @@ private:
     QIcon iconForSession(ChatSession *session) const;
     void applyAppStyle();
     void updateComposerState();
+    void updateComposerAttachmentsUi();
+    QStringList pickComposerAttachments(QString filter, QString title);
+    QString importAttachmentIntoProject(QString absolutePath, QString *error);
+    LlmProfile profileForComposerTarget() const;
     void stopAllWork();
     bool anyWorkActive() const;
     void setAllStopEnabled(bool enabled);
@@ -216,7 +229,18 @@ private:
     SettingsPage        *_settingsPage;
     SettingsPage        *_projectSettingsPage;
     ProjectTreeDock     *_projectDock;
+    QMenu               *_fileMenu;
+    QMenu               *_windowMenu;
+    QMenu               *_projectMenu;
+    QMenu               *_helpMenu;
     QMenu               *_recentMenu;
+    QAction             *_balanceAction;
+    QAction             *_quitAction;
+    QAction             *_windowChatAction;
+    QAction             *_windowGraphAction;
+    QAction             *_windowJournalAction;
+    QAction             *_windowSettingsAction;
+    QAction             *_helpStatsAction;
     QAction             *_openProjectAction;
     QAction             *_newProjectAction;
     QAction             *_openLastAction;
@@ -230,8 +254,16 @@ private:
     QAction             *_projectSettingsAction;
     QCheckBox           *_inspectCheck;
     QPlainTextEdit      *_composer;
+    QLabel              *_composerCapsLabel;
+    QLabel              *_composerAttachLabel;
+    QPushButton         *_composerAttachImage;
+    QPushButton         *_composerAttachAudio;
+    QPushButton         *_composerAttachVideo;
+    QPushButton         *_composerAttachFile;
+    QPushButton         *_composerClearAttach;
     QPushButton         *_composerSend;
     QPushButton         *_composerStop;
+    QStringList          _composerAttachments;
     QProgressBar        *_progressBar;
     QThread             *_chatSaveThread;
     QString              _pendingActiveId;

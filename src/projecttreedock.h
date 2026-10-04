@@ -31,6 +31,7 @@ public:
     void setProjectRoot(QString path);
     void releaseFileModel();
     void applyTheme();
+    void retranslateUi();
     qreal flashAmount(QString absPath) const;
 
 signals:

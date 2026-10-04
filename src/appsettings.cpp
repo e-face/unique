@@ -1,5 +1,6 @@
 #include "appsettings.h"
 //----------------------------------------------
+#include "applocale.h"
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -103,6 +104,7 @@ AppSettings::AppSettings(QObject *parent)
     , _chatOtherColor(QString::fromUtf8("#f3f3f3"))
     , _statsTimer(0)
     , _showForwardedContext(true)
+    , _uiLanguage(QString::fromUtf8("ru"))
 {
 }
 
@@ -718,6 +720,10 @@ void AppSettings::load()
     _projectUsage.clear();
     _showForwardedContext = settings.value(QString::fromUtf8("ui/showForwardedContext"),
                                            true).toBool();
+    _uiLanguage = settings.value(QString::fromUtf8("ui/language"),
+                                 QString::fromUtf8("ru")).toString().trimmed().toLower();
+    if (_uiLanguage.isEmpty())
+        _uiLanguage = QString::fromUtf8("ru");
 
     // Проект ещё не открыт: активными остаются defaults.
     _projectOpen = false;
@@ -739,6 +745,7 @@ void AppSettings::save() const
     settings.setValue(QString::fromUtf8("ui/chatAssistantColor"), _chatAssistantColor.name());
     settings.setValue(QString::fromUtf8("ui/chatOtherColor"), _chatOtherColor.name());
     settings.setValue(QString::fromUtf8("ui/showForwardedContext"), _showForwardedContext);
+    settings.setValue(QString::fromUtf8("ui/language"), _uiLanguage);
     saveUsage(&settings, _globalUsage);
     settings.sync();
 
@@ -1231,6 +1238,33 @@ void AppSettings::setShowForwardedContext(bool enabled)
     settings.setValue(QString::fromUtf8("ui/showForwardedContext"), _showForwardedContext);
     settings.sync();
     emit displayOptionsChanged();
+}
+
+//----------------------------------------------
+
+QString AppSettings::uiLanguage() const
+{
+    return _uiLanguage;
+}
+
+//----------------------------------------------
+
+void AppSettings::persistUiLanguage(QString code)
+{
+    code = code.trimmed().toLower();
+    if (code.isEmpty())
+        code = QString::fromUtf8("ru");
+    _uiLanguage = code;
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    settings.setValue(QString::fromUtf8("ui/language"), _uiLanguage);
+    settings.sync();
+}
+
+//----------------------------------------------
+
+void AppSettings::setUiLanguage(QString code)
+{
+    AppLocale::instance()->setLanguage(code);
 }
 
 //----------------------------------------------
@@ -1772,6 +1806,8 @@ void AppSettings::migrateLegacyProviders(QSettings *settings, WorkspaceSettings 
     if (deepseek.apiKey.isEmpty())
         deepseek.apiKey = QString::fromLocal8Bit(qgetenv("DEEPSEEK_API_KEY"));
     deepseek.balanceUrl = QString::fromUtf8("/user/balance");
+    deepseek.purpose = QString::fromUtf8(
+        "General LLM: coding, reasoning, agent tool use");
 
     LlmProfile groq;
     groq.id = QString::fromUtf8("groq");
@@ -1782,6 +1818,8 @@ void AppSettings::migrateLegacyProviders(QSettings *settings, WorkspaceSettings 
     groq.apiKey = settings->value(QString::fromUtf8("apiKey/groq")).toString();
     if (groq.apiKey.isEmpty())
         groq.apiKey = QString::fromLocal8Bit(qgetenv("GROQ_API_KEY"));
+    groq.purpose = QString::fromUtf8(
+        "Fast general LLM for routine coding and checks");
 
     LlmProfile qwen;
     qwen.id = QString::fromUtf8("qwencloud");
@@ -1797,6 +1835,8 @@ void AppSettings::migrateLegacyProviders(QSettings *settings, WorkspaceSettings 
         qwen.apiKey = QString::fromLocal8Bit(qgetenv("QWENCLOUD_API_KEY"));
     qwen.balanceUrl = QString::fromUtf8("/api/v1/quotas");
     qwen.balanceJsonPath = QString::fromUtf8("data.credits");
+    qwen.purpose = QString::fromUtf8(
+        "General LLM: coding, reasoning, agent tool use");
 
     bundle->profiles.clear();
     bundle->profiles << deepseek << groq << qwen;
@@ -1832,6 +1872,7 @@ void AppSettings::writeProfileFile(const LlmProfile &profile) const
     file.setValue(QString::fromUtf8("model"), profile.model);
     file.setValue(QString::fromUtf8("apiKey"), profile.apiKey);
     file.setValue(QString::fromUtf8("modality"), workerTaskKindToString(profile.modality));
+    file.setValue(QString::fromUtf8("purpose"), profile.purpose);
     file.setValue(QString::fromUtf8("balanceUrl"), profile.balanceUrl);
     file.setValue(QString::fromUtf8("balanceJsonPath"), profile.balanceJsonPath);
     file.sync();
@@ -1923,6 +1964,7 @@ void AppSettings::migrateProjectLocalProfiles()
         profile.apiKey = file.value(QString::fromUtf8("apiKey")).toString();
         profile.modality = workerTaskKindFromString(
             file.value(QString::fromUtf8("modality")).toString());
+        profile.purpose = file.value(QString::fromUtf8("purpose")).toString();
         profile.balanceUrl = file.value(QString::fromUtf8("balanceUrl")).toString();
         profile.balanceJsonPath = file.value(QString::fromUtf8("balanceJsonPath")).toString();
         if (profile.id.isEmpty())
@@ -1971,6 +2013,7 @@ void AppSettings::loadProfiles()
             profile.apiKey = file.value(QString::fromUtf8("apiKey")).toString();
             profile.modality = workerTaskKindFromString(
                 file.value(QString::fromUtf8("modality")).toString());
+            profile.purpose = file.value(QString::fromUtf8("purpose")).toString();
             profile.balanceUrl = file.value(QString::fromUtf8("balanceUrl")).toString();
             profile.balanceJsonPath = file.value(QString::fromUtf8("balanceJsonPath")).toString();
             if (profile.id.isEmpty())
@@ -1997,6 +2040,7 @@ void AppSettings::loadProfiles()
             profile.apiKey = settings.value(QString::fromUtf8("apiKey")).toString();
             profile.modality = workerTaskKindFromString(
                 settings.value(QString::fromUtf8("modality")).toString());
+            profile.purpose = settings.value(QString::fromUtf8("purpose")).toString();
             profile.balanceUrl = settings.value(QString::fromUtf8("balanceUrl")).toString();
             profile.balanceJsonPath =
                 settings.value(QString::fromUtf8("balanceJsonPath")).toString();
@@ -2563,10 +2607,14 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
     lines << QString::fromUtf8(
         "Available worker presets (pick preset_id in delegate_task / add_group_member):\n"
         "task_kind: intended job for this preset (llm | image_generation | speech | "
-        "embedding | other).\n"
+        "audio_generation | video_generation | embedding | decisions | other).\n"
         "modality: capability of the linked model profile (same enum) — pick a preset "
-        "whose modality matches the subtask (image work → image_generation, ASR/TTS → "
-        "speech, vectors → embedding; coding/agents → llm).\n"
+        "whose modality matches the subtask (image → image_generation, ASR/TTS → speech, "
+        "music/SFX → audio_generation, video → video_generation, vectors → embedding, "
+        "structured choices → decisions, coding/agents → llm).\n"
+        "purpose: short human note on WHAT this model is for (e.g. text-to-image generation "
+        "vs object segmentation on an image). Prefer the preset whose purpose best matches "
+        "the subtask — do not treat all image_generation models as interchangeable.\n"
         "MODEL FIT: cheapest/fastest adequate model for routine edits and simple checks; "
         "stronger models for architecture, hard bugs, ambiguous design, group deep-dives. "
         "Prefer a fitting preset over the default type profile.");
@@ -2579,11 +2627,18 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
         QString model = profile.model.trimmed();
         if (model.isEmpty())
             model = QString::fromUtf8("?");
+        QString purpose = profile.purpose.trimmed().simplified();
+        if (purpose.isEmpty())
+            purpose = QString::fromUtf8("(no purpose set)");
+        else if (purpose.size() > 200)
+            purpose = purpose.left(197) + QString::fromUtf8("...");
         lines << QString::fromUtf8(
-                     "- preset_id=%1 type=%2 task_kind=%3 modality=%4 profile=\"%5\" model=%6")
+                     "- preset_id=%1 type=%2 task_kind=%3 modality=%4 profile=\"%5\" "
+                     "model=%6 purpose=\"%7\"")
                      .arg(preset.id, workerTypeToString(preset.type),
                           workerTaskKindToString(preset.taskKind),
-                          workerTaskKindToString(profile.modality), profileName, model);
+                          workerTaskKindToString(profile.modality), profileName, model,
+                          purpose);
     }
     return lines.join(QChar('\n'));
 }

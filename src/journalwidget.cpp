@@ -36,6 +36,7 @@ JournalWidget::JournalWidget(QWidget *parent)
 {
     setUserInputEnabled(false);
     setContextRowVisible(false);
+    setChatLiveActionVisible(false);
 
     _liveActionLine = new QLabel(messagesHost());
     _liveActionLine->setObjectName(QString::fromUtf8("journalLiveAction"));
@@ -173,24 +174,24 @@ QString JournalWidget::actionTitleForTool(const QString &name)
 {
     const QString n = name.trimmed();
     if (n == QString::fromUtf8("read_file"))
-        return QString::fromUtf8("чтение файла");
+        return JournalWidget::tr("чтение файла");
     if (n == QString::fromUtf8("write_file") || n == QString::fromUtf8("create_file"))
-        return QString::fromUtf8("запись файла");
+        return JournalWidget::tr("запись файла");
     if (n == QString::fromUtf8("delete_file") || n == QString::fromUtf8("rename_file"))
-        return QString::fromUtf8("файл");
+        return JournalWidget::tr("файл");
     if (n == QString::fromUtf8("list_dir") || n == QString::fromUtf8("list_directory"))
-        return QString::fromUtf8("обзор каталога");
+        return JournalWidget::tr("обзор каталога");
     if (n == QString::fromUtf8("run_command"))
-        return QString::fromUtf8("команда");
+        return JournalWidget::tr("команда");
     if (n == QString::fromUtf8("complete_task"))
-        return QString::fromUtf8("завершение задачи");
+        return JournalWidget::tr("завершение задачи");
     if (n == QString::fromUtf8("spawn_worker") || n == QString::fromUtf8("create_worker")
         || n == QString::fromUtf8("delegate_task"))
-        return QString::fromUtf8("поручение");
+        return JournalWidget::tr("поручение");
     if (n == QString::fromUtf8("group_speak"))
-        return QString::fromUtf8("реплика в группе");
+        return JournalWidget::tr("реплика в группе");
     if (n.isEmpty())
-        return QString::fromUtf8("функция");
+        return JournalWidget::tr("функция");
     return n;
 }
 
@@ -280,14 +281,14 @@ QString JournalWidget::friendlyIngressBody(const QString &text, int ingress)
     if (ingress == AgentUserIngressGroup)
     {
         if (t.startsWith(QString::fromUtf8("[Your turn as narrator]")))
-            return QString::fromUtf8("Ход в обсуждении группы");
+            return JournalWidget::tr("Ход в обсуждении группы");
         if (t.startsWith(QString::fromUtf8("[Group VOTE required]")))
-            return QString::fromUtf8("Голосование в группе");
+            return JournalWidget::tr("Голосование в группе");
         if (t.startsWith(QString::fromUtf8("[Group dialogue DONE]")))
-            return QString::fromUtf8("Группа пришла к решению");
+            return JournalWidget::tr("Группа пришла к решению");
         if (t.startsWith(QString::fromUtf8("[Waiting]"))
             || t.startsWith(QString::fromUtf8("[Waiting for other votes]")))
-            return QString::fromUtf8("Ожидание хода в группе");
+            return JournalWidget::tr("Ожидание хода в группе");
     }
     if (t.startsWith(QString::fromUtf8("Follow-up from your parent worker.")))
     {
@@ -311,14 +312,14 @@ QString JournalWidget::friendlyIngressBody(const QString &text, int ingress)
 
 QString JournalWidget::ingressAuthorTitle(const QString &toLabel, int ingress)
 {
-    const QString to = toLabel.trimmed().isEmpty() ? QString::fromUtf8("воркер") : toLabel;
+    const QString to = toLabel.trimmed().isEmpty() ? JournalWidget::tr("воркер") : toLabel;
     if (ingress == AgentUserIngressAssignment)
-        return QString::fromUtf8("Задание → %1").arg(to);
+        return JournalWidget::tr("Задание → %1").arg(to);
     if (ingress == AgentUserIngressFollowUp)
-        return QString::fromUtf8("Уточнение → %1").arg(to);
+        return JournalWidget::tr("Уточнение → %1").arg(to);
     if (ingress == AgentUserIngressGroup)
-        return QString::fromUtf8("Группа → %1").arg(to);
-    return QString::fromUtf8("Пользователь → %1").arg(to);
+        return JournalWidget::tr("Группа → %1").arg(to);
+    return JournalWidget::tr("Пользователь → %1").arg(to);
 }
 
 //----------------------------------------------

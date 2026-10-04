@@ -41,6 +41,14 @@ public:
 
     void addTool(AgentTool *tool);
     void clearTools();
+    /**
+     * @brief Прямой вызов установленного tool (media-executor и тесты).
+     */
+    QString invokeTool(QString name, QString argumentsJson, bool *ok);
+    /**
+     * @brief Заметка в чат/журнал (прогресс media-tools и т.п.).
+     */
+    void postNotice(QString text);
     void setSystemPrompt(QString prompt);
     QString systemPrompt() const;
     void setProjectDirectory(QString path);

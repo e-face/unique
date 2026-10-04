@@ -13,6 +13,7 @@
  */
 class UsageStatsWidget : public QWidget
 {
+    Q_OBJECT
 public:
     explicit UsageStatsWidget(QWidget *parent = 0);
 
@@ -25,10 +26,15 @@ public:
     virtual QSize sizeHint() const;
     virtual QSize minimumSizeHint() const;
 
+public slots:
+    void retranslateUi();
+
 protected:
     virtual void paintEvent(QPaintEvent *event);
 
 private:
+    QString roleTitle(const QString &role) const;
+
     UsageStats  _stats;
     QStringList _extraLabels;
     QStringList _extraValues;

@@ -7,7 +7,7 @@ static ModelProfilePreset makePreset(QString provider, QString name, WorkerTaskK
                                      QString baseUrl, QString model,
                                      QString balanceUrl = QString(),
                                      QString balanceJsonPath = QString(),
-                                     QString hint = QString())
+                                     QString purpose = QString())
 {
     ModelProfilePreset p;
     p.provider = provider;
@@ -17,7 +17,7 @@ static ModelProfilePreset makePreset(QString provider, QString name, WorkerTaskK
     p.model = model;
     p.balanceUrl = balanceUrl;
     p.balanceJsonPath = balanceJsonPath;
-    p.hint = hint;
+    p.purpose = purpose;
     return p;
 }
 
@@ -137,7 +137,8 @@ QList<ModelProfilePreset> knownModelProfilePresets()
                        WorkerTaskKindLlm, QString::fromUtf8("https://openrouter.ai/api/v1"),
                        QString::fromUtf8("openrouter/auto"),
                        QString(), QString(),
-                       QString::fromUtf8("Агрегатор; укажите нужную model id с сайта."));
+                       QString::fromUtf8(
+                           "OpenRouter auto-router: pick model id from the site if needed"));
     list << makePreset(QString::fromUtf8("OpenRouter"),
                        QString::fromUtf8("Claude Sonnet (via OR)"),
                        WorkerTaskKindLlm, QString::fromUtf8("https://openrouter.ai/api/v1"),
@@ -211,7 +212,8 @@ QList<ModelProfilePreset> knownModelProfilePresets()
                        WorkerTaskKindLlm, QString::fromUtf8("http://127.0.0.1:11434/v1"),
                        QString::fromUtf8("llama3.2"),
                        QString(), QString(),
-                       QString::fromUtf8("Локально; токен обычно не нужен (или ollama)."));
+                       QString::fromUtf8(
+                           "Local LLM via Ollama (token usually unused)"));
     list << makePreset(QString::fromUtf8("LM Studio"), QString::fromUtf8("Local OpenAI"),
                        WorkerTaskKindLlm, QString::fromUtf8("http://127.0.0.1:1234/v1"),
                        QString::fromUtf8("local-model"));
@@ -225,7 +227,7 @@ QList<ModelProfilePreset> knownModelProfilePresets()
                        QString::fromUtf8("https://api.openai.com/v1"),
                        QString::fromUtf8("gpt-image-1"),
                        QString(), QString(),
-                       QString::fromUtf8("Images API; отдельный клиент может отличаться."));
+                       QString::fromUtf8("OpenAI Images API: text-to-image generation"));
     list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("DALL·E 3"),
                        WorkerTaskKindImageGeneration,
                        QString::fromUtf8("https://api.openai.com/v1"),
@@ -262,7 +264,8 @@ QList<ModelProfilePreset> knownModelProfilePresets()
                        QString::fromUtf8("https://api.stability.ai/v2beta"),
                        QString::fromUtf8("stable-image-core"),
                        QString(), QString(),
-                       QString::fromUtf8("Частично совместим; проверьте docs Stability."));
+                       QString::fromUtf8(
+                           "Stability text-to-image (check Stability docs for API shape)"));
 
     // --- Speech ---
     list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("Whisper"),
@@ -289,6 +292,45 @@ QList<ModelProfilePreset> knownModelProfilePresets()
     list << makePreset(QString::fromUtf8("OpenRouter"), QString::fromUtf8("Whisper (via OR)"),
                        WorkerTaskKindSpeech, QString::fromUtf8("https://openrouter.ai/api/v1"),
                        QString::fromUtf8("openai/whisper-large-v3"));
+
+    // --- Audio generation (music / SFX; not TTS) ---
+    list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("Audio gen (compat)"),
+                       WorkerTaskKindAudioGeneration,
+                       QString::fromUtf8("https://api.openai.com/v1"),
+                       QString::fromUtf8("gpt-audio"),
+                       QString(), QString(),
+                       QString::fromUtf8("Проверьте endpoint /audio/generations у провайдера."));
+    list << makePreset(QString::fromUtf8("OpenRouter"), QString::fromUtf8("Audio gen (via OR)"),
+                       WorkerTaskKindAudioGeneration,
+                       QString::fromUtf8("https://openrouter.ai/api/v1"),
+                       QString::fromUtf8("openai/gpt-audio"),
+                       QString(), QString(),
+                       QString::fromUtf8("Зависит от поддержки провайдера на OpenRouter."));
+
+    // --- Video generation ---
+    list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("Sora 2"),
+                       WorkerTaskKindVideoGeneration,
+                       QString::fromUtf8("https://api.openai.com/v1"),
+                       QString::fromUtf8("sora-2"),
+                       QString(), QString(),
+                       QString::fromUtf8("Часто async job; ответ может быть id/status."));
+    list << makePreset(QString::fromUtf8("OpenRouter"), QString::fromUtf8("Video gen (via OR)"),
+                       WorkerTaskKindVideoGeneration,
+                       QString::fromUtf8("https://openrouter.ai/api/v1"),
+                       QString::fromUtf8("openai/sora"),
+                       QString(), QString(),
+                       QString::fromUtf8("Уточните model id в каталоге OpenRouter."));
+
+    // --- Decisions (LLM chat + propose_decision) ---
+    list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("GPT-4.1 mini (decisions)"),
+                       WorkerTaskKindDecisions, QString::fromUtf8("https://api.openai.com/v1"),
+                       QString::fromUtf8("gpt-4.1-mini"));
+    list << makePreset(QString::fromUtf8("DeepSeek"), QString::fromUtf8("DeepSeek Chat (decisions)"),
+                       WorkerTaskKindDecisions, QString::fromUtf8("https://api.deepseek.com"),
+                       QString::fromUtf8("deepseek-chat"));
+    list << makePreset(QString::fromUtf8("OpenRouter"), QString::fromUtf8("Claude Haiku (decisions)"),
+                       WorkerTaskKindDecisions, QString::fromUtf8("https://openrouter.ai/api/v1"),
+                       QString::fromUtf8("anthropic/claude-3.5-haiku"));
 
     // --- Embeddings ---
     list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("text-embedding-3-large"),
@@ -323,6 +365,75 @@ QList<ModelProfilePreset> knownModelProfilePresets()
     list << makePreset(QString::fromUtf8("Mistral"), QString::fromUtf8("mistral-embed"),
                        WorkerTaskKindEmbedding, QString::fromUtf8("https://api.mistral.ai/v1"),
                        QString::fromUtf8("mistral-embed"));
+
+    // Дефолтное назначение по классу задач, если не задано явно.
+    for (int i = 0; i < list.size(); ++i)
+    {
+        if (!list[i].purpose.trimmed().isEmpty())
+            continue;
+        switch (list[i].modality)
+        {
+        case WorkerTaskKindImageGeneration:
+            list[i].purpose = QString::fromUtf8(
+                "Text-to-image generation (not object detection/segmentation)");
+            break;
+        case WorkerTaskKindSpeech:
+            list[i].purpose = QString::fromUtf8("Speech: TTS and/or STT");
+            break;
+        case WorkerTaskKindAudioGeneration:
+            list[i].purpose = QString::fromUtf8("Generate music / sound effects from text");
+            break;
+        case WorkerTaskKindVideoGeneration:
+            list[i].purpose = QString::fromUtf8("Text/image-to-video generation");
+            break;
+        case WorkerTaskKindEmbedding:
+            list[i].purpose = QString::fromUtf8("Text embeddings / vector search");
+            break;
+        case WorkerTaskKindDecisions:
+            list[i].purpose = QString::fromUtf8("Structured decisions among options");
+            break;
+        case WorkerTaskKindLlm:
+        case WorkerTaskKindOther:
+        default:
+            list[i].purpose = QString::fromUtf8(
+                "General LLM: coding, reasoning, agent tool use");
+            break;
+        }
+    }
+
+    // Уточнения для известных специализаций внутри одного modality.
+    for (int i = 0; i < list.size(); ++i)
+    {
+        const QString m = list[i].model.toLower();
+        const QString n = list[i].name.toLower();
+        if (m.contains(QString::fromUtf8("whisper"))
+            || n.contains(QString::fromUtf8("whisper")))
+            list[i].purpose = QString::fromUtf8("Speech-to-text transcription (ASR/STT)");
+        else if (m.contains(QString::fromUtf8("tts"))
+                 || n.contains(QString::fromUtf8("tts")))
+            list[i].purpose = QString::fromUtf8("Text-to-speech synthesis (TTS)");
+        else if (m.contains(QString::fromUtf8("reasoner"))
+                 || m.startsWith(QString::fromUtf8("o3"))
+                 || m.startsWith(QString::fromUtf8("o4")))
+            list[i].purpose = QString::fromUtf8(
+                "Deep reasoning / hard bugs / ambiguous design");
+        else if (m.contains(QString::fromUtf8("codestral"))
+                 || n.contains(QString::fromUtf8("codestral")))
+            list[i].purpose = QString::fromUtf8("Code generation and editing");
+        else if (m.contains(QString::fromUtf8("sonar")))
+            list[i].purpose = QString::fromUtf8("Web-grounded search answers");
+        else if (m.contains(QString::fromUtf8("-vl"))
+                 || m.contains(QString::fromUtf8("vision"))
+                 || n.contains(QString::fromUtf8(" vl")))
+            list[i].purpose = QString::fromUtf8(
+                "Vision LLM: describe/analyze images (not image generation)");
+        else if (list[i].modality == WorkerTaskKindImageGeneration
+                 && (m.contains(QString::fromUtf8("edit"))
+                     || m.contains(QString::fromUtf8("layer"))
+                     || n.contains(QString::fromUtf8("edit"))))
+            list[i].purpose = QString::fromUtf8(
+                "Image editing / inpainting with a reference image");
+    }
 
     return list;
 }

@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 //----------------------------------------------
+#include "applocale.h"
 #include "appsettings.h"
 //----------------------------------------------
 #include <QApplication>
@@ -43,6 +44,7 @@ int main(int argc, char *argv[])
     app.setOrganizationName(QString::fromUtf8("dsagent"));
     app.setApplicationName(QString::fromUtf8("dsagent"));
     AppSettings::instance()->load();
+    AppLocale::instance()->setLanguage(AppSettings::instance()->uiLanguage());
 
     MainWindow window;
     window.show();

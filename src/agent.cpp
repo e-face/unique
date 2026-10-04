@@ -146,6 +146,36 @@ void Agent::clearTools()
 
 //----------------------------------------------
 
+QString Agent::invokeTool(QString name, QString argumentsJson, bool *ok)
+{
+    AgentTool *tool = findTool(name);
+    if (!tool)
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Tool %1 is not installed.").arg(name);
+    }
+    emit toolCallStarted(name, argumentsJson);
+    bool localOk = false;
+    const QString result = tool->invoke(argumentsJson, &localOk);
+    if (ok)
+        *ok = localOk;
+    emit toolCallFinished(name, result, localOk);
+    return result;
+}
+
+//----------------------------------------------
+
+void Agent::postNotice(QString text)
+{
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    emit notice(trimmed);
+}
+
+//----------------------------------------------
+
 void Agent::requestStopAfterTools()
 {
     _stopAfterTools = true;

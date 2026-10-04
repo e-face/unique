@@ -39,8 +39,13 @@ struct LlmProfile
     QString baseUrl;
     QString model;
     QString apiKey;
-    /** Класс задач API: llm / image_generation / speech / embedding / other. */
+    /** Класс задач API: llm / image / speech / audio / video / embedding / decisions / other. */
     WorkerTaskKind modality;
+    /**
+     * @brief Краткое назначение модели (для воркеров: когда выбирать этот профиль).
+     *        Например: «генерация картинок» vs «сегментация объектов на изображении».
+     */
+    QString purpose;
     /**
      * @brief URL или путь относительно baseUrl для запроса баланса.
      *        Пусто — баланс не запрашивается.
@@ -242,6 +247,10 @@ public:
     bool showForwardedContext() const;
     void setShowForwardedContext(bool enabled);
 
+    QString uiLanguage() const;
+    void setUiLanguage(QString code);
+    void persistUiLanguage(QString code);
+
     /**
      * @brief Учёт токенов одного ответа модели.
      * @param role  ключ роли воркера (manager/executor/tester/tool/root) для разбивки.
@@ -403,6 +412,7 @@ private:
     UsageStats             _projectUsage;
     QTimer                *_statsTimer;
     bool                   _showForwardedContext;
+    QString                _uiLanguage;
 };
 
 #endif // APPSETTINGS_H

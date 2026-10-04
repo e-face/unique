@@ -108,6 +108,8 @@ struct GroupDialogue
     QHash<QString, int> roundSeen;         // workerId -> last roundId seen by him
     QHash<QString, int> cursor;           // workerId -> last acked seq
     QSet<QString>       terminalDelivered; // DONE уже отдан участнику
+    /** Сколько раз уже нудили участника на текущий ход/голос (анти-дедлок). */
+    QHash<QString, int> actionNudges;
 };
 
 //----------------------------------------------
@@ -156,15 +158,35 @@ public:
     QString groupVote(Worker *from, bool approve, QString comment, QString *error);
     QString groupAwait(Worker *from, QString *error);
     /**
+     * @brief Участник должен действовать сейчас (оратор / голос / DONE).
+     */
+    bool groupParticipantShouldAct(Worker *worker) const;
+    /**
+     * @brief Если участник должен действовать, а LLM ушёл в idle — снова разбудить.
+     */
+    void ensureGroupParticipantActive(Worker *worker);
+    /**
      * @brief Переустановить инструменты и поднять сохранённые групповые диалоги.
      */
     void reinstallToolsAndResumeGroups();
 
     bool dismissChild(Worker *parent, QString childId, QString *error);
+    /** Удалить воркера, уже завершившего работу (Completed/Failed), с дочерними. */
+    bool forceRemoveFinished(Worker *worker, QString *error);
     QString runAndWait(Worker *worker);
 
     void installTools(Worker *worker);
+    /**
+     * @brief Modality профиля модели воркера (llm / image / speech / …).
+     */
+    WorkerTaskKind modalityOf(Worker *worker) const;
+    /**
+     * @brief Прямой запуск media/embedding tool без chat-цикла.
+     * @return отчёт для complete(); *ok = успех tool.
+     */
+    QString runMediaExecutor(Worker *worker, bool *ok);
     void refreshPrompt(Worker *worker);
+    void refreshAllPrompts();
     void stopAll();
     void clear();
     Worker *workerById(QString id) const;
@@ -180,7 +202,11 @@ public:
      * Один инструмент выполняет один запрос за раз, остальные ждут в очереди.
      * Удаляются только по требованию пользователя.
      */
-    Worker *createTool(Worker *creator, QString name, QString purpose, QString *error);
+    /**
+     * @param llmProfileId профиль модели (из preset_id); пусто — профиль роли Tool.
+     */
+    Worker *createTool(Worker *creator, QString name, QString purpose, QString *error,
+                       QString llmProfileId = QString());
     Worker *toolByIdOrName(QString key) const;
     QString toolsSummary() const;
     int toolQueueLength(Worker *tool) const;

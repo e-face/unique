@@ -371,6 +371,19 @@ void Worker::sendFollowUp(QString message)
     _result.clear();
     clearWorkPlan();
     setState(WorkerStateRunning);
+
+    WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
+    if (manager && workerTaskKindIsMediaExecutor(manager->modalityOf(this)))
+    {
+        _task = trimmed;
+        pushTaskAnchor();
+        bool ok = false;
+        const QString report = manager->runMediaExecutor(this, &ok);
+        _lastAssistant = report;
+        complete(report, ok);
+        return;
+    }
+
     // Follow-up от родителя: историю не сворачиваем заранее — сжатие
     // сработает само, когда контекст подойдёт к лимиту.
     if (isTool())
@@ -1394,6 +1407,18 @@ void Worker::startTask()
     _toolBatchCount = 0;
     _startedAtMs = QDateTime::currentMSecsSinceEpoch();
     setState(WorkerStateRunning);
+
+    WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
+    if (manager && workerTaskKindIsMediaExecutor(manager->modalityOf(this)))
+    {
+        // Image/speech/audio/video/embedding — без chat tool_calls.
+        bool ok = false;
+        const QString report = manager->runMediaExecutor(this, &ok);
+        _lastAssistant = report;
+        complete(report, ok);
+        return;
+    }
+
     const QString prefix = composeStartPrefix();
     if (!prefix.isEmpty())
         _session->agent()->injectContext(prefix);
@@ -2057,6 +2082,14 @@ void Worker::sltIdleAfterBusy()
         WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
         if (manager && manager->isGroupDialogueActive(_groupId))
         {
+            // Оратор/голосующий ушёл в idle без действия — снова разбудить,
+            // иначе остальные навсегда остаются в group_await.
+            if (manager->groupParticipantShouldAct(this))
+            {
+                setState(WorkerStateIdle);
+                manager->ensureGroupParticipantActive(this);
+                return;
+            }
             setState(WorkerStateIdle);
             return;
         }

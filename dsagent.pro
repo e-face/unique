@@ -21,6 +21,7 @@ HEADERS += \
     src/agent.h \
     src/agenttool.h \
     src/appicons.h \
+    src/applocale.h \
     src/appsettings.h \
     src/balancedialog.h \
     src/chatsession.h \
@@ -37,6 +38,9 @@ HEADERS += \
     src/llmtypes.h \
     src/mainwindow.h \
     src/markdownformatter.h \
+    src/modalityapi.h \
+    src/modalitytools.h \
+    src/modelcapabilities.h \
     src/modelprofilepresets.h \
     src/openaicompatibleclient.h \
     src/projectbrief.h \
@@ -55,6 +59,7 @@ HEADERS += \
 SOURCES += \
     src/agent.cpp \
     src/appicons.cpp \
+    src/applocale.cpp \
     src/appsettings.cpp \
     src/balancedialog.cpp \
     src/chatsession.cpp \
@@ -71,6 +76,9 @@ SOURCES += \
     src/main.cpp \
     src/mainwindow.cpp \
     src/markdownformatter.cpp \
+    src/modalityapi.cpp \
+    src/modalitytools.cpp \
+    src/modelcapabilities.cpp \
     src/modelprofilepresets.cpp \
     src/openaicompatibleclient.cpp \
     src/projectbrief.cpp \

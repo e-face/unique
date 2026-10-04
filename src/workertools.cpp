@@ -545,7 +545,7 @@ QString PlanWorkTool::description() const
         "simple/cannot_split -> executor; complex needs expected_parts>=3 or stay "
         "in YOUR plan as simple items. Do not give the whole job to one executor. "
         "When planning, note which preset_id (model) fits each subtask for later "
-        "delegate_task — minimize cost, maximize model fit.");
+        "delegate_task — match modality and purpose, minimize cost, maximize fit.");
 }
 
 //----------------------------------------------
@@ -720,7 +720,8 @@ QString DelegateTaskTool::description() const
         "Give work to a direct child. plan_work first (not needed if you do a small task yourself). "
         "simple -> executor, complex -> manager (depth limits are in your first message). "
         "Pass preset_id from available worker presets to bind the child's model "
-        "(cheapest adequate for routine work; stronger models for hard reasoning). "
+        "(match modality AND purpose: e.g. text-to-image vs object segmentation; "
+        "cheapest adequate for routine work; stronger models for hard reasoning). "
         "Reuse an existing child via worker_id — including COMPLETED children, which can "
         "be restarted many times with new instructions. Several calls run in parallel; "
         "you continue after ALL children of the batch answer. type: manager/executor/tester.");
@@ -763,8 +764,9 @@ QJsonObject DelegateTaskTool::parametersSchema() const
     presetId.insert(QString::fromUtf8("description"),
                     QString::fromUtf8(
                         "Optional worker preset_id (from first-message list). Selects the "
-                        "child's model profile. type must match the preset's type. "
-                        "Omit only if reusing worker_id or accepting the default for type."));
+                        "child's model by modality and purpose. type must match the "
+                        "preset's type. Omit only if reusing worker_id or accepting the "
+                        "default for type."));
 
     QJsonObject properties;
     properties.insert(QString::fromUtf8("type"), type);
@@ -862,6 +864,21 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
             if (ok)
                 *ok = false;
             return QString::fromUtf8("Preset %1 has an empty profileId.").arg(presetId);
+        }
+        const LlmProfile profile = AppSettings::instance()->profileById(llmProfileId);
+        if (!profile.id.isEmpty() && profile.modality != preset.taskKind
+            && preset.taskKind != WorkerTaskKindOther
+            && profile.modality != WorkerTaskKindOther)
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "preset_id=%1 task_kind=%2 but linked profile modality=%3. "
+                "Align task_kind with the profile modality "
+                "(image_generation / speech / audio_generation / video_generation / "
+                "embedding / decisions / llm).")
+                .arg(presetId, workerTaskKindToString(preset.taskKind),
+                     workerTaskKindToString(profile.modality));
         }
     }
 
@@ -988,8 +1005,13 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
         const QString model = profile.model.trimmed().isEmpty()
             ? QString::fromUtf8("?")
             : profile.model.trimmed();
-        profileNote = QString::fromUtf8(" Model: profile=\"%1\" model=%2 (preset_id=%3).")
-                          .arg(pname, model, presetId);
+        profileNote = QString::fromUtf8(
+                          " Model: profile=\"%1\" model=%2 purpose=\"%3\" (preset_id=%4).")
+                          .arg(pname, model,
+                               profile.purpose.trimmed().isEmpty()
+                                   ? QString::fromUtf8("-")
+                                   : profile.purpose.trimmed().simplified(),
+                               presetId);
     }
     return QString::fromUtf8(
         "%1 NEW child worker id=%2 type=%3 (depth %4 of max %5).%6 "
@@ -1516,9 +1538,10 @@ QString CreateToolTool::name() const
 QString CreateToolTool::description() const
 {
     return QString::fromUtf8(
-        "Create a shared reusable TOOL for one narrow job that needs little context "
-        "(build, run app, run a fixed test command, lint, package). One tool per purpose; "
-        "call list_tools first. Start with run_tool. Only the user can delete tools.");
+        "Create a shared reusable TOOL for one narrow job. Pass preset_id to bind the "
+        "model: match modality AND purpose from the presets list (e.g. text-to-image vs "
+        "object segmentation). Without preset_id the default Tool LLM profile is used "
+        "(cannot generate images). Call list_tools first. Only the user can delete tools.");
 }
 
 //----------------------------------------------
@@ -1528,19 +1551,27 @@ QJsonObject CreateToolTool::parametersSchema() const
     QJsonObject name;
     name.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     name.insert(QString::fromUtf8("description"),
-                QString::fromUtf8("Short unique name, e.g. 'build', 'run-app', 'unit-tests'."));
+                QString::fromUtf8("Short unique name, e.g. 'build', 'gen-cover', 'unit-tests'."));
 
     QJsonObject purpose;
     purpose.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     purpose.insert(QString::fromUtf8("description"),
                    QString::fromUtf8(
-                       "What the tool does on every run and what it must report: commands, "
-                       "working directory, expected outputs, how to summarize errors "
-                       "(file:line), what it must NOT change."));
+                       "What the tool does on every run and what it must report."));
+
+    QJsonObject presetId;
+    presetId.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    presetId.insert(QString::fromUtf8("description"),
+                    QString::fromUtf8(
+                        "Worker preset_id from the available presets list. REQUIRED for "
+                        "non-LLM work. Binds the tool to that profile's modality and "
+                        "purpose — pick the purpose that fits the job. Prefer a Tool-type "
+                        "preset; executor/manager presets are accepted for their profile."));
 
     QJsonObject properties;
     properties.insert(QString::fromUtf8("name"), name);
     properties.insert(QString::fromUtf8("purpose"), purpose);
+    properties.insert(QString::fromUtf8("preset_id"), presetId);
 
     QJsonArray required;
     required.append(QString::fromUtf8("name"));
@@ -1573,7 +1604,64 @@ QString CreateToolTool::invoke(QString argumentsJson, bool *ok)
     }
     const QString name = args.value(QString::fromUtf8("name")).toString();
     const QString purpose = args.value(QString::fromUtf8("purpose")).toString();
-    Worker *tool = _manager->createTool(_owner, name, purpose, &error);
+    const QString presetId = args.value(QString::fromUtf8("preset_id")).toString().trimmed();
+
+    QString llmProfileId;
+    QString modalityNote;
+    if (!presetId.isEmpty())
+    {
+        const WorkerPreset preset = AppSettings::instance()->workerPresetById(presetId);
+        if (preset.id.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8("Unknown preset_id=%1.\n%2")
+                .arg(presetId, AppSettings::instance()->workerPresetsSummary());
+        }
+        llmProfileId = preset.profileId.trimmed();
+        if (llmProfileId.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8("Preset %1 has an empty profileId.").arg(presetId);
+        }
+        const LlmProfile profile = AppSettings::instance()->profileById(llmProfileId);
+        if (profile.id.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8("Preset %1 points to unknown profileId=%2.")
+                .arg(presetId, llmProfileId);
+        }
+        if (preset.taskKind != WorkerTaskKindOther && profile.modality != WorkerTaskKindOther
+            && preset.taskKind != profile.modality)
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "preset_id=%1 task_kind=%2 but profile modality=%3. Align them.")
+                .arg(presetId, workerTaskKindToString(preset.taskKind),
+                     workerTaskKindToString(profile.modality));
+        }
+        modalityNote = QString::fromUtf8(
+                           " modality=%1 profile=\"%2\" model=%3 purpose=\"%4\" (preset_id=%5)")
+                           .arg(workerTaskKindToString(profile.modality),
+                                profile.name.trimmed().isEmpty() ? profile.id
+                                                                 : profile.name.trimmed(),
+                                profile.model.trimmed().isEmpty() ? QString::fromUtf8("?")
+                                                                  : profile.model.trimmed(),
+                                profile.purpose.trimmed().isEmpty()
+                                    ? QString::fromUtf8("-")
+                                    : profile.purpose.trimmed().simplified(),
+                                presetId);
+    }
+    else
+    {
+        modalityNote = QString::fromUtf8(
+            " (no preset_id → default Tool LLM profile; cannot do image/speech/video)");
+    }
+
+    Worker *tool = _manager->createTool(_owner, name, purpose, &error, llmProfileId);
     if (!tool)
     {
         if (ok)
@@ -1583,9 +1671,9 @@ QString CreateToolTool::invoke(QString argumentsJson, bool *ok)
     if (ok)
         *ok = true;
     return QString::fromUtf8(
-        "Tool created: tool_id=%1 name=\"%2\". It is idle until run_tool is called. "
-        "Every worker in the project can now use it.\n%3")
-        .arg(tool->id(), tool->toolName(), _manager->toolsSummary());
+        "Tool created: tool_id=%1 name=\"%2\"%3. Idle until run_tool. "
+        "Every worker can use it.\n%4")
+        .arg(tool->id(), tool->toolName(), modalityNote, _manager->toolsSummary());
 }
 
 //----------------------------------------------
@@ -2277,6 +2365,7 @@ QString AddGroupMemberTool::description() const
         "Managers may form a group at their discretion for thorough study of a hard/"
         "ambiguous question before coding. "
         "Pick preset_id from available presets — prefer diverse, capable models for "
+        "debate; match each member's purpose to the question. "
         "deep discussion; avoid duplicate profiles. "
         "Each group member MUST use a different model profile. "
         "The group uses turn-based dialogue (group_speak / group_await / vote); "
@@ -2417,9 +2506,9 @@ QString GroupAwaitTool::description() const
 {
     return QString::fromUtf8(
         "If you are NOT the narrator and do not need to vote: call once to park until a "
-        "follow-up wakes you for your turn. Does NOT block the process. "
-        "If you ARE the narrator or must vote, returns instructions immediately — act, "
-        "do not park.");
+        "follow-up wakes you for your turn. Non-blocking (does not freeze other members). "
+        "If you ARE the narrator or must vote, returns ACTION REQUIRED — speak/vote now, "
+        "do NOT call group_await again to park.");
 }
 
 //----------------------------------------------

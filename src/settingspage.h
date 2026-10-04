@@ -9,9 +9,11 @@
 
 class QCheckBox;
 class QComboBox;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QFormLayout;
 class QPushButton;
 class QSpinBox;
 
@@ -40,6 +42,9 @@ public:
     void loadProfiles();
     void commitCurrentProfile();
     void reloadAll();
+
+public slots:
+    void retranslateUi();
 
 signals:
     void appearanceApplied();
@@ -72,10 +77,12 @@ private slots:
     void sltRootPresetChanged();
     void loadPresets();
     void fillRootPresetCombo();
+    void sltLanguageComboChanged(int index);
 
 private:
     void updateColorButton(QPushButton *button, const QColor &color);
     QWidget *buildHintBox();
+    QWidget *buildLanguageBox();
     QWidget *buildApiBox();
     QWidget *buildProfilesRefBox();
     QWidget *buildWorkersBox();
@@ -93,13 +100,41 @@ private:
     QString presetListLabel(const WorkerPreset &preset) const;
 
     SettingsKind _kind;
+    QGroupBox   *_viewBox;
+    QGroupBox   *_apiBox;
+    QGroupBox   *_profilesRefBox;
+    QGroupBox   *_workersBox;
+    QGroupBox   *_projectBox;
+    QGroupBox   *_securityBox;
+    QGroupBox   *_appearanceBox;
+    QGroupBox   *_languageGroup;
+    QComboBox   *_languageCombo;
     QLabel      *_hintLabel;
+    QLabel      *_presetHint;
+    QLabel      *_limitsHint;
+    QLabel      *_budgetHint;
+    QLabel      *_rootHint;
+    QLabel      *_profilesRefHint;
+    QLabel      *_permissionsHeadingLabel;
+    QLabel      *_roleRowLabel[4];
+    QLabel      *_roleFuncLabel[4];
+    QLabel      *_roleContextLabel[4];
+    QFormLayout *_profileForm;
+    QFormLayout *_presetForm;
+    QFormLayout *_rootForm;
+    QFormLayout *_limitsForm;
+    QFormLayout *_budgetsForm;
+    QFormLayout *_appearanceForm;
+    QFormLayout *_languageForm;
+    QPushButton *_revokeButton;
+    QPushButton *_applyAppearanceButton;
     QListWidget *_profileList;
     QLineEdit   *_profileNameEdit;
     QLineEdit   *_profileUrlEdit;
     QLineEdit   *_profileModelEdit;
     QLineEdit   *_profileTokenEdit;
     QComboBox   *_profileModalityCombo;
+    QLineEdit   *_profilePurposeEdit;
     QLineEdit   *_profileBalanceUrlEdit;
     QLineEdit   *_profileBalancePathEdit;
     QPushButton *_addProfileButton;

@@ -1,5 +1,6 @@
 #include "workergraphwidget.h"
 //----------------------------------------------
+#include "applocale.h"
 #include "appicons.h"
 #include "appsettings.h"
 #include "worker.h"
@@ -76,64 +77,64 @@ static QString profileLabel(Worker *worker)
 
 //----------------------------------------------
 
-static QString typeLabel(Worker *worker)
+QString WorkerGraphWidget::typeLabelFor(Worker *worker)
 {
     if (!worker)
-        return QString::fromUtf8("Воркер");
+        return WorkerGraphWidget::tr("Воркер");
     QString role;
     if (worker->isRoot())
-        role = QString::fromUtf8("Главный менеджер");
+        role = WorkerGraphWidget::tr("Главный менеджер");
     else
     {
         switch (worker->type())
         {
         case WorkerTypeExecutor:
-            role = QString::fromUtf8("Исполнитель");
+            role = WorkerGraphWidget::tr("Исполнитель");
             break;
         case WorkerTypeTester:
-            role = QString::fromUtf8("Тестировщик");
+            role = WorkerGraphWidget::tr("Тестировщик");
             break;
         case WorkerTypeTool:
-            role = QString::fromUtf8("Инструмент");
+            role = WorkerGraphWidget::tr("Инструмент");
             break;
         case WorkerTypeManager:
         default:
-            role = QString::fromUtf8("Менеджер");
+            role = WorkerGraphWidget::tr("Менеджер");
             break;
         }
     }
     if (worker->isGroupInterlocutor())
-        role += QString::fromUtf8(" · собеседник");
+        role += WorkerGraphWidget::tr(" · собеседник");
     else if (worker->isGroupChief())
-        role += QString::fromUtf8(" · группа");
+        role += WorkerGraphWidget::tr(" · группа");
     if (!worker->personName().isEmpty())
-        return worker->personName() + QString::fromUtf8(" · ") + role;
+        return worker->personName() + WorkerGraphWidget::tr(" · ") + role;
     return role;
 }
 
 //----------------------------------------------
 
-static QString stateLabel(WorkerState state)
+QString WorkerGraphWidget::stateLabelFor(WorkerState state)
 {
     switch (state)
     {
     case WorkerStateRunning:
-        return QString::fromUtf8("выполняется");
+        return WorkerGraphWidget::tr("выполняется");
     case WorkerStateWaitingApproval:
-        return QString::fromUtf8("ждёт разрешения");
+        return WorkerGraphWidget::tr("ждёт разрешения");
     case WorkerStateWaitingChildren:
-        return QString::fromUtf8("ждёт детей");
+        return WorkerGraphWidget::tr("ждёт детей");
     case WorkerStateWaitingContinuation:
-        return QString::fromUtf8("ждёт продолжения");
+        return WorkerGraphWidget::tr("ждёт продолжения");
     case WorkerStateCompleted:
-        return QString::fromUtf8("завершён");
+        return WorkerGraphWidget::tr("завершён");
     case WorkerStateFailed:
-        return QString::fromUtf8("ошибка");
+        return WorkerGraphWidget::tr("ошибка");
     case WorkerStateQueued:
-        return QString::fromUtf8("в очереди");
+        return WorkerGraphWidget::tr("в очереди");
     case WorkerStateIdle:
     default:
-        return QString::fromUtf8("ожидает");
+        return WorkerGraphWidget::tr("ожидает");
     }
 }
 
@@ -219,6 +220,8 @@ WorkerGraphWidget::WorkerGraphWidget(QWidget *parent)
     setFrameShape(QFrame::NoFrame);
     applyTheme();
     connect(_scene, SIGNAL(selectionChanged()), this, SLOT(sltSelectionChanged()));
+    connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
+            this, SLOT(sltLocaleChanged()));
 }
 
 //----------------------------------------------
@@ -320,7 +323,7 @@ qreal WorkerGraphWidget::layoutTools(qreal left, qreal top)
     QGraphicsLineItem *line = _scene->addLine(left, top - 10, left, bottom, separator);
     line->setZValue(0);
 
-    QGraphicsTextItem *header = _scene->addText(QString::fromUtf8("Инструменты"));
+    QGraphicsTextItem *header = _scene->addText(tr("Инструменты"));
     QFont bold = font();
     bold.setBold(true);
     header->setFont(bold);
@@ -417,10 +420,10 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
     const int textMaxW = int(kNodeWidth - kPad * 3 - kIconSize);
 
     QStringList lines;
-    lines << typeLabel(worker);
+    lines << typeLabelFor(worker);
     const QString profileName = profileLabel(worker);
     if (!profileName.isEmpty())
-        lines << elideLine(QString::fromUtf8("модель: ") + profileName, fm, textMaxW);
+        lines << elideLine(tr("модель: ") + profileName, fm, textMaxW);
     QString tip;
     if (worker->isTool())
     {
@@ -428,10 +431,10 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
         if (!name.isEmpty())
             lines << elideLine(name, fm, textMaxW);
         const bool busy = _manager && _manager->toolBusy(worker);
-        QString status = busy ? QString::fromUtf8("занят") : QString::fromUtf8("свободен");
+        QString status = busy ? tr("занят") : tr("свободен");
         const int queued = _manager ? _manager->toolQueueLength(worker) : 0;
         if (queued > 0)
-            status += QString::fromUtf8(", в очереди: %1").arg(queued);
+            status += tr(", в очереди: %1").arg(queued);
         lines << status;
         QString purpose = worker->toolPurpose().simplified();
         if (!purpose.isEmpty())
@@ -446,13 +449,13 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
         QString task = worker->displayLabel();
         if (!task.isEmpty() && !worker->isRoot())
             lines << elideLine(task, fm, textMaxW);
-        lines << stateLabel(worker->state());
+        lines << stateLabelFor(worker->state());
         tip = worker->displayLabel();
         if (!profileName.isEmpty())
         {
             if (!tip.isEmpty())
                 tip += QString::fromUtf8("\n");
-            tip += QString::fromUtf8("Профиль: ") + profileName;
+            tip += tr("Профиль: ") + profileName;
         }
         if (!tip.isEmpty())
             tip += QString::fromUtf8("\n");
@@ -463,8 +466,8 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
     {
         QStringList names;
         foreach (Worker *child, waiting)
-            names.append(typeLabel(child));
-        lines << elideLine(QString::fromUtf8("ждёт: ") + names.join(QString::fromUtf8(", ")),
+            names.append(typeLabelFor(child));
+        lines << elideLine(tr("ждёт: ") + names.join(tr(", ")),
                            fm, textMaxW);
     }
     while (lines.size() > 5)
@@ -614,6 +617,17 @@ void WorkerGraphWidget::contextMenuEvent(QContextMenuEvent *event)
         menu.addSeparator();
         removeAction = menu.addAction(tr("Удалить инструмент"));
     }
+    QAction *workerRemoveAction = 0;
+    if (!worker->isRoot())
+    {
+        const WorkerState st = worker->state();
+        if (st == WorkerStateCompleted || st == WorkerStateFailed)
+        {
+            if (!removeAction)
+                menu.addSeparator();
+            workerRemoveAction = menu.addAction(tr("Удалить воркера"));
+        }
+    }
     QAction *chosen = menu.exec(event->globalPos());
     if (!chosen)
         return;
@@ -625,6 +639,8 @@ void WorkerGraphWidget::contextMenuEvent(QContextMenuEvent *event)
         emit reportToParentRequested(id);
     else if (removeAction && chosen == removeAction)
         emit toolRemoveRequested(id);
+    else if (workerRemoveAction && chosen == workerRemoveAction)
+        emit workerRemoveRequested(id);
     else if (profileGroup->actions().contains(chosen))
     {
         const QString profileId = chosen->data().toString().trimmed();
@@ -702,4 +718,12 @@ void WorkerGraphWidget::sltSelectionChanged()
             return;
         }
     }
+}
+
+//----------------------------------------------
+
+void WorkerGraphWidget::sltLocaleChanged()
+{
+    setToolTip(tr("Колёсико мыши — масштаб, перетаскивание — сдвиг, 0 — сброс"));
+    rebuild(_manager.data());
 }

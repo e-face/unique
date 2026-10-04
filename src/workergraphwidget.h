@@ -4,6 +4,8 @@
 #include <QGraphicsView>
 #include <QPointer>
 
+#include "workertypes.h"
+
 class Worker;
 class WorkerManager;
 class QContextMenuEvent;
@@ -30,6 +32,8 @@ signals:
     void workerActivated(const QString &id);
     /** Пользователь запросил удаление инструмента (контекстное меню). */
     void toolRemoveRequested(const QString &id);
+    /** Удалить завершённого воркера (не root) с графа. */
+    void workerRemoveRequested(const QString &id);
     void workerInterruptRequested(const QString &id);
     void reportToParentRequested(const QString &id);
     /** Смена профиля модели воркера с схемы (на лету). */
@@ -43,8 +47,11 @@ protected:
 
 private slots:
     void sltSelectionChanged();
+    void sltLocaleChanged();
 
 private:
+    static QString typeLabelFor(Worker *worker);
+    static QString stateLabelFor(WorkerState state);
     qreal layoutWorker(Worker *worker, qreal left, qreal top);
     qreal layoutTools(qreal left, qreal top);
     void addNode(Worker *worker, qreal x, qreal y);

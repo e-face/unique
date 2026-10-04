@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 //----------------------------------------------
 #include "agent.h"
+#include "applocale.h"
 #include "appicons.h"
 #include "appsettings.h"
 #include "balancedialog.h"
@@ -10,6 +11,7 @@
 #include "journalwidget.h"
 #include "knowledgestore.h"
 #include "llmclient.h"
+#include "modelcapabilities.h"
 #include "openaicompatibleclient.h"
 #include "projecttreedock.h"
 #include "projectworkspace.h"
@@ -39,6 +41,9 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -287,7 +292,18 @@ MainWindow::MainWindow(QWidget *parent)
     , _settingsPage(0)
     , _projectSettingsPage(0)
     , _projectDock(0)
+    , _fileMenu(0)
+    , _windowMenu(0)
+    , _projectMenu(0)
+    , _helpMenu(0)
     , _recentMenu(0)
+    , _balanceAction(0)
+    , _quitAction(0)
+    , _windowChatAction(0)
+    , _windowGraphAction(0)
+    , _windowJournalAction(0)
+    , _windowSettingsAction(0)
+    , _helpStatsAction(0)
     , _openProjectAction(0)
     , _newProjectAction(0)
     , _openLastAction(0)
@@ -301,6 +317,13 @@ MainWindow::MainWindow(QWidget *parent)
     , _projectSettingsAction(0)
     , _inspectCheck(0)
     , _composer(0)
+    , _composerCapsLabel(0)
+    , _composerAttachLabel(0)
+    , _composerAttachImage(0)
+    , _composerAttachAudio(0)
+    , _composerAttachVideo(0)
+    , _composerAttachFile(0)
+    , _composerClearAttach(0)
     , _composerSend(0)
     , _composerStop(0)
     , _progressBar(0)
@@ -323,6 +346,8 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupUi();
     setupMenus();
+    connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
+            this, SLOT(sltLocaleChanged(QString)));
     connect(_workers, SIGNAL(workerCreated(Worker*)),
             this, SLOT(sltWorkerCreated(Worker*)));
     connect(_workers, SIGNAL(workerAboutToBeRemoved(Worker*)),
@@ -1268,6 +1293,7 @@ void MainWindow::sltCurrentTabChanged(int index)
     ChatSession *session = sessionByTabWidget(page);
     if (session)
         restoreSessionContent(session);
+    updateComposerState();
     scheduleSaveOpenChats();
 }
 
@@ -1346,6 +1372,8 @@ void MainWindow::createGraphWindow()
             this, SLOT(sltWorkerActivated(QString)));
     connect(_graph, SIGNAL(toolRemoveRequested(QString)),
             this, SLOT(sltToolRemoveRequested(QString)));
+    connect(_graph, SIGNAL(workerRemoveRequested(QString)),
+            this, SLOT(sltWorkerRemoveRequested(QString)));
     connect(_graph, SIGNAL(workerInterruptRequested(QString)),
             this, SLOT(sltWorkerForceStopById(QString)));
     connect(_graph, SIGNAL(reportToParentRequested(QString)),
@@ -1697,10 +1725,21 @@ void MainWindow::sltWorkerProfileChangeRequested(const QString &workerId,
     if (worker->session())
     {
         applyClientToSession(worker->session());
+        // Tools зависят от modality профиля — перевешиваем после смены модели.
+        if (_workers)
+            _workers->installTools(worker);
         applyWorkerUi(worker);
+        // Показать вкладку воркера, чтобы композитор подтянул его caps/вложения.
+        ensureSessionVisible(worker->session());
     }
+    // Заново определить входы модели (OpenRouter /images/models и т.п.).
+    const ModelCapabilities caps =
+        ModelCapabilityService::instance()->capabilitiesFor(profile, true);
     if (_graph)
         _graph->rebuild(_workers);
+    _composerAttachments.clear();
+    updateComposerAttachmentsUi();
+    updateComposerState();
     if (!_closing && !_resetting)
         scheduleSaveOpenChats();
     QString title = profile.name.trimmed();
@@ -1709,8 +1748,11 @@ void MainWindow::sltWorkerProfileChangeRequested(const QString &workerId,
     if (title.isEmpty())
         title = profile.id;
     if (statusBar())
+    {
         statusBar()->showMessage(
-            tr("Профиль модели: %1 → %2").arg(workerWindowTitle(worker), title));
+            tr("Профиль модели: %1 → %2 (%3)")
+                .arg(workerWindowTitle(worker), title, caps.summary()));
+    }
 }
 
 //----------------------------------------------
@@ -1737,6 +1779,35 @@ void MainWindow::sltToolRemoveRequested(const QString &id)
         scheduleSaveOpenChats();
 }
 
+//----------------------------------------------
+
+void MainWindow::sltWorkerRemoveRequested(const QString &id)
+{
+    Worker *worker = _workers ? _workers->workerById(id) : 0;
+    if (!worker || worker->isRoot())
+        return;
+    QString title = workerWindowTitle(worker);
+    QString text = tr("Удалить воркера «%1» с графа?\n"
+                      "Дочерние воркеры будут удалены, чат закроется.")
+                       .arg(title);
+    const int answer = askStyledQuestion(tr("Удаление воркера"), text,
+                                         tr("Удалить"), tr("Отмена"));
+    if (answer != QMessageBox::Yes)
+        return;
+    QString error;
+    if (!_workers->forceRemoveFinished(worker, &error))
+    {
+        if (statusBar())
+            statusBar()->showMessage(error);
+        return;
+    }
+    if (_journal)
+        _journal->addTransient(title, tr("Удалён"),
+                               tr("Воркер удалён пользователем с графа"),
+                               QString::fromUtf8("noticeMsg"));
+    if (!_closing && !_resetting)
+        scheduleSaveOpenChats();
+}
 
 //----------------------------------------------
 
@@ -1995,10 +2066,262 @@ void MainWindow::sltComposerSend()
     if (!_composer || !_composerSend || !_composerSend->isEnabled())
         return;
     const QString text = _composer->toPlainText().trimmed();
-    if (text.isEmpty())
+    if (text.isEmpty() && _composerAttachments.isEmpty())
+        return;
+
+    ChatSession *session = currentSession();
+    Worker *worker = session ? session->worker() : 0;
+    const LlmProfile profile = profileForComposerTarget();
+    const ModelCapabilities caps =
+        ModelCapabilityService::instance()->capabilitiesFor(profile);
+
+    // Media-воркер: JSON brief с вложениями.
+    if (worker && _workers
+        && workerTaskKindIsMediaExecutor(_workers->modalityOf(worker)))
+    {
+        if (caps.requiresImageReference() && _composerAttachments.isEmpty()
+            && caps.acceptsImage())
+        {
+            statusBar()->showMessage(
+                tr("Модель требует референс-картинку — прикрепите файл."));
+            return;
+        }
+        QJsonObject brief;
+        brief.insert(QString::fromUtf8("prompt"), text);
+        if (!_composerAttachments.isEmpty())
+        {
+            const QString first = _composerAttachments.first();
+            const QString lower = first.toLower();
+            if (lower.endsWith(QString::fromUtf8(".png"))
+                || lower.endsWith(QString::fromUtf8(".jpg"))
+                || lower.endsWith(QString::fromUtf8(".jpeg"))
+                || lower.endsWith(QString::fromUtf8(".webp"))
+                || lower.endsWith(QString::fromUtf8(".gif"))
+                || lower.endsWith(QString::fromUtf8(".bmp")))
+                brief.insert(QString::fromUtf8("reference_path"), first);
+            else if (lower.endsWith(QString::fromUtf8(".wav"))
+                     || lower.endsWith(QString::fromUtf8(".mp3"))
+                     || lower.endsWith(QString::fromUtf8(".m4a"))
+                     || lower.endsWith(QString::fromUtf8(".ogg"))
+                     || lower.endsWith(QString::fromUtf8(".flac")))
+                brief.insert(QString::fromUtf8("path"), first);
+            else
+                brief.insert(QString::fromUtf8("reference_path"), first);
+            if (_composerAttachments.size() > 1)
+            {
+                QJsonArray extra;
+                for (int i = 1; i < _composerAttachments.size(); ++i)
+                    extra.append(_composerAttachments.at(i));
+                brief.insert(QString::fromUtf8("extra_paths"), extra);
+            }
+        }
+        const QString payload =
+            QString::fromUtf8(QJsonDocument(brief).toJson(QJsonDocument::Compact));
+        _composer->clear();
+        _composerAttachments.clear();
+        updateComposerAttachmentsUi();
+
+        if (worker->state() == WorkerStateIdle
+            || worker->state() == WorkerStateCompleted
+            || worker->state() == WorkerStateFailed
+            || worker->canAcceptFollowUp())
+        {
+            if (worker->task().trimmed().isEmpty()
+                && worker->state() == WorkerStateIdle)
+            {
+                worker->setTask(payload);
+                _workers->requestStart(worker);
+            }
+            else
+                worker->beginFollowUp(payload);
+        }
+        else
+        {
+            statusBar()->showMessage(tr("Воркер занят — дождитесь завершения."));
+            return;
+        }
+        ensureSessionVisible(session);
+        updateComposerState();
+        return;
+    }
+
+    // Главный чат: текст + список вложений для менеджера.
+    QString message = text;
+    if (!_composerAttachments.isEmpty())
+    {
+        message += QString::fromUtf8("\n\nAttached files (use as reference_path / path):\n");
+        foreach (const QString &path, _composerAttachments)
+            message += QString::fromUtf8("- %1\n").arg(path);
+        if (caps.requiresImageReference())
+            message += QString::fromUtf8(
+                "\nNote: image model requires reference_path — pass first attachment "
+                "to generate_image / run_tool.\n");
+    }
+    if (message.trimmed().isEmpty())
         return;
     _composer->clear();
-    sltSendRequested(text);
+    _composerAttachments.clear();
+    updateComposerAttachmentsUi();
+    sltSendRequested(message);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerAttachImage()
+{
+    const QStringList files = pickComposerAttachments(
+        tr("Изображения (*.png *.jpg *.jpeg *.webp *.gif *.bmp);;Все файлы (*.*)"),
+        tr("Прикрепить изображение"));
+    foreach (const QString &f, files)
+    {
+        if (!_composerAttachments.contains(f))
+            _composerAttachments.append(f);
+    }
+    updateComposerAttachmentsUi();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerAttachAudio()
+{
+    const QStringList files = pickComposerAttachments(
+        tr("Аудио (*.wav *.mp3 *.m4a *.ogg *.flac *.aac *.webm);;Все файлы (*.*)"),
+        tr("Прикрепить аудио"));
+    foreach (const QString &f, files)
+    {
+        if (!_composerAttachments.contains(f))
+            _composerAttachments.append(f);
+    }
+    updateComposerAttachmentsUi();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerAttachVideo()
+{
+    const QStringList files = pickComposerAttachments(
+        tr("Видео (*.mp4 *.webm *.mov *.mkv *.avi);;Все файлы (*.*)"),
+        tr("Прикрепить видео"));
+    foreach (const QString &f, files)
+    {
+        if (!_composerAttachments.contains(f))
+            _composerAttachments.append(f);
+    }
+    updateComposerAttachmentsUi();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerAttachFile()
+{
+    const QStringList files = pickComposerAttachments(
+        tr("Все файлы (*.*)"),
+        tr("Прикрепить файл"));
+    foreach (const QString &f, files)
+    {
+        if (!_composerAttachments.contains(f))
+            _composerAttachments.append(f);
+    }
+    updateComposerAttachmentsUi();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerClearAttachments()
+{
+    _composerAttachments.clear();
+    updateComposerAttachmentsUi();
+}
+
+//----------------------------------------------
+
+QStringList MainWindow::pickComposerAttachments(QString filter, QString title)
+{
+    QStringList result;
+    if (!hasOpenProject() || !_workspace)
+        return result;
+    const QStringList selected = QFileDialog::getOpenFileNames(this, title, QString(), filter);
+    foreach (const QString &abs, selected)
+    {
+        QString error;
+        const QString rel = importAttachmentIntoProject(abs, &error);
+        if (rel.isEmpty())
+        {
+            if (statusBar())
+                statusBar()->showMessage(error);
+            continue;
+        }
+        result.append(rel);
+    }
+    return result;
+}
+
+//----------------------------------------------
+
+QString MainWindow::importAttachmentIntoProject(QString absolutePath, QString *error)
+{
+    if (!_workspace || !_workspace->isSet())
+    {
+        if (error)
+            *error = tr("Проект не открыт.");
+        return QString();
+    }
+    const QString abs = QFileInfo(absolutePath).absoluteFilePath();
+    if (_workspace->contains(abs))
+        return _workspace->toRelative(abs);
+
+    if (!_workspace->ensureTempDir())
+    {
+        if (error)
+            *error = tr("Не удалось создать tmp проекта.");
+        return QString();
+    }
+    const QString uploads = _workspace->tempDir() + QString::fromUtf8("/uploads");
+    QDir().mkpath(uploads);
+    const QString destName = QFileInfo(abs).fileName();
+    QString dest = uploads + QChar('/') + destName;
+    int n = 1;
+    while (QFileInfo::exists(dest))
+    {
+        dest = uploads + QChar('/') + QFileInfo(abs).completeBaseName()
+               + QString::fromUtf8("_%1.").arg(n++) + QFileInfo(abs).suffix();
+    }
+    if (!QFile::copy(abs, dest))
+    {
+        if (error)
+            *error = tr("Не удалось скопировать файл в проект.");
+        return QString();
+    }
+    return _workspace->toRelative(dest);
+}
+
+//----------------------------------------------
+
+LlmProfile MainWindow::profileForComposerTarget() const
+{
+    LlmProfile profile;
+    ChatSession *session = currentSession();
+    Worker *worker = session ? session->worker() : 0;
+    if (worker && !worker->llmProfileId().trimmed().isEmpty())
+        profile = AppSettings::instance()->profileById(worker->llmProfileId());
+    if (profile.id.isEmpty() && worker)
+        profile = AppSettings::instance()->profileForWorkerType(worker->type());
+    if (profile.id.isEmpty())
+        profile = AppSettings::instance()->profileForWorkerType(WorkerTypeManager);
+    return profile;
+}
+
+//----------------------------------------------
+
+void MainWindow::updateComposerAttachmentsUi()
+{
+    if (!_composerAttachLabel)
+        return;
+    if (_composerAttachments.isEmpty())
+        _composerAttachLabel->setText(tr("Вложений нет"));
+    else
+        _composerAttachLabel->setText(tr("Вложения: %1")
+                                          .arg(_composerAttachments.join(QString::fromUtf8(", "))));
 }
 
 //----------------------------------------------
@@ -2047,40 +2370,39 @@ void MainWindow::setupUi()
     connect(AppSettings::instance(), SIGNAL(profilesChanged()),
             this, SLOT(sltProfilesChanged()));
 
-    QToolBar *toolbar = addToolBar(tr("Панель"));
+    QToolBar *toolbar = addToolBar(L("toolbar.title"));
     toolbar->setObjectName(QString::fromUtf8("mainToolBar"));
     toolbar->setMovable(false);
     toolbar->setIconSize(QSize(24, 24));
     toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
-    _clearAction = toolbar->addAction(AppIcons::clearAll(), tr("Очистить всё"));
-    _clearAction->setToolTip(tr("Сбросить проект до состояния только что созданного: "
-                                "чаты, воркеры, журнал, знания и настройки ___project___."));
+    _clearAction = toolbar->addAction(AppIcons::clearAll(), L("toolbar.clear"));
+    _clearAction->setToolTip(L("toolbar.clearTip"));
     connect(_clearAction, SIGNAL(triggered()), this, SLOT(sltClear()));
 
-    _showChatAction = toolbar->addAction(AppIcons::mainChat(), tr("Главный чат"));
-    _showChatAction->setToolTip(tr("Открыть главный чат"));
+    _showChatAction = toolbar->addAction(AppIcons::mainChat(), L("menu.window.mainChat"));
+    _showChatAction->setToolTip(L("toolbar.mainChatTip"));
     connect(_showChatAction, SIGNAL(triggered()), this, SLOT(sltShowChat()));
 
-    _showGraphAction = toolbar->addAction(AppIcons::workerGraph(), tr("Команда"));
-    _showGraphAction->setToolTip(tr("Открыть схему команды"));
+    _showGraphAction = toolbar->addAction(AppIcons::workerGraph(), L("menu.window.team"));
+    _showGraphAction->setToolTip(L("toolbar.teamTip"));
     connect(_showGraphAction, SIGNAL(triggered()), this, SLOT(sltShowGraph()));
 
-    _showJournalAction = toolbar->addAction(AppIcons::journal(), tr("Журнал"));
-    _showJournalAction->setToolTip(tr("Открыть журнал: сводная лента всех чатов за этот запуск"));
+    _showJournalAction = toolbar->addAction(AppIcons::journal(), L("menu.window.journal"));
+    _showJournalAction->setToolTip(L("toolbar.journalTip"));
     connect(_showJournalAction, SIGNAL(triggered()), this, SLOT(sltShowJournal()));
 
     toolbar->addSeparator();
 
     _prevConfirmAction = toolbar->addAction(AppIcons::prevConfirm(),
-                                            tr("Предыдущее подтверждение"));
-    _prevConfirmAction->setToolTip(tr("Перейти к предыдущему запросу на подтверждение"));
+                                            L("toolbar.prevConfirm"));
+    _prevConfirmAction->setToolTip(L("toolbar.prevConfirmTip"));
     _prevConfirmAction->setEnabled(false);
     connect(_prevConfirmAction, SIGNAL(triggered()), this, SLOT(sltPrevConfirmation()));
 
     _nextConfirmAction = toolbar->addAction(AppIcons::nextConfirm(),
-                                            tr("Следующее подтверждение"));
-    _nextConfirmAction->setToolTip(tr("Перейти к следующему запросу на подтверждение"));
+                                            L("toolbar.nextConfirm"));
+    _nextConfirmAction->setToolTip(L("toolbar.nextConfirmTip"));
     _nextConfirmAction->setEnabled(false);
     connect(_nextConfirmAction, SIGNAL(triggered()), this, SLOT(sltNextConfirmation()));
 
@@ -2103,15 +2425,50 @@ void MainWindow::setupUi()
     connect(_tabBlinkTimer, SIGNAL(timeout()), this, SLOT(sltTabBlink()));
 
     _composer = new QPlainTextEdit(central);
-    _composer->setPlaceholderText(tr("Сообщение в главный чат…  Enter — отправить, Shift+Enter — новая строка"));
+    _composer->setPlaceholderText(L("composer.placeholder"));
     _composer->setMaximumHeight(110);
     _composer->installEventFilter(this);
-    _composerSend = new QPushButton(tr("Отправить"), central);
-    _composerStop = new QPushButton(tr("Стоп"), central);
+    _composerCapsLabel = new QLabel(central);
+    _composerCapsLabel->setWordWrap(true);
+    _composerCapsLabel->setStyleSheet(QString::fromUtf8("color: gray; font-size: 11px;"));
+    _composerAttachLabel = new QLabel(central);
+    _composerAttachLabel->setWordWrap(true);
+    _composerAttachImage = new QPushButton(tr("Картинка"), central);
+    _composerAttachAudio = new QPushButton(tr("Аудио"), central);
+    _composerAttachVideo = new QPushButton(tr("Видео"), central);
+    _composerAttachFile = new QPushButton(tr("Файл"), central);
+    _composerClearAttach = new QPushButton(tr("Очистить вложения"), central);
+    _composerAttachImage->setToolTip(
+        tr("Изображение для vision/VL/omni моделей (мультимодальный вход)"));
+    _composerAttachAudio->setToolTip(tr("Аудио, если модель принимает audio"));
+    _composerAttachVideo->setToolTip(tr("Видео, если модель принимает video"));
+    _composerAttachFile->setToolTip(
+        tr("Файл проекта: путь попадёт в сообщение, агент прочитает через инструменты"));
+    connect(_composerAttachImage, SIGNAL(clicked()), this, SLOT(sltComposerAttachImage()));
+    connect(_composerAttachAudio, SIGNAL(clicked()), this, SLOT(sltComposerAttachAudio()));
+    connect(_composerAttachVideo, SIGNAL(clicked()), this, SLOT(sltComposerAttachVideo()));
+    connect(_composerAttachFile, SIGNAL(clicked()), this, SLOT(sltComposerAttachFile()));
+    connect(_composerClearAttach, SIGNAL(clicked()), this, SLOT(sltComposerClearAttachments()));
+    _composerSend = new QPushButton(L("composer.send"), central);
+    _composerStop = new QPushButton(L("composer.stop"), central);
     _composerStop->setEnabled(false);
-    _composerStop->setToolTip(tr("Остановить работу во всех чатах"));
+    _composerStop->setToolTip(L("composer.stopTip"));
     connect(_composerSend, SIGNAL(clicked()), this, SLOT(sltComposerSend()));
     connect(_composerStop, SIGNAL(clicked()), this, SLOT(sltComposerStop()));
+
+    QHBoxLayout *attachButtons = new QHBoxLayout();
+    attachButtons->addWidget(_composerAttachImage);
+    attachButtons->addWidget(_composerAttachAudio);
+    attachButtons->addWidget(_composerAttachVideo);
+    attachButtons->addWidget(_composerAttachFile);
+    attachButtons->addWidget(_composerClearAttach);
+    attachButtons->addStretch();
+
+    QVBoxLayout *composerLeft = new QVBoxLayout();
+    composerLeft->addWidget(_composerCapsLabel);
+    composerLeft->addLayout(attachButtons);
+    composerLeft->addWidget(_composerAttachLabel);
+    composerLeft->addWidget(_composer, 1);
 
     QVBoxLayout *composerButtons = new QVBoxLayout();
     composerButtons->addWidget(_composerSend);
@@ -2119,7 +2476,7 @@ void MainWindow::setupUi()
     composerButtons->addStretch();
 
     QHBoxLayout *composerLayout = new QHBoxLayout();
-    composerLayout->addWidget(_composer, 1);
+    composerLayout->addLayout(composerLeft, 1);
     composerLayout->addLayout(composerButtons);
 
     QVBoxLayout *root = new QVBoxLayout(central);
@@ -2149,61 +2506,202 @@ void MainWindow::setupUi()
 
 void MainWindow::setupMenus()
 {
-    QMenu *fileMenu = menuBar()->addMenu(tr("Файл"));
+    _fileMenu = menuBar()->addMenu(L("menu.file"));
 
-    _openProjectAction = fileMenu->addAction(tr("Открыть…"));
+    _openProjectAction = _fileMenu->addAction(L("menu.file.open"));
     _openProjectAction->setShortcut(QKeySequence::Open);
     connect(_openProjectAction, SIGNAL(triggered()), this, SLOT(sltOpenProject()));
 
-    _newProjectAction = fileMenu->addAction(tr("Новый проект…"));
+    _newProjectAction = _fileMenu->addAction(L("menu.file.new"));
     connect(_newProjectAction, SIGNAL(triggered()), this, SLOT(sltNewProject()));
 
-    _openLastAction = fileMenu->addAction(tr("Открыть последний проект"));
+    _openLastAction = _fileMenu->addAction(L("menu.file.openLast"));
     connect(_openLastAction, SIGNAL(triggered()), this, SLOT(sltOpenLastProject()));
 
-    _recentMenu = fileMenu->addMenu(tr("Недавние проекты"));
+    _recentMenu = _fileMenu->addMenu(L("menu.file.recent"));
     connect(_recentMenu, SIGNAL(aboutToShow()), this, SLOT(sltRebuildRecentMenu()));
     rebuildRecentProjectsMenu();
 
-    fileMenu->addSeparator();
+    _fileMenu->addSeparator();
 
-    _fileClearAction = fileMenu->addAction(tr("Очистить всё"));
+    _fileClearAction = _fileMenu->addAction(L("menu.file.clear"));
     connect(_fileClearAction, SIGNAL(triggered()), this, SLOT(sltClear()));
 
-    fileMenu->addSeparator();
+    _fileMenu->addSeparator();
 
-    QAction *balanceAction = fileMenu->addAction(tr("Баланс…"));
-    connect(balanceAction, SIGNAL(triggered()), this, SLOT(sltShowBalance()));
+    _balanceAction = _fileMenu->addAction(L("menu.file.balance"));
+    connect(_balanceAction, SIGNAL(triggered()), this, SLOT(sltShowBalance()));
 
-    fileMenu->addSeparator();
+    _fileMenu->addSeparator();
 
-    QAction *quitAction = fileMenu->addAction(tr("Выход"));
-    quitAction->setShortcut(QKeySequence::Quit);
-    connect(quitAction, SIGNAL(triggered()), this, SLOT(close()));
+    _quitAction = _fileMenu->addAction(L("menu.file.quit"));
+    _quitAction->setShortcut(QKeySequence::Quit);
+    connect(_quitAction, SIGNAL(triggered()), this, SLOT(close()));
 
-    QMenu *windowMenu = menuBar()->addMenu(tr("Окно"));
+    _windowMenu = menuBar()->addMenu(L("menu.window"));
 
-    QAction *chatAction = windowMenu->addAction(tr("Главный чат"));
-    connect(chatAction, SIGNAL(triggered()), this, SLOT(sltShowChat()));
+    _windowChatAction = _windowMenu->addAction(L("menu.window.mainChat"));
+    connect(_windowChatAction, SIGNAL(triggered()), this, SLOT(sltShowChat()));
 
-    QAction *graphAction = windowMenu->addAction(tr("Команда"));
-    connect(graphAction, SIGNAL(triggered()), this, SLOT(sltShowGraph()));
+    _windowGraphAction = _windowMenu->addAction(L("menu.window.team"));
+    connect(_windowGraphAction, SIGNAL(triggered()), this, SLOT(sltShowGraph()));
 
-    QAction *journalAction = windowMenu->addAction(tr("Журнал"));
-    connect(journalAction, SIGNAL(triggered()), this, SLOT(sltShowJournal()));
+    _windowJournalAction = _windowMenu->addAction(L("menu.window.journal"));
+    connect(_windowJournalAction, SIGNAL(triggered()), this, SLOT(sltShowJournal()));
 
-    QAction *settingsAction = windowMenu->addAction(tr("Настройки"));
-    connect(settingsAction, SIGNAL(triggered()), this, SLOT(sltShowSettings()));
+    _windowSettingsAction = _windowMenu->addAction(L("menu.window.settings"));
+    connect(_windowSettingsAction, SIGNAL(triggered()), this, SLOT(sltShowSettings()));
 
-    QMenu *projectMenu = menuBar()->addMenu(tr("Проект"));
+    _projectMenu = menuBar()->addMenu(L("menu.project"));
 
-    _projectSettingsAction = projectMenu->addAction(tr("Настройки проекта…"));
+    _projectSettingsAction = _projectMenu->addAction(L("menu.project.settings"));
     connect(_projectSettingsAction, SIGNAL(triggered()),
             this, SLOT(sltShowProjectSettings()));
 
-    QMenu *helpMenu = menuBar()->addMenu(tr("Справка"));
-    QAction *statsAction = helpMenu->addAction(tr("Статистика"));
-    connect(statsAction, SIGNAL(triggered()), this, SLOT(sltShowStatistics()));
+    _helpMenu = menuBar()->addMenu(L("menu.help"));
+    _helpStatsAction = _helpMenu->addAction(L("menu.help.stats"));
+    connect(_helpStatsAction, SIGNAL(triggered()), this, SLOT(sltShowStatistics()));
+}
+
+//----------------------------------------------
+
+void MainWindow::retranslateUi()
+{
+    if (_fileMenu)
+        _fileMenu->setTitle(L("menu.file"));
+    if (_openProjectAction)
+        _openProjectAction->setText(L("menu.file.open"));
+    if (_newProjectAction)
+        _newProjectAction->setText(L("menu.file.new"));
+    if (_openLastAction)
+        _openLastAction->setText(L("menu.file.openLast"));
+    if (_recentMenu)
+        _recentMenu->setTitle(L("menu.file.recent"));
+    if (_fileClearAction)
+        _fileClearAction->setText(L("menu.file.clear"));
+    if (_balanceAction)
+        _balanceAction->setText(L("menu.file.balance"));
+    if (_quitAction)
+        _quitAction->setText(L("menu.file.quit"));
+    if (_windowMenu)
+        _windowMenu->setTitle(L("menu.window"));
+    if (_windowChatAction)
+        _windowChatAction->setText(L("menu.window.mainChat"));
+    if (_windowGraphAction)
+        _windowGraphAction->setText(L("menu.window.team"));
+    if (_windowJournalAction)
+        _windowJournalAction->setText(L("menu.window.journal"));
+    if (_windowSettingsAction)
+        _windowSettingsAction->setText(L("menu.window.settings"));
+    if (_projectMenu)
+        _projectMenu->setTitle(L("menu.project"));
+    if (_projectSettingsAction)
+        _projectSettingsAction->setText(L("menu.project.settings"));
+    if (_helpMenu)
+        _helpMenu->setTitle(L("menu.help"));
+    if (_helpStatsAction)
+        _helpStatsAction->setText(L("menu.help.stats"));
+    if (_clearAction)
+    {
+        _clearAction->setText(L("toolbar.clear"));
+        _clearAction->setToolTip(L("toolbar.clearTip"));
+    }
+    if (_showChatAction)
+    {
+        _showChatAction->setText(L("menu.window.mainChat"));
+        _showChatAction->setToolTip(L("toolbar.mainChatTip"));
+    }
+    if (_showGraphAction)
+    {
+        _showGraphAction->setText(L("menu.window.team"));
+        _showGraphAction->setToolTip(L("toolbar.teamTip"));
+    }
+    if (_showJournalAction)
+    {
+        _showJournalAction->setText(L("menu.window.journal"));
+        _showJournalAction->setToolTip(L("toolbar.journalTip"));
+    }
+    if (_prevConfirmAction)
+    {
+        _prevConfirmAction->setText(L("toolbar.prevConfirm"));
+        _prevConfirmAction->setToolTip(L("toolbar.prevConfirmTip"));
+    }
+    if (_nextConfirmAction)
+    {
+        _nextConfirmAction->setText(L("toolbar.nextConfirm"));
+        _nextConfirmAction->setToolTip(L("toolbar.nextConfirmTip"));
+    }
+    if (_composer)
+        _composer->setPlaceholderText(L("composer.placeholder"));
+    if (_composerSend)
+        _composerSend->setText(L("composer.send"));
+    if (_composerStop)
+    {
+        _composerStop->setText(L("composer.stop"));
+        _composerStop->setToolTip(L("composer.stopTip"));
+    }
+    QToolBar *toolbar = findChild<QToolBar *>(QString::fromUtf8("mainToolBar"));
+    if (toolbar)
+        toolbar->setWindowTitle(L("toolbar.title"));
+    if (_settingsPage)
+        _settingsPage->retranslateUi();
+    if (_projectSettingsPage)
+        _projectSettingsPage->retranslateUi();
+    if (_tabs)
+    {
+        if (_graph)
+        {
+            const int gi = _tabs->indexOf(_graph);
+            if (gi >= 0)
+                _tabs->setTabText(gi, L("menu.window.team"));
+        }
+        if (_settingsPage)
+        {
+            const int si = _tabs->indexOf(_settingsPage);
+            if (si >= 0)
+                _tabs->setTabText(si, L("menu.window.settings"));
+        }
+        if (_projectSettingsPage)
+        {
+            const int pi = _tabs->indexOf(_projectSettingsPage);
+            if (pi >= 0)
+                _tabs->setTabText(pi, L("menu.project.settings"));
+        }
+    }
+    if (_graph && _workers)
+    {
+        _graph->rebuild(_workers);
+        _graphDirty = false;
+    }
+    foreach (ChatSession *session, _sessions)
+    {
+        if (!session || !session->widget())
+            continue;
+        session->widget()->retranslateUi();
+        updateSessionTabTitle(session);
+    }
+    if (_journal)
+    {
+        _journal->retranslateUi();
+        if (_tabs)
+        {
+            const int ji = _tabs->indexOf(_journal);
+            if (ji >= 0)
+                _tabs->setTabText(ji, L("journal.title"));
+        }
+    }
+    if (_projectDock)
+        _projectDock->retranslateUi();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltLocaleChanged(const QString &code)
+{
+    Q_UNUSED(code);
+    retranslateUi();
+    if (_workers)
+        _workers->refreshAllPrompts();
 }
 
 //----------------------------------------------
@@ -3323,7 +3821,9 @@ void MainWindow::updateComposerState()
     if (!_composer || !_composerSend || !_composerStop)
         return;
 
-    ChatSession *session = rootSession();
+    ChatSession *session = currentSession();
+    if (!session)
+        session = rootSession();
     Worker *worker = session ? session->worker() : 0;
     Agent *agent = session ? session->agent() : 0;
     const bool busy = agent && agent->isBusy();
@@ -3335,20 +3835,88 @@ void MainWindow::updateComposerState()
                   || worker->state() == WorkerStateWaitingApproval
                   || worker->state() == WorkerStateWaitingContinuation;
     }
-    const bool canSend = hasOpenProject() && session && !_resetting && !busy && !waiting;
+
+    const bool isMedia = worker && _workers
+                         && workerTaskKindIsMediaExecutor(_workers->modalityOf(worker));
+    const bool isRoot = worker && worker->isRoot();
+    // В media-вкладку можно писать follow-up / brief; в корень — как раньше.
+    const bool targetOk = isRoot || isMedia;
+    const bool canSend = hasOpenProject() && session && targetOk && !_resetting
+                         && !busy && !waiting;
     const bool active = anyWorkActive();
     _composer->setReadOnly(!canSend);
     _composer->setEnabled(hasOpenProject() && session && !_resetting);
     _composerSend->setEnabled(canSend);
     _composerStop->setEnabled(active && !_resetting);
     setAllStopEnabled(active && !_resetting);
+
+    const LlmProfile profile = profileForComposerTarget();
+    ModelCapabilities caps =
+        ModelCapabilityService::instance()->cachedOrHeuristic(profile);
+    // Если ещё только эвристика — один раз спросить каталог API (для любой modality).
+    if (canSend && !profile.model.trimmed().isEmpty()
+        && caps.source == QString::fromUtf8("heuristic"))
+        caps = ModelCapabilityService::instance()->capabilitiesFor(profile);
+
+    if (_composerCapsLabel)
+    {
+        QString line = tr("Модель: %1 · входы: %2")
+                           .arg(profile.model.trimmed().isEmpty()
+                                    ? tr("(не задана)")
+                                    : profile.model.trimmed(),
+                                caps.inputModalities.isEmpty()
+                                    ? QString::fromUtf8("text")
+                                    : caps.inputModalities.join(QString::fromUtf8(" + ")));
+        if (caps.requiresImageReference())
+            line += tr(" · нужна референс-картинка");
+        else if (caps.acceptsImage() || caps.allowsImageReference())
+            line += tr(" · можно прикрепить картинку");
+        if (caps.acceptsFile() && !isMedia)
+            line += tr(" · файлы через инструменты");
+        _composerCapsLabel->setText(line);
+    }
+
+    const bool showImage = caps.acceptsImage() || caps.allowsImageReference()
+                           || profile.modality == WorkerTaskKindImageGeneration
+                           || profile.modality == WorkerTaskKindVideoGeneration;
+    const bool showAudio = caps.acceptsAudio()
+                           || profile.modality == WorkerTaskKindSpeech
+                           || profile.modality == WorkerTaskKindAudioGeneration;
+    const bool showVideo = caps.acceptsVideo()
+                           || profile.modality == WorkerTaskKindVideoGeneration;
+    // Файл — для LLM-агентов (путь в сообщение → read_file), не для чистых media.
+    const bool showFile = !isMedia
+                          && (caps.acceptsFile()
+                              || profile.modality == WorkerTaskKindLlm
+                              || profile.modality == WorkerTaskKindDecisions
+                              || isRoot);
+    if (_composerAttachImage)
+        _composerAttachImage->setVisible(showImage);
+    if (_composerAttachAudio)
+        _composerAttachAudio->setVisible(showAudio);
+    if (_composerAttachVideo)
+        _composerAttachVideo->setVisible(showVideo);
+    if (_composerAttachFile)
+        _composerAttachFile->setVisible(showFile);
+    if (_composerClearAttach)
+        _composerClearAttach->setVisible(showImage || showAudio || showVideo || showFile);
+    if (_composerAttachLabel)
+        _composerAttachLabel->setVisible(showImage || showAudio || showVideo || showFile);
+    updateComposerAttachmentsUi();
+
     if (!hasOpenProject())
         _composer->setPlaceholderText(tr("Откройте или создайте проект"));
     else if (!session)
-        _composer->setPlaceholderText(tr("Нет главного чата"));
+        _composer->setPlaceholderText(tr("Нет чата"));
+    else if (!targetOk)
+        _composer->setPlaceholderText(
+            tr("Переключитесь на главный чат или media-воркера для ввода"));
     else if (!canSend)
         _composer->setPlaceholderText(
-            tr("Главный чат занят: ожидание модели или дочерних воркеров…"));
+            tr("Чат занят: ожидание модели или дочерних воркеров…"));
+    else if (isMedia)
+        _composer->setPlaceholderText(
+            tr("Запрос media-воркеру… Enter — отправить (с вложениями при необходимости)"));
     else
         _composer->setPlaceholderText(
             tr("Сообщение в главный чат…  Enter — отправить, Shift+Enter — новая строка"));
