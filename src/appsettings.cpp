@@ -34,24 +34,6 @@ static const int kAppearanceVersion = 2;
 
 //----------------------------------------------
 
-static int roleBudgetIndex(WorkerType type)
-{
-    switch (type)
-    {
-    case WorkerTypeExecutor:
-        return 1;
-    case WorkerTypeTester:
-        return 2;
-    case WorkerTypeTool:
-        return 3;
-    case WorkerTypeManager:
-    default:
-        return 0;
-    }
-}
-
-//----------------------------------------------
-
 static QString roleBudgetKey(int index)
 {
     static const char *names[4] = { "manager", "executor", "tester", "tool" };
@@ -82,11 +64,6 @@ WorkspaceSettings::WorkspaceSettings()
 {
     for (int i = 0; i < 3; ++i)
         workerProfileId[i].clear();
-    for (int i = 0; i < 4; ++i)
-    {
-        roleToolIterations[i] = kDefaultRoleToolIterations[i];
-        roleContextCap[i] = kDefaultRoleContextCap[i];
-    }
 }
 
 //----------------------------------------------
@@ -105,6 +82,11 @@ AppSettings::AppSettings(QObject *parent)
     , _statsTimer(0)
     , _showForwardedContext(true)
     , _uiLanguage(QString::fromUtf8("ru"))
+    , _mainWindowGeometry()
+    , _mainWindowState()
+    , _leftDockWidth(0)
+    , _projectDockHeight(0)
+    , _graphThumbDockHeight(0)
 {
 }
 
@@ -467,28 +449,6 @@ void AppSettings::loadWorkspaceIni(QSettings *settings, WorkspaceSettings *bundl
                                                    kDefaultLlmTimeoutSec).toInt(),
                                    kMaxLlmTimeoutSec);
 
-    settings->beginGroup(QString::fromUtf8("workers/roleBudget"));
-    for (int i = 0; i < 4; ++i)
-    {
-        const QString key = roleBudgetKey(i);
-        bundle->roleToolIterations[i] =
-            qBound(kMinRoleToolIterations,
-                   settings->value(key + QString::fromUtf8("/toolIterations"),
-                                   kDefaultRoleToolIterations[i]).toInt(),
-                   kMaxRoleToolIterations);
-        bundle->roleContextCap[i] =
-            qBound(0,
-                   settings->value(key + QString::fromUtf8("/contextCap"),
-                                   kDefaultRoleContextCap[i]).toInt(),
-                   kMaxRoleContextCap);
-        if (bundle->roleContextCap[i] > 0 && bundle->roleContextCap[i] < 4096)
-            bundle->roleContextCap[i] = 4096;
-        // Старая кнопка «окно модели» записывала 128k для DeepSeek V4 (реально 1M).
-        if (bundle->roleContextCap[i] == 128000)
-            bundle->roleContextCap[i] = 0;
-    }
-    settings->endGroup();
-
     const char *keys[] = { "manager", "executor", "tester" };
     for (int i = 0; i < 3; ++i)
     {
@@ -517,15 +477,7 @@ void AppSettings::saveWorkspaceIni(QSettings *settings, const WorkspaceSettings 
     settings->setValue(QString::fromUtf8("workers/maxDepth"), bundle.maxWorkerDepth);
     settings->setValue(QString::fromUtf8("workers/maxConcurrent"), bundle.maxConcurrentWorkers);
     settings->setValue(QString::fromUtf8("llm/requestTimeoutSec"), bundle.llmTimeoutSec);
-    settings->beginGroup(QString::fromUtf8("workers/roleBudget"));
-    for (int i = 0; i < 4; ++i)
-    {
-        const QString key = roleBudgetKey(i);
-        settings->setValue(key + QString::fromUtf8("/toolIterations"),
-                           bundle.roleToolIterations[i]);
-        settings->setValue(key + QString::fromUtf8("/contextCap"), bundle.roleContextCap[i]);
-    }
-    settings->endGroup();
+    settings->remove(QString::fromUtf8("workers/roleBudget"));
     const char *keys[] = { "manager", "executor", "tester" };
     for (int i = 0; i < 3; ++i)
     {
@@ -673,6 +625,7 @@ void AppSettings::load()
     _defaults = WorkspaceSettings();
     loadProfiles();
     loadWorkspaceIni(&settings, &_defaults);
+    migrateRoleBudgetsIntoProfiles();
     ensureWorkerPresetsSeeded(&_defaults);
     ensureRootWorkerPresetId(&_defaults);
 
@@ -724,6 +677,13 @@ void AppSettings::load()
                                  QString::fromUtf8("ru")).toString().trimmed().toLower();
     if (_uiLanguage.isEmpty())
         _uiLanguage = QString::fromUtf8("ru");
+    _mainWindowGeometry = QByteArray::fromBase64(
+        settings.value(QString::fromUtf8("ui/mainWindowGeometry")).toString().toLatin1());
+    _mainWindowState = QByteArray::fromBase64(
+        settings.value(QString::fromUtf8("ui/mainWindowState")).toString().toLatin1());
+    _leftDockWidth = settings.value(QString::fromUtf8("ui/leftDockWidth"), 0).toInt();
+    _projectDockHeight = settings.value(QString::fromUtf8("ui/projectDockHeight"), 0).toInt();
+    _graphThumbDockHeight = settings.value(QString::fromUtf8("ui/graphThumbDockHeight"), 0).toInt();
 
     // Проект ещё не открыт: активными остаются defaults.
     _projectOpen = false;
@@ -746,6 +706,18 @@ void AppSettings::save() const
     settings.setValue(QString::fromUtf8("ui/chatOtherColor"), _chatOtherColor.name());
     settings.setValue(QString::fromUtf8("ui/showForwardedContext"), _showForwardedContext);
     settings.setValue(QString::fromUtf8("ui/language"), _uiLanguage);
+    if (!_mainWindowGeometry.isEmpty())
+        settings.setValue(QString::fromUtf8("ui/mainWindowGeometry"),
+                          QString::fromLatin1(_mainWindowGeometry.toBase64()));
+    if (!_mainWindowState.isEmpty())
+        settings.setValue(QString::fromUtf8("ui/mainWindowState"),
+                          QString::fromLatin1(_mainWindowState.toBase64()));
+    if (_leftDockWidth > 0)
+        settings.setValue(QString::fromUtf8("ui/leftDockWidth"), _leftDockWidth);
+    if (_projectDockHeight > 0)
+        settings.setValue(QString::fromUtf8("ui/projectDockHeight"), _projectDockHeight);
+    if (_graphThumbDockHeight > 0)
+        settings.setValue(QString::fromUtf8("ui/graphThumbDockHeight"), _graphThumbDockHeight);
     saveUsage(&settings, _globalUsage);
     settings.sync();
 
@@ -1269,6 +1241,74 @@ void AppSettings::setUiLanguage(QString code)
 
 //----------------------------------------------
 
+QByteArray AppSettings::mainWindowGeometry() const
+{
+    return _mainWindowGeometry;
+}
+
+//----------------------------------------------
+
+QByteArray AppSettings::mainWindowState() const
+{
+    return _mainWindowState;
+}
+
+//----------------------------------------------
+
+void AppSettings::setMainWindowLayout(const QByteArray &geometry, const QByteArray &state)
+{
+    _mainWindowGeometry = geometry;
+    _mainWindowState = state;
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    if (!geometry.isEmpty())
+        settings.setValue(QString::fromUtf8("ui/mainWindowGeometry"),
+                          QString::fromLatin1(geometry.toBase64()));
+    if (!state.isEmpty())
+        settings.setValue(QString::fromUtf8("ui/mainWindowState"),
+                          QString::fromLatin1(state.toBase64()));
+    settings.sync();
+}
+
+//----------------------------------------------
+
+int AppSettings::leftDockWidth() const
+{
+    return _leftDockWidth;
+}
+
+//----------------------------------------------
+
+int AppSettings::projectDockHeight() const
+{
+    return _projectDockHeight;
+}
+
+//----------------------------------------------
+
+int AppSettings::graphThumbDockHeight() const
+{
+    return _graphThumbDockHeight;
+}
+
+//----------------------------------------------
+
+void AppSettings::setMainWindowDockSplit(int leftWidth, int projectHeight, int graphHeight)
+{
+    _leftDockWidth = qMax(0, leftWidth);
+    _projectDockHeight = qMax(0, projectHeight);
+    _graphThumbDockHeight = qMax(0, graphHeight);
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    if (_leftDockWidth > 0)
+        settings.setValue(QString::fromUtf8("ui/leftDockWidth"), _leftDockWidth);
+    if (_projectDockHeight > 0)
+        settings.setValue(QString::fromUtf8("ui/projectDockHeight"), _projectDockHeight);
+    if (_graphThumbDockHeight > 0)
+        settings.setValue(QString::fromUtf8("ui/graphThumbDockHeight"), _graphThumbDockHeight);
+    settings.sync();
+}
+
+//----------------------------------------------
+
 void AppSettings::applyLightDefaults()
 {
     _textColor = QColor(QString::fromUtf8("#1f1f1f"));
@@ -1640,65 +1680,8 @@ void AppSettings::setLlmTimeoutSec(SettingsKind kind, int seconds)
 
 //----------------------------------------------
 
-int AppSettings::roleToolIterations(WorkerType type) const
+int AppSettings::normalizeProfileContextCap(int tokens)
 {
-    return roleToolIterations(activeKind(), type);
-}
-
-//----------------------------------------------
-
-int AppSettings::roleToolIterations(SettingsKind kind, WorkerType type) const
-{
-    return ws(kind).roleToolIterations[roleBudgetIndex(type)];
-}
-
-//----------------------------------------------
-
-void AppSettings::setRoleToolIterations(WorkerType type, int count)
-{
-    setRoleToolIterations(activeKind(), type, count);
-}
-
-//----------------------------------------------
-
-void AppSettings::setRoleToolIterations(SettingsKind kind, WorkerType type, int count)
-{
-    const int index = roleBudgetIndex(type);
-    const int value = qBound(kMinRoleToolIterations, count, kMaxRoleToolIterations);
-    WorkspaceSettings &bundle = ws(kind);
-    if (bundle.roleToolIterations[index] == value)
-        return;
-    bundle.roleToolIterations[index] = value;
-    save(kind);
-    emit workerLimitsChanged();
-}
-
-//----------------------------------------------
-
-int AppSettings::roleContextCap(WorkerType type) const
-{
-    return roleContextCap(activeKind(), type);
-}
-
-//----------------------------------------------
-
-int AppSettings::roleContextCap(SettingsKind kind, WorkerType type) const
-{
-    return ws(kind).roleContextCap[roleBudgetIndex(type)];
-}
-
-//----------------------------------------------
-
-void AppSettings::setRoleContextCap(WorkerType type, int tokens)
-{
-    setRoleContextCap(activeKind(), type, tokens);
-}
-
-//----------------------------------------------
-
-void AppSettings::setRoleContextCap(SettingsKind kind, WorkerType type, int tokens)
-{
-    const int index = roleBudgetIndex(type);
     int value = tokens;
     if (value < 0)
         value = 0;
@@ -1706,12 +1689,65 @@ void AppSettings::setRoleContextCap(SettingsKind kind, WorkerType type, int toke
         value = 4096;
     if (value > kMaxRoleContextCap)
         value = kMaxRoleContextCap;
-    WorkspaceSettings &bundle = ws(kind);
-    if (bundle.roleContextCap[index] == value)
+    if (value == 128000)
+        value = 0;
+    return value;
+}
+
+//----------------------------------------------
+
+void AppSettings::migrateRoleBudgetsIntoProfiles()
+{
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    if (settings.value(QString::fromUtf8("ui/roleBudgetMigratedToProfiles"), false).toBool())
         return;
-    bundle.roleContextCap[index] = value;
-    save(kind);
-    emit workerLimitsChanged();
+
+    int roleToolIterations[4];
+    int roleContextCap[4];
+    for (int i = 0; i < 4; ++i)
+    {
+        roleToolIterations[i] = kDefaultRoleToolIterations[i];
+        roleContextCap[i] = kDefaultRoleContextCap[i];
+    }
+    settings.beginGroup(QString::fromUtf8("workers/roleBudget"));
+    for (int i = 0; i < 4; ++i)
+    {
+        const QString key = roleBudgetKey(i);
+        roleToolIterations[i] =
+            qBound(kMinRoleToolIterations,
+                   settings.value(key + QString::fromUtf8("/toolIterations"),
+                                   kDefaultRoleToolIterations[i]).toInt(),
+                   kMaxRoleToolIterations);
+        roleContextCap[i] =
+            normalizeProfileContextCap(
+                settings.value(key + QString::fromUtf8("/contextCap"),
+                               kDefaultRoleContextCap[i]).toInt());
+    }
+    settings.endGroup();
+
+    static const WorkerType roles[4] = {
+        WorkerTypeManager, WorkerTypeExecutor, WorkerTypeTester, WorkerTypeTool
+    };
+    bool changed = false;
+    for (int i = 0; i < 4; ++i)
+    {
+        const LlmProfile mapped = profileForWorkerType(SettingsKindDefaults, roles[i]);
+        const int idx = profileIndexById(mapped.id);
+        if (idx < 0)
+            continue;
+        LlmProfile &p = _defaults.profiles[idx];
+        if (p.maxToolIterations != roleToolIterations[i]
+            || p.contextCap != roleContextCap[i])
+        {
+            p.maxToolIterations = roleToolIterations[i];
+            p.contextCap = roleContextCap[i];
+            changed = true;
+        }
+    }
+    if (changed)
+        saveProfiles();
+    settings.setValue(QString::fromUtf8("ui/roleBudgetMigratedToProfiles"), true);
+    settings.sync();
 }
 
 //----------------------------------------------
@@ -1875,6 +1911,8 @@ void AppSettings::writeProfileFile(const LlmProfile &profile) const
     file.setValue(QString::fromUtf8("purpose"), profile.purpose);
     file.setValue(QString::fromUtf8("balanceUrl"), profile.balanceUrl);
     file.setValue(QString::fromUtf8("balanceJsonPath"), profile.balanceJsonPath);
+    file.setValue(QString::fromUtf8("maxToolIterations"), profile.maxToolIterations);
+    file.setValue(QString::fromUtf8("contextCap"), profile.contextCap);
     file.sync();
 }
 
@@ -2016,6 +2054,13 @@ void AppSettings::loadProfiles()
             profile.purpose = file.value(QString::fromUtf8("purpose")).toString();
             profile.balanceUrl = file.value(QString::fromUtf8("balanceUrl")).toString();
             profile.balanceJsonPath = file.value(QString::fromUtf8("balanceJsonPath")).toString();
+            profile.maxToolIterations =
+                qBound(kMinRoleToolIterations,
+                       file.value(QString::fromUtf8("maxToolIterations"),
+                                  kDefaultRoleToolIterations[0]).toInt(),
+                       kMaxRoleToolIterations);
+            profile.contextCap = normalizeProfileContextCap(
+                file.value(QString::fromUtf8("contextCap"), 0).toInt());
             if (profile.id.isEmpty())
                 profile.id = QFileInfo(fileName).completeBaseName();
             if (profile.name.trimmed().isEmpty())
@@ -2131,6 +2176,11 @@ void AppSettings::updateProfile(const LlmProfile &profile)
         return;
     const QString oldStem = sanitizeProfileFileStem(_defaults.profiles.at(index).id);
     _defaults.profiles[index] = profile;
+    _defaults.profiles[index].contextCap =
+        normalizeProfileContextCap(_defaults.profiles[index].contextCap);
+    _defaults.profiles[index].maxToolIterations =
+        qBound(kMinRoleToolIterations, _defaults.profiles[index].maxToolIterations,
+               kMaxRoleToolIterations);
     if (_defaults.profiles[index].name.trimmed().isEmpty())
         _defaults.profiles[index].name = QString::fromUtf8("Profile %1").arg(index + 1);
     const QString newStem = sanitizeProfileFileStem(_defaults.profiles.at(index).id);
@@ -2138,6 +2188,7 @@ void AppSettings::updateProfile(const LlmProfile &profile)
         QFile::remove(aiProfilesDir() + QChar('/') + oldStem + QString::fromUtf8(".ini"));
     saveDefaultsWorkspace();
     emit profilesChanged();
+    emit workerLimitsChanged();
 }
 
 //----------------------------------------------
@@ -2173,6 +2224,20 @@ LlmProfile AppSettings::profileById(QString id) const
     if (index < 0)
         return LlmProfile();
     return _defaults.profiles.at(index);
+}
+
+//----------------------------------------------
+
+LlmProfile AppSettings::profileForWorker(WorkerType type, QString llmProfileId) const
+{
+    const QString id = llmProfileId.trimmed();
+    if (!id.isEmpty())
+    {
+        const LlmProfile explicitProfile = profileById(id);
+        if (!explicitProfile.id.isEmpty())
+            return explicitProfile;
+    }
+    return profileForWorkerType(type);
 }
 
 //----------------------------------------------

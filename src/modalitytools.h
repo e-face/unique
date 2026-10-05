@@ -133,4 +133,8 @@ private:
 
 LlmProfile modalityProfileForWorker(Worker *owner);
 
+/** Аргументы text_to_speech: в text — только строка для озвучки, не метаданные задачи. */
+QJsonObject buildTextToSpeechToolArgs(const QString &taskText,
+                                      const QJsonObject *toolArgs = 0);
+
 #endif // MODALITYTOOLS_H

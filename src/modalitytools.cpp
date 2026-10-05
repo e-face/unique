@@ -58,6 +58,137 @@ static QString extractPrompt(const QJsonObject &args, QString taskFallback)
 
 //----------------------------------------------
 
+static bool ttsMetaLine(const QString &line)
+{
+    const QString t = line.trimmed();
+    if (t.isEmpty())
+        return false;
+    QRegExp re(QString::fromUtf8(
+        "^(voice(_id|_description)?|format|instructions?|style|speed|model|output(_path)?|"
+        "response_format|голос|формат|указания|инструкция|стиль|скорость|модель|"
+        "описание\\s+голоса)\\s*[:\\-]"),
+               Qt::CaseInsensitive);
+    return re.indexIn(t) >= 0;
+}
+
+//----------------------------------------------
+
+static bool ttsContentMarkerLine(const QString &line, QString *restOut)
+{
+    const QString t = line.trimmed();
+    QRegExp re(QString::fromUtf8(
+        "^(text\\s+to\\s+speak|speak|script|spoken\\s+text|speech\\s+text|utterance|content|"
+        "input\\s+text|озвуч(ить|и|ка)|текст\\s+для\\s+озвучки|сказать|прочитать|"
+        "синтезировать)\\s*[:\\-]\\s*(.*)$"),
+               Qt::CaseInsensitive);
+    if (re.indexIn(t) < 0)
+        return false;
+    if (restOut)
+        *restOut = re.cap(2).trimmed();
+    return true;
+}
+
+//----------------------------------------------
+
+static QString ttsSpeakTextFromObject(const QJsonObject &obj)
+{
+    static const char *keys[] = {
+        "text", "script", "spoken_text", "speech_text", "utterance", "content", "input_text", 0
+    };
+    for (int i = 0; keys[i]; ++i)
+    {
+        const QString v = obj.value(QString::fromUtf8(keys[i])).toString().trimmed();
+        if (!v.isEmpty())
+            return v;
+    }
+    return obj.value(QString::fromUtf8("prompt")).toString().trimmed();
+}
+
+//----------------------------------------------
+
+static QString ttsHeuristicPlainTask(QString task)
+{
+    task = task.trimmed();
+    if (task.isEmpty())
+        return task;
+
+    const QStringList lines = task.split(QChar('\n'));
+    QStringList body;
+    bool afterMarker = false;
+    for (int i = 0; i < lines.size(); ++i)
+    {
+        const QString line = lines.at(i);
+        QString rest;
+        if (ttsContentMarkerLine(line, &rest))
+        {
+            afterMarker = true;
+            if (!rest.isEmpty())
+                body.append(rest);
+            continue;
+        }
+        if (afterMarker)
+            body.append(line);
+        else if (!ttsMetaLine(line))
+            body.append(line);
+    }
+    if (!body.isEmpty())
+        return body.join(QString::fromUtf8("\n")).trimmed();
+
+    QStringList nonMeta;
+    foreach (const QString &line, lines)
+    {
+        if (!ttsMetaLine(line))
+            nonMeta.append(line);
+    }
+    const QString joined = nonMeta.join(QString::fromUtf8("\n")).trimmed();
+    return joined.isEmpty() ? task : joined;
+}
+
+//----------------------------------------------
+
+QJsonObject buildTextToSpeechToolArgs(const QString &taskText, const QJsonObject *toolArgs)
+{
+    QJsonObject obj;
+    const QString trimmedTask = taskText.trimmed();
+    QJsonParseError pe;
+    const QJsonDocument taskDoc = QJsonDocument::fromJson(trimmedTask.toUtf8(), &pe);
+    if (pe.error == QJsonParseError::NoError && taskDoc.isObject())
+        obj = taskDoc.object();
+
+    if (toolArgs)
+    {
+        const QStringList keys = toolArgs->keys();
+        foreach (const QString &key, keys)
+            obj.insert(key, toolArgs->value(key));
+    }
+
+    QJsonObject out;
+    QString speak = ttsSpeakTextFromObject(obj);
+    if (speak.isEmpty() && !trimmedTask.isEmpty() && !taskDoc.isObject())
+        speak = ttsHeuristicPlainTask(trimmedTask);
+    else if (!speak.isEmpty() && speak.contains(QChar('\n')) && ttsMetaLine(speak.split(QChar('\n')).first()))
+        speak = ttsHeuristicPlainTask(speak);
+
+    out.insert(QString::fromUtf8("text"), speak.trimmed());
+
+    QString voice = obj.value(QString::fromUtf8("voice")).toString().trimmed();
+    if (voice.isEmpty())
+        voice = obj.value(QString::fromUtf8("voice_id")).toString().trimmed();
+    if (!voice.isEmpty())
+        out.insert(QString::fromUtf8("voice"), voice);
+
+    const QString format = obj.value(QString::fromUtf8("format")).toString().trimmed();
+    if (!format.isEmpty())
+        out.insert(QString::fromUtf8("format"), format);
+    const QString outputPath = obj.value(QString::fromUtf8("output_path")).toString().trimmed();
+    if (!outputPath.isEmpty())
+        out.insert(QString::fromUtf8("output_path"), outputPath);
+
+    return out;
+}
+
+//----------------------------------------------
+
 static QByteArray decodeDataUrlOrBase64(QString value)
 {
     QString v = value.trimmed();
@@ -595,7 +726,9 @@ QString TextToSpeechTool::name() const
 QString TextToSpeechTool::description() const
 {
     return QString::fromUtf8(
-        "Synthesize speech audio from text (TTS). Saves an audio file in the project.");
+        "Synthesize speech (TTS) and save audio in the project. "
+        "Put ONLY the exact words to read aloud in `text`. "
+        "Voice id goes in `voice`; delivery/style notes in `instructions` (not spoken).");
 }
 
 //----------------------------------------------
@@ -604,11 +737,20 @@ QJsonObject TextToSpeechTool::parametersSchema() const
 {
     QJsonObject text;
     text.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
-    text.insert(QString::fromUtf8("description"), QString::fromUtf8("Text to speak."));
+    text.insert(QString::fromUtf8("description"),
+                QString::fromUtf8("Exact words to synthesize — no voice/style instructions."));
+    QJsonObject script;
+    script.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    script.insert(QString::fromUtf8("description"),
+                  QString::fromUtf8("Alias for `text` (spoken script only)."));
     QJsonObject voice;
     voice.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     voice.insert(QString::fromUtf8("description"),
                  QString::fromUtf8("Optional voice id (alloy, verse, …)."));
+    QJsonObject instructions;
+    instructions.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    instructions.insert(QString::fromUtf8("description"),
+                        QString::fromUtf8("Optional delivery/style; NOT read aloud."));
     QJsonObject format;
     format.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     format.insert(QString::fromUtf8("description"),
@@ -617,7 +759,9 @@ QJsonObject TextToSpeechTool::parametersSchema() const
     output.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     QJsonObject properties;
     properties.insert(QString::fromUtf8("text"), text);
+    properties.insert(QString::fromUtf8("script"), script);
     properties.insert(QString::fromUtf8("voice"), voice);
+    properties.insert(QString::fromUtf8("instructions"), instructions);
     properties.insert(QString::fromUtf8("format"), format);
     properties.insert(QString::fromUtf8("output_path"), output);
     QJsonArray required;
@@ -641,17 +785,19 @@ QString TextToSpeechTool::invoke(QString argumentsJson, bool *ok)
             *ok = false;
         return error;
     }
-    const QString text = extractPrompt(args, _owner ? _owner->task() : QString());
+    const QString workerTask = _owner ? _owner->task() : QString();
+    const QJsonObject built = buildTextToSpeechToolArgs(workerTask, &args);
+    const QString text = built.value(QString::fromUtf8("text")).toString().trimmed();
     if (text.isEmpty())
     {
         if (ok)
             *ok = false;
         return QString::fromUtf8("text is empty.");
     }
-    QString format = args.value(QString::fromUtf8("format")).toString().trimmed().toLower();
+    QString format = built.value(QString::fromUtf8("format")).toString().trimmed().toLower();
     if (format.isEmpty())
         format = QString::fromUtf8("mp3");
-    QString path = args.value(QString::fromUtf8("output_path")).toString().trimmed();
+    QString path = built.value(QString::fromUtf8("output_path")).toString().trimmed();
     if (path.isEmpty())
         path = ModalityApiClient::defaultArtifactPath(_workspace, QString::fromUtf8("tts"),
                                                       format);
@@ -661,7 +807,7 @@ QString TextToSpeechTool::invoke(QString argumentsJson, bool *ok)
     QJsonObject body;
     body.insert(QString::fromUtf8("model"), client.model());
     body.insert(QString::fromUtf8("input"), text);
-    const QString voice = args.value(QString::fromUtf8("voice")).toString().trimmed();
+    const QString voice = built.value(QString::fromUtf8("voice")).toString().trimmed();
     body.insert(QString::fromUtf8("voice"),
                 voice.isEmpty() ? QString::fromUtf8("alloy") : voice);
     body.insert(QString::fromUtf8("response_format"), format);

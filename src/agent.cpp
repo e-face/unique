@@ -432,13 +432,14 @@ void Agent::setContextCap(int tokens)
 
 //----------------------------------------------
 
-void Agent::applyRoleSettings(WorkerType type)
+void Agent::applyProfileLimits(const LlmProfile &profile)
 {
-    AppSettings *settings = AppSettings::instance();
-    const int iterations = settings->roleToolIterations(type);
+    int iterations = profile.maxToolIterations;
+    if (iterations < 2)
+        iterations = kDefaultMaxToolIterations;
     _toolBudgetChunk = iterations > 0 ? iterations : kDefaultMaxToolIterations;
     setMaxToolIterations(iterations);
-    setContextCap(settings->roleContextCap(type));
+    setContextCap(profile.contextCap);
 }
 
 //----------------------------------------------

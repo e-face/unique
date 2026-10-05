@@ -242,6 +242,30 @@ void WorkerGraphWidget::applyTheme()
 
 //----------------------------------------------
 
+QPixmap WorkerGraphWidget::overviewPixmap(QSize size) const
+{
+    if (!_scene || size.width() < 8 || size.height() < 8)
+        return QPixmap();
+    QRectF bounds = _scene->itemsBoundingRect();
+    if (bounds.isEmpty() || !bounds.isValid())
+    {
+        QPixmap empty(size);
+        empty.fill(AppSettings::instance()->panelColor());
+        return empty;
+    }
+    bounds.adjust(-16, -16, 16, 16);
+    QPixmap pix(size);
+    pix.fill(AppSettings::instance()->panelColor());
+    QPainter painter(&pix);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    _scene->render(&painter, QRectF(0, 0, size.width(), size.height()), bounds,
+                   Qt::KeepAspectRatio);
+    return pix;
+}
+
+//----------------------------------------------
+
 void WorkerGraphWidget::rebuild(WorkerManager *manager)
 {
     if (_rebuilding)

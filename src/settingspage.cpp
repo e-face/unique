@@ -54,7 +54,6 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _hintLabel(0)
     , _presetHint(0)
     , _limitsHint(0)
-    , _budgetHint(0)
     , _rootHint(0)
     , _profilesRefHint(0)
     , _permissionsHeadingLabel(0)
@@ -62,7 +61,6 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _presetForm(0)
     , _rootForm(0)
     , _limitsForm(0)
-    , _budgetsForm(0)
     , _appearanceForm(0)
     , _languageForm(0)
     , _revokeButton(0)
@@ -76,6 +74,10 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _profilePurposeEdit(0)
     , _profileBalanceUrlEdit(0)
     , _profileBalancePathEdit(0)
+    , _profileToolIterSpin(0)
+    , _profileCapSpin(0)
+    , _profileCapHint(0)
+    , _profileCapModelButton(0)
     , _addProfileButton(0)
     , _removeProfileButton(0)
     , _presetList(0)
@@ -88,7 +90,7 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _maxDepthSpin(0)
     , _maxConcurrentSpin(0)
     , _llmTimeoutSpin(0)
-    , _pendingModelWindowRole(-1)
+    , _pendingProfileCapWindow(false)
     , _projectPathLabel(0)
     , _inspectCheck(0)
     , _showForwardedCheck(0)
@@ -107,17 +109,6 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _updatingProfiles(false)
     , _updatingPresets(false)
 {
-    for (int i = 0; i < 4; ++i)
-    {
-        _roleIterSpin[i] = 0;
-        _roleCapSpin[i] = 0;
-        _roleCapHint[i] = 0;
-        _roleCapModelButton[i] = 0;
-        _roleRowLabel[i] = 0;
-        _roleFuncLabel[i] = 0;
-        _roleContextLabel[i] = 0;
-    }
-
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
 
@@ -513,41 +504,21 @@ void SettingsPage::retranslateUi()
         setFormLabelText(_limitsForm, _llmTimeoutSpin, tr("Таймаут ответа модели:"));
     }
 
-    if (_budgetHint)
-        _budgetHint->setText(L("settings.hint.budgets"));
-    static const char *roleTitles[4] = {
-        QT_TR_NOOP("Менеджер"),
-        QT_TR_NOOP("Исполнитель"),
-        QT_TR_NOOP("Тестировщик"),
-        QT_TR_NOOP("Инструмент")
-    };
-    for (int i = 0; i < 4; ++i)
+    if (_profileForm)
     {
-        if (_roleRowLabel[i])
-            _roleRowLabel[i]->setText(tr(roleTitles[i]) + QString::fromUtf8(":"));
-        if (_roleFuncLabel[i])
-            _roleFuncLabel[i]->setText(tr("функции:"));
-        if (_roleContextLabel[i])
-            _roleContextLabel[i]->setText(tr("контекст:"));
-        if (_roleIterSpin[i])
-        {
-            _roleIterSpin[i]->setToolTip(tr("Максимум вызовов функций за ход (до 10000). "
-                                             "После лимита воркер обязан завершить задачу."));
-        }
-        if (_roleCapSpin[i])
-        {
-            _roleCapSpin[i]->setSpecialValueText(tr("окно модели"));
-            _roleCapSpin[i]->setToolTip(tr("0 — использовать полное окно модели. "
-                                            "Можно ввести точное число токенов, включая "
-                                            "максимум модели."));
-        }
-        if (_roleCapModelButton[i])
-        {
-            _roleCapModelButton[i]->setText(tr("окно модели"));
-            _roleCapModelButton[i]->setToolTip(
-                tr("Подставить максимальный контекст модели этой роли."));
-        }
+        setFormLabelText(_profileForm, _profileToolIterSpin,
+                         tr("Лимит вызовов функций:"));
+        setFormLabelText(_profileForm, _profileCapSpin, tr("Потолок контекста:"));
     }
+    if (_profileToolIterSpin)
+    {
+        _profileToolIterSpin->setToolTip(tr("Максимум вызовов функций за ход (до 10000). "
+                                            "После лимита воркер обязан завершить задачу."));
+    }
+    if (_profileCapSpin)
+        _profileCapSpin->setSpecialValueText(tr("окно модели"));
+    if (_profileCapModelButton)
+        _profileCapModelButton->setText(tr("окно модели"));
 
     if (_projectBox)
         _projectBox->setTitle(tr("Проект"));
@@ -601,7 +572,7 @@ void SettingsPage::retranslateUi()
     }
 
     reloadAll();
-    updateRoleCapHints();
+    updateProfileCapHint();
 }
 
 //----------------------------------------------
@@ -624,23 +595,6 @@ void SettingsPage::loadWorkerLimits()
         const QSignalBlocker blocker(_llmTimeoutSpin);
         _llmTimeoutSpin->setValue(s->llmTimeoutSec(_kind));
     }
-    static const WorkerType roles[4] = {
-        WorkerTypeManager, WorkerTypeExecutor, WorkerTypeTester, WorkerTypeTool
-    };
-    for (int i = 0; i < 4; ++i)
-    {
-        if (_roleIterSpin[i])
-        {
-            const QSignalBlocker blocker(_roleIterSpin[i]);
-            _roleIterSpin[i]->setValue(s->roleToolIterations(_kind, roles[i]));
-        }
-        if (_roleCapSpin[i])
-        {
-            const QSignalBlocker blocker(_roleCapSpin[i]);
-            _roleCapSpin[i]->setValue(s->roleContextCap(_kind, roles[i]));
-        }
-    }
-    updateRoleCapHints();
 }
 
 //----------------------------------------------
@@ -654,65 +608,53 @@ void SettingsPage::sltWorkerLimitsChanged()
         s->setMaxConcurrentWorkers(_kind, _maxConcurrentSpin->value());
     if (_llmTimeoutSpin)
         s->setLlmTimeoutSec(_kind, _llmTimeoutSpin->value());
-    static const WorkerType roles[4] = {
-        WorkerTypeManager, WorkerTypeExecutor, WorkerTypeTester, WorkerTypeTool
-    };
-    for (int i = 0; i < 4; ++i)
-    {
-        if (_roleIterSpin[i])
-            s->setRoleToolIterations(_kind, roles[i], _roleIterSpin[i]->value());
-        if (_roleCapSpin[i])
-            s->setRoleContextCap(_kind, roles[i], _roleCapSpin[i]->value());
-    }
 }
 
 //----------------------------------------------
 
-void SettingsPage::updateRoleCapHints()
+void SettingsPage::updateProfileCapHint()
 {
-    static const WorkerType roles[4] = {
-        WorkerTypeManager, WorkerTypeExecutor, WorkerTypeTester, WorkerTypeTool
-    };
-    AppSettings *s = AppSettings::instance();
-    for (int i = 0; i < 4; ++i)
+    if (_kind != SettingsKindDefaults || !_profileCapHint)
+        return;
+    const LlmProfile profile = AppSettings::instance()->profileById(currentProfileId());
+    if (profile.id.isEmpty())
     {
-        if (!_roleCapHint[i])
-            continue;
-        const LlmProfile profile = s->profileForWorkerType(_kind, roles[i]);
-        const int window = OpenAiCompatibleClient::resolvedContextWindow(
-                               profile.baseUrl, profile.model);
-        QString model = profile.model.trimmed();
-        if (model.isEmpty())
-            model = tr("модель не задана");
-        const bool fromApi = OpenAiCompatibleClient::hasApiContextWindow(
-                                 profile.baseUrl, profile.model);
-        if (fromApi)
-        {
-            _roleCapHint[i]->setText(tr("окно %1: %2 ток. (из API /models)")
-                                     .arg(model)
-                                     .arg(window));
-        }
-        else
-        {
-            _roleCapHint[i]->setText(tr("окно %1: %2 ток. (оценка: API не отдаёт размер окна)")
-                                     .arg(model)
-                                     .arg(window));
-        }
-        if (_roleCapSpin[i])
-        {
-            _roleCapSpin[i]->setToolTip(
-                tr("0 — полное окно модели (%1 ток.). "
-                   "Можно указать точное число, в том числе равное окну. "
-                   "Иначе история сжимается раньше, по этому потолку.")
-                    .arg(window));
-        }
-        if (_roleCapModelButton[i])
-        {
-            _roleCapModelButton[i]->setToolTip(
-                tr("Запросить GET /models и подставить окно %1 (%2 ток.).")
-                    .arg(model)
-                    .arg(window));
-        }
+        _profileCapHint->clear();
+        return;
+    }
+    const int window = OpenAiCompatibleClient::resolvedContextWindow(
+                           profile.baseUrl, profile.model);
+    QString model = profile.model.trimmed();
+    if (model.isEmpty())
+        model = tr("модель не задана");
+    const bool fromApi = OpenAiCompatibleClient::hasApiContextWindow(
+                             profile.baseUrl, profile.model);
+    if (fromApi)
+    {
+        _profileCapHint->setText(tr("окно %1: %2 ток. (из API /models)")
+                                 .arg(model)
+                                 .arg(window));
+    }
+    else
+    {
+        _profileCapHint->setText(tr("окно %1: %2 ток. (оценка: API не отдаёт размер окна)")
+                                 .arg(model)
+                                 .arg(window));
+    }
+    if (_profileCapSpin)
+    {
+        _profileCapSpin->setToolTip(
+            tr("0 — полное окно модели (%1 ток.). "
+               "Можно указать точное число, в том числе равное окну. "
+               "Иначе история сжимается раньше, по этому потолку.")
+                .arg(window));
+    }
+    if (_profileCapModelButton)
+    {
+        _profileCapModelButton->setToolTip(
+            tr("Запросить GET /models и подставить окно %1 (%2 ток.).")
+                .arg(model)
+                .arg(window));
     }
     requestContextCatalogs();
 }
@@ -721,41 +663,33 @@ void SettingsPage::updateRoleCapHints()
 
 void SettingsPage::sltUseModelContext()
 {
-    QObject *src = sender();
+    if (_kind != SettingsKindDefaults || sender() != _profileCapModelButton || !_profileCapSpin)
+        return;
     commitCurrentProfile();
-    for (int i = 0; i < 4; ++i)
-    {
-        if (_roleCapModelButton[i] != src || !_roleCapSpin[i])
-            continue;
-        const WorkerType roles[4] = {
-            WorkerTypeManager, WorkerTypeExecutor, WorkerTypeTester, WorkerTypeTool
-        };
-        const LlmProfile profile = AppSettings::instance()->profileForWorkerType(_kind, roles[i]);
-        _pendingModelWindowRole = i;
-        OpenAiCompatibleClient::fetchContextCatalog(profile.baseUrl, profile.apiKey,
-                                                    profile.model);
-        const int window = OpenAiCompatibleClient::resolvedContextWindow(
-                               profile.baseUrl, profile.model);
-        if (window > 0)
-            _roleCapSpin[i]->setValue(window);
-        else
-            _roleCapSpin[i]->setValue(0);
-        updateRoleCapHints();
-        break;
-    }
+    const LlmProfile profile = AppSettings::instance()->profileById(currentProfileId());
+    if (profile.id.isEmpty())
+        return;
+    _pendingProfileCapWindow = true;
+    OpenAiCompatibleClient::fetchContextCatalog(profile.baseUrl, profile.apiKey,
+                                                profile.model);
+    const int window = OpenAiCompatibleClient::resolvedContextWindow(
+                           profile.baseUrl, profile.model);
+    if (window > 0)
+        _profileCapSpin->setValue(window);
+    else
+        _profileCapSpin->setValue(0);
+    sltProfileFieldChanged();
+    updateProfileCapHint();
 }
 
 //----------------------------------------------
 
 void SettingsPage::requestContextCatalogs()
 {
-    static const WorkerType roles[4] = {
-        WorkerTypeManager, WorkerTypeExecutor, WorkerTypeTester, WorkerTypeTool
-    };
-    AppSettings *s = AppSettings::instance();
-    for (int i = 0; i < 4; ++i)
+    if (_kind != SettingsKindDefaults)
+        return;
+    foreach (const LlmProfile &profile, AppSettings::instance()->profiles())
     {
-        const LlmProfile profile = s->profileForWorkerType(_kind, roles[i]);
         OpenAiCompatibleClient::fetchContextCatalog(profile.baseUrl, profile.apiKey,
                                                     profile.model);
     }
@@ -769,21 +703,17 @@ void SettingsPage::sltCatalogWindowsUpdated()
     if (busy)
         return;
     busy = true;
-    static const WorkerType roles[4] = {
-        WorkerTypeManager, WorkerTypeExecutor, WorkerTypeTester, WorkerTypeTool
-    };
-    if (_pendingModelWindowRole >= 0 && _pendingModelWindowRole < 4
-        && _roleCapSpin[_pendingModelWindowRole])
+    if (_pendingProfileCapWindow && _profileCapSpin)
     {
-        const LlmProfile profile = AppSettings::instance()->profileForWorkerType(
-                                       _kind, roles[_pendingModelWindowRole]);
+        const LlmProfile profile = AppSettings::instance()->profileById(currentProfileId());
         const int window = OpenAiCompatibleClient::resolvedContextWindow(
                                profile.baseUrl, profile.model);
         if (window > 0)
-            _roleCapSpin[_pendingModelWindowRole]->setValue(window);
-        _pendingModelWindowRole = -1;
+            _profileCapSpin->setValue(window);
+        _pendingProfileCapWindow = false;
+        sltProfileFieldChanged();
     }
-    updateRoleCapHints();
+    updateProfileCapHint();
     busy = false;
 }
 
@@ -864,6 +794,8 @@ void SettingsPage::loadCurrentProfileFields()
     const QSignalBlocker bPurpose(_profilePurposeEdit);
     const QSignalBlocker b5(_profileBalanceUrlEdit);
     const QSignalBlocker b6(_profileBalancePathEdit);
+    const QSignalBlocker b7(_profileToolIterSpin);
+    const QSignalBlocker b8(_profileCapSpin);
     if (_profileNameEdit)
         _profileNameEdit->setText(profile.name);
     if (_profileUrlEdit)
@@ -885,8 +817,13 @@ void SettingsPage::loadCurrentProfileFields()
         _profileBalanceUrlEdit->setText(profile.balanceUrl);
     if (_profileBalancePathEdit)
         _profileBalancePathEdit->setText(profile.balanceJsonPath);
+    if (_profileToolIterSpin)
+        _profileToolIterSpin->setValue(profile.maxToolIterations);
+    if (_profileCapSpin)
+        _profileCapSpin->setValue(profile.contextCap);
     if (_removeProfileButton)
         _removeProfileButton->setEnabled(AppSettings::instance()->profiles().size() > 1);
+    updateProfileCapHint();
 }
 
 //----------------------------------------------
@@ -921,7 +858,7 @@ void SettingsPage::loadProfiles()
     }
     loadCurrentProfileFields();
     fillPresetProfileCombo();
-    updateRoleCapHints();
+    updateProfileCapHint();
     _updatingProfiles = false;
     loadPresets();
 }
@@ -973,6 +910,22 @@ QWidget *SettingsPage::buildApiBox()
     _profileBalancePathEdit->setPlaceholderText(
         tr("опц. путь JSON: data.credits или balance_infos.0.total_balance"));
 
+    _profileToolIterSpin = new QSpinBox(box);
+    _profileToolIterSpin->setMinimum(2);
+    _profileToolIterSpin->setMaximum(10000);
+    _profileToolIterSpin->setSingleStep(10);
+    _profileToolIterSpin->setMinimumWidth(80);
+
+    _profileCapSpin = new QSpinBox(box);
+    _profileCapSpin->setRange(0, 4000000);
+    _profileCapSpin->setSingleStep(1024);
+    _profileCapSpin->setSpecialValueText(tr("окно модели"));
+    _profileCapSpin->setMinimumWidth(110);
+
+    _profileCapModelButton = new QPushButton(tr("окно модели"), box);
+    _profileCapHint = new QLabel(box);
+    _profileCapHint->setWordWrap(true);
+
     _addProfileButton = new QPushButton(tr("Добавить"), box);
     _removeProfileButton = new QPushButton(tr("Удалить"), box);
 
@@ -990,6 +943,12 @@ QWidget *SettingsPage::buildApiBox()
             this, SLOT(sltProfileFieldChanged()));
     connect(_profileBalancePathEdit, SIGNAL(editingFinished()),
             this, SLOT(sltProfileFieldChanged()));
+    connect(_profileToolIterSpin, SIGNAL(valueChanged(int)),
+            this, SLOT(sltProfileFieldChanged()));
+    connect(_profileCapSpin, SIGNAL(valueChanged(int)),
+            this, SLOT(sltProfileFieldChanged()));
+    connect(_profileCapModelButton, SIGNAL(clicked()),
+            this, SLOT(sltUseModelContext()));
     connect(_addProfileButton, SIGNAL(clicked()), this, SLOT(sltAddProfile()));
     connect(_removeProfileButton, SIGNAL(clicked()), this, SLOT(sltRemoveProfile()));
 
@@ -1002,6 +961,17 @@ QWidget *SettingsPage::buildApiBox()
     _profileForm->addRow(tr("Назначение модели:"), _profilePurposeEdit);
     _profileForm->addRow(tr("URL баланса:"), _profileBalanceUrlEdit);
     _profileForm->addRow(tr("JSON путь баланса:"), _profileBalancePathEdit);
+    _profileForm->addRow(tr("Лимит вызовов функций:"), _profileToolIterSpin);
+
+    QHBoxLayout *capRow = new QHBoxLayout();
+    capRow->addWidget(_profileCapSpin);
+    capRow->addWidget(_profileCapModelButton);
+    QVBoxLayout *capCell = new QVBoxLayout();
+    capCell->setContentsMargins(0, 0, 0, 0);
+    capCell->setSpacing(2);
+    capCell->addLayout(capRow);
+    capCell->addWidget(_profileCapHint);
+    _profileForm->addRow(tr("Потолок контекста:"), capCell);
 
     QHBoxLayout *buttons = new QHBoxLayout();
     buttons->addWidget(_addProfileButton);
@@ -1161,67 +1131,6 @@ QWidget *SettingsPage::buildWorkersBox()
     _limitsForm->addRow(tr("Одновременно работающих воркеров:"), _maxConcurrentSpin);
     _limitsForm->addRow(tr("Таймаут ответа модели:"), _llmTimeoutSpin);
     layout->addLayout(_limitsForm);
-
-    _budgetHint = new QLabel(L("settings.hint.budgets"), box);
-    _budgetHint->setWordWrap(true);
-    layout->addWidget(_budgetHint);
-
-    static const char *roleTitles[4] = {
-        QT_TR_NOOP("Менеджер"),
-        QT_TR_NOOP("Исполнитель"),
-        QT_TR_NOOP("Тестировщик"),
-        QT_TR_NOOP("Инструмент")
-    };
-    _budgetsForm = new QFormLayout();
-    _budgetsForm->setContentsMargins(0, 0, 0, 0);
-    for (int i = 0; i < 4; ++i)
-    {
-        _roleIterSpin[i] = new QSpinBox(box);
-        _roleIterSpin[i]->setMinimum(2);
-        _roleIterSpin[i]->setMaximum(10000);
-        _roleIterSpin[i]->setSingleStep(10);
-        _roleIterSpin[i]->setMinimumWidth(80);
-        _roleIterSpin[i]->setToolTip(tr("Максимум вызовов функций за ход (до 10000). "
-                                        "После лимита воркер обязан завершить задачу."));
-        connect(_roleIterSpin[i], SIGNAL(valueChanged(int)),
-                this, SLOT(sltWorkerLimitsChanged()));
-
-        _roleCapSpin[i] = new QSpinBox(box);
-        _roleCapSpin[i]->setRange(0, 4000000);
-        _roleCapSpin[i]->setSingleStep(1024);
-        _roleCapSpin[i]->setSpecialValueText(tr("окно модели"));
-        _roleCapSpin[i]->setMinimumWidth(110);
-        _roleCapSpin[i]->setToolTip(tr("0 — использовать полное окно модели. "
-                                       "Можно ввести точное число токенов, включая "
-                                       "максимум модели."));
-        connect(_roleCapSpin[i], SIGNAL(valueChanged(int)),
-                this, SLOT(sltWorkerLimitsChanged()));
-
-        _roleCapModelButton[i] = new QPushButton(tr("окно модели"), box);
-        _roleCapModelButton[i]->setToolTip(tr("Подставить максимальный контекст модели этой роли."));
-        connect(_roleCapModelButton[i], SIGNAL(clicked()),
-                this, SLOT(sltUseModelContext()));
-
-        _roleCapHint[i] = new QLabel(box);
-        _roleCapHint[i]->setWordWrap(true);
-
-        _roleFuncLabel[i] = new QLabel(tr("функции:"), box);
-        _roleContextLabel[i] = new QLabel(tr("контекст:"), box);
-        _roleRowLabel[i] = new QLabel(tr(roleTitles[i]) + QString::fromUtf8(":"), box);
-        QHBoxLayout *row = new QHBoxLayout();
-        row->addWidget(_roleFuncLabel[i]);
-        row->addWidget(_roleIterSpin[i]);
-        row->addWidget(_roleContextLabel[i]);
-        row->addWidget(_roleCapSpin[i]);
-        row->addWidget(_roleCapModelButton[i]);
-        QVBoxLayout *cell = new QVBoxLayout();
-        cell->setContentsMargins(0, 0, 0, 0);
-        cell->setSpacing(2);
-        cell->addLayout(row);
-        cell->addWidget(_roleCapHint[i]);
-        _budgetsForm->addRow(_roleRowLabel[i], cell);
-    }
-    layout->addLayout(_budgetsForm);
     return box;
 }
 
@@ -1384,7 +1293,7 @@ void SettingsPage::loadPresets()
         _removePresetButton->setEnabled(!id.isEmpty());
     fillRootPresetCombo();
     _updatingPresets = false;
-    updateRoleCapHints();
+    updateProfileCapHint();
 }
 
 //----------------------------------------------
@@ -1642,13 +1551,17 @@ void SettingsPage::sltProfileFieldChanged()
         profile.balanceUrl = _profileBalanceUrlEdit->text().trimmed();
     if (_profileBalancePathEdit)
         profile.balanceJsonPath = _profileBalancePathEdit->text().trimmed();
+    if (_profileToolIterSpin)
+        profile.maxToolIterations = _profileToolIterSpin->value();
+    if (_profileCapSpin)
+        profile.contextCap = AppSettings::normalizeProfileContextCap(_profileCapSpin->value());
 
     _updatingProfiles = true;
     AppSettings::instance()->updateProfile(profile);
     if (_profileList->currentItem())
         _profileList->currentItem()->setText(profile.name);
     fillPresetProfileCombo();
-    updateRoleCapHints();
+    updateProfileCapHint();
     _updatingProfiles = false;
     loadPresets();
     emit profilesChanged();

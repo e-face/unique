@@ -1,6 +1,8 @@
 <!DOCTYPE RCC>
 <RCC version="1.0">
     <qresource prefix="/icons">
+        <file alias="unique.png">icon/unique.png</file>
+        <file alias="unique.svg">icon/unique.svg</file>
         <file alias="chat.png">icon/chat.png</file>
         <file alias="clear.png">icon/clear.png</file>
         <file alias="team.png">icon/team.png</file>

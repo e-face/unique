@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QtGlobal>
 #include <QtMath>
@@ -59,6 +60,9 @@ JournalWidget::JournalWidget(QWidget *parent)
     _liveFadeTimer = new QTimer(this);
     _liveFadeTimer->setInterval(kLiveFadeMs);
     connect(_liveFadeTimer, SIGNAL(timeout()), this, SLOT(sltLiveActionFade()));
+
+    connect(this, SIGNAL(messageLinkActivated(QUrl)),
+            this, SLOT(sltMessageLinkActivated(QUrl)));
 }
 
 //----------------------------------------------
@@ -70,6 +74,10 @@ void JournalWidget::clearMessages()
     _lastPermanent = 0;
     _lastPermanentAuthor.clear();
     _lastPermanentFromUser = false;
+    _agentActions.clear();
+    _liveActions.clear();
+    _liveActionIndex = 0;
+    _liveFadePhase = 0.0;
     if (_liveActionLine && messagesLayout())
     {
         messagesLayout()->addWidget(_liveActionLine, 0, Qt::AlignTop);
@@ -81,16 +89,20 @@ void JournalWidget::clearMessages()
 
 //----------------------------------------------
 
-void JournalWidget::attachAgent(Agent *agent, QString label)
+void JournalWidget::attachAgent(Agent *agent, QString label, QString workerId)
 {
     if (!agent)
         return;
     if (_labels.contains(agent))
     {
         _labels[agent] = label;
+        if (!workerId.trimmed().isEmpty())
+            _workerIds[agent] = workerId.trimmed();
         return;
     }
     _labels.insert(agent, label);
+    if (!workerId.trimmed().isEmpty())
+        _workerIds.insert(agent, workerId.trimmed());
     connect(agent, SIGNAL(userMessage(QString)),
             this, SLOT(sltJournalUser(QString)));
     connect(agent, SIGNAL(assistantMessage(QString)),
@@ -126,6 +138,7 @@ void JournalWidget::detachAgent(Agent *agent)
         return;
     disconnect(agent, 0, this, 0);
     _labels.remove(agent);
+    _workerIds.remove(agent);
     clearAgentLiveAction(agent);
 }
 
@@ -142,6 +155,7 @@ void JournalWidget::setAgentLabel(Agent *agent, QString label)
 void JournalWidget::sltAgentDestroyed(QObject *object)
 {
     _labels.remove(object);
+    _workerIds.remove(object);
     clearAgentLiveAction(object);
 }
 
@@ -153,6 +167,65 @@ QString JournalWidget::labelFor(QObject *sender) const
     if (label.isEmpty())
         return tr("Чат");
     return label;
+}
+
+//----------------------------------------------
+
+QString JournalWidget::workerIdFor(QObject *sender) const
+{
+    return _workerIds.value(sender);
+}
+
+//----------------------------------------------
+
+QString JournalWidget::workerChatUrl(const QString &workerId)
+{
+    const QString id = workerId.trimmed();
+    if (id.isEmpty())
+        return QString();
+    return QString::fromUtf8("unique-worker:%1").arg(id);
+}
+
+//----------------------------------------------
+
+QString JournalWidget::workerIdFromUrl(const QUrl &url)
+{
+    if (url.scheme() != QString::fromUtf8("unique-worker"))
+        return QString();
+    QString id = url.path();
+    if (id.startsWith(QChar('/')))
+        id = id.mid(1);
+    if (id.isEmpty())
+    {
+        const QString s = url.toString();
+        const int colon = s.indexOf(QChar(':'));
+        if (colon >= 0)
+            id = s.mid(colon + 1);
+    }
+    if (id.startsWith(QString::fromUtf8("//")))
+        id = id.mid(2);
+    return id.trimmed();
+}
+
+//----------------------------------------------
+
+void JournalWidget::bindTitleLink(QWidget *bubble, const QString &workerId)
+{
+    ChatMessageFrame *frame = qobject_cast<ChatMessageFrame *>(bubble);
+    if (!frame)
+        return;
+    const QString url = workerChatUrl(workerId);
+    if (!url.isEmpty())
+        frame->setTitleLink(url);
+}
+
+//----------------------------------------------
+
+void JournalWidget::sltMessageLinkActivated(const QUrl &url)
+{
+    const QString id = workerIdFromUrl(url);
+    if (!id.isEmpty())
+        emit workerChatRequested(id);
 }
 
 //----------------------------------------------
@@ -471,7 +544,8 @@ void JournalWidget::sltLiveActionFade()
 
 //----------------------------------------------
 
-void JournalWidget::addPermanent(const QString &author, const QString &text, bool fromUser)
+void JournalWidget::addPermanent(const QString &author, const QString &text, bool fromUser,
+                                 const QString &workerId)
 {
     // Постоянная запись: предыдущая временная остаётся в ленте как есть.
     _transient = 0;
@@ -491,6 +565,8 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
             const QString html = MarkdownFormatter::toHtml(text.left(kJournalTextClip));
             _lastPermanent->appendHtmlParagraph(html, text);
         }
+        if (!workerId.trimmed().isEmpty())
+            bindTitleLink(_lastPermanent, workerId);
         ensureLiveActionAtEnd();
         if (!isRestoring() && pinBottom())
             scheduleScrollToBottom();
@@ -509,6 +585,7 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
         bubble = addBubble(who, html, text, QString::fromUtf8("assistantMsg"), false, false,
                            colorKey);
     }
+    bindTitleLink(bubble, workerId);
     _lastPermanent = qobject_cast<ChatMessageFrame *>(bubble);
     _lastPermanentAuthor = who;
     _lastPermanentFromUser = fromUser;
@@ -518,7 +595,8 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
 //----------------------------------------------
 
 void JournalWidget::addTransient(const QString &author, const QString &title,
-                                 const QString &text, const QString &kind)
+                                 const QString &text, const QString &kind,
+                                 const QString &workerId)
 {
     if (_transient)
         removeBubble(_transient);
@@ -527,6 +605,7 @@ void JournalWidget::addTransient(const QString &author, const QString &title,
         objectName = QString::fromUtf8("noticeMsg");
     const QString who = author.trimmed().isEmpty() ? tr("Чат") : author.trimmed();
     _transient = addPlainBubble(caption(who, title), text, objectName, false, true, false, who);
+    bindTitleLink(_transient, workerId);
     ensureLiveActionAtEnd();
 }
 
@@ -543,14 +622,14 @@ void JournalWidget::sltJournalUser(const QString &text)
     const QString body = friendlyIngressBody(text, ingress);
     if (body.trimmed().isEmpty())
         return;
-    addPermanent(author, body, ingress == AgentUserIngressHuman);
+    addPermanent(author, body, ingress == AgentUserIngressHuman, workerIdFor(sender()));
 }
 
 //----------------------------------------------
 
 void JournalWidget::sltJournalAssistant(const QString &text)
 {
-    addPermanent(labelFor(sender()), text, false);
+    addPermanent(labelFor(sender()), text, false, workerIdFor(sender()));
 }
 
 //----------------------------------------------
@@ -558,7 +637,7 @@ void JournalWidget::sltJournalAssistant(const QString &text)
 void JournalWidget::sltJournalNotice(const QString &text)
 {
     addTransient(labelFor(sender()), tr("Заметка"), text,
-                 QString::fromUtf8("noticeMsg"));
+                 QString::fromUtf8("noticeMsg"), workerIdFor(sender()));
 }
 
 //----------------------------------------------
@@ -575,7 +654,7 @@ void JournalWidget::sltJournalForwarded(const QString &text)
 void JournalWidget::sltJournalFailed(const QString &error)
 {
     addTransient(labelFor(sender()), tr("Ошибка"), error,
-                 QString::fromUtf8("errorMsg"));
+                 QString::fromUtf8("errorMsg"), workerIdFor(sender()));
 }
 
 //----------------------------------------------

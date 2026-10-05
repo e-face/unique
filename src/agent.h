@@ -1,6 +1,7 @@
 #ifndef AGENT_H
 #define AGENT_H
 
+#include "appsettings.h"
 #include "contextoptimizer.h"
 #include "llmtypes.h"
 #include "workertypes.h"
@@ -60,9 +61,9 @@ public:
      */
     void setContextCap(int tokens);
     /**
-     * @brief Бюджет роли: лимит функций и потолок контекста.
+     * @brief Лимиты из профиля модели: вызовы функций и потолок контекста.
      */
-    void applyRoleSettings(WorkerType type);
+    void applyProfileLimits(const LlmProfile &profile);
     /**
      * @brief Закрепить исходную формулировку задачи: при сжатии контекста она
      *        не сворачивается в сводку, а остаётся в истории дословно.

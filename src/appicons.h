@@ -10,6 +10,8 @@
 class AppIcons
 {
 public:
+    /** Иконка приложения Unique (окно / taskbar). */
+    static QIcon appIcon();
     static QIcon clearAll();
     static QIcon mainChat();
     static QIcon workerGraph();

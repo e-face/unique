@@ -1,6 +1,6 @@
 QT += core gui network widgets
 
-TARGET = dsagent
+TARGET = Unique
 TEMPLATE = app
 CONFIG += c++11
 
@@ -23,6 +23,7 @@ HEADERS += \
     src/appicons.h \
     src/applocale.h \
     src/appsettings.h \
+    src/appversion.h \
     src/balancedialog.h \
     src/chatsession.h \
     src/composerinput.h \
@@ -30,6 +31,7 @@ HEADERS += \
     src/conversationwidget.h \
     src/debugagenttools.h \
     src/filechangestore.h \
+    src/graphthumb.h \
     src/deepseekclient.h \
     src/groqclient.h \
     src/journalwidget.h \
@@ -69,6 +71,7 @@ SOURCES += \
     src/conversationwidget.cpp \
     src/debugagenttools.cpp \
     src/filechangestore.cpp \
+    src/graphthumb.cpp \
     src/deepseekclient.cpp \
     src/groqclient.cpp \
     src/journalwidget.cpp \
@@ -96,6 +99,9 @@ SOURCES += \
     src/workertools.cpp
 
 RESOURCES += icons.qrc
+
+# Иконка exe (Windows).
+win32:RC_ICONS = icon/unique.ico
 
 # Qt 5.9 грузит OpenSSL 1.0.2 (libeay32.dll / ssleay32.dll) из каталога exe.
 win32 {

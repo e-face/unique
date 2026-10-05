@@ -3,6 +3,7 @@
 
 #include "workertypes.h"
 //----------------------------------------------
+#include <QByteArray>
 #include <QColor>
 #include <QList>
 #include <QMap>
@@ -31,6 +32,8 @@ struct LlmProfile
 {
     LlmProfile()
         : modality(WorkerTaskKindLlm)
+        , maxToolIterations(1000)
+        , contextCap(0)
     {
     }
 
@@ -56,6 +59,12 @@ struct LlmProfile
      *        Пусто — авторазбор типичных ответов (DeepSeek и др.).
      */
     QString balanceJsonPath;
+    /** Максимум вызовов функций за ход воркера с этим профилем. */
+    int maxToolIterations;
+    /**
+     * @brief Потолок контекста (токены). 0 — полное окно модели.
+     */
+    int contextCap;
 };
 
 //----------------------------------------------
@@ -146,8 +155,6 @@ struct WorkspaceSettings
     int                    maxWorkerDepth;
     int                    maxConcurrentWorkers;
     int                    llmTimeoutSec;
-    int                    roleToolIterations[4];
-    int                    roleContextCap[4];
 };
 
 //----------------------------------------------
@@ -252,6 +259,22 @@ public:
     void persistUiLanguage(QString code);
 
     /**
+     * @brief Геометрия и состояние главного окна/доков — настройки программы,
+     *        не привязаны к проекту.
+     */
+    QByteArray mainWindowGeometry() const;
+    QByteArray mainWindowState() const;
+    void setMainWindowLayout(const QByteArray &geometry, const QByteArray &state);
+    /**
+     * @brief Размеры сплиттеров левой колонки доков (ширина / высоты).
+     *        Нулевые значения — нет сохранённых размеров.
+     */
+    int leftDockWidth() const;
+    int projectDockHeight() const;
+    int graphThumbDockHeight() const;
+    void setMainWindowDockSplit(int leftWidth, int projectHeight, int graphHeight);
+
+    /**
      * @brief Учёт токенов одного ответа модели.
      * @param role  ключ роли воркера (manager/executor/tester/tool/root) для разбивки.
      *
@@ -291,20 +314,13 @@ public:
     int  llmTimeoutSec(SettingsKind kind) const;
     void setLlmTimeoutSec(int seconds);
     void setLlmTimeoutSec(SettingsKind kind, int seconds);
-    int  roleToolIterations(WorkerType type) const;
-    int  roleToolIterations(SettingsKind kind, WorkerType type) const;
-    void setRoleToolIterations(WorkerType type, int count);
-    void setRoleToolIterations(SettingsKind kind, WorkerType type, int count);
-    int  roleContextCap(WorkerType type) const;
-    int  roleContextCap(SettingsKind kind, WorkerType type) const;
-    void setRoleContextCap(WorkerType type, int tokens);
-    void setRoleContextCap(SettingsKind kind, WorkerType type, int tokens);
-
     /** Полные профили — всегда из настроек программы (config/ai). */
     QList<LlmProfile> profiles() const;
     LlmProfile profileById(QString id) const;
     LlmProfile profileForWorkerType(WorkerType type) const;
     LlmProfile profileForWorkerType(SettingsKind kind, WorkerType type) const;
+    /** Профиль воркера: явный llmProfileId или профиль роли по умолчанию. */
+    LlmProfile profileForWorker(WorkerType type, QString llmProfileId) const;
     QString workerProfileId(WorkerType type) const;
     QString workerProfileId(SettingsKind kind, WorkerType type) const;
     void setWorkerProfileId(WorkerType type, QString profileId);
@@ -312,6 +328,7 @@ public:
     QString addProfile(LlmProfile profile);
     void updateProfile(const LlmProfile &profile);
     void removeProfile(QString id);
+    static int normalizeProfileContextCap(int tokens);
 
     QList<WorkerPreset> workerPresets() const;
     QList<WorkerPreset> workerPresets(SettingsKind kind) const;
@@ -380,6 +397,7 @@ private:
     void migrateLegacyProviders(QSettings *settings, WorkspaceSettings *bundle);
     void migrateFromNativeRegistry();
     void migrateProjectLocalProfiles();
+    void migrateRoleBudgetsIntoProfiles();
     void writeProfileFile(const LlmProfile &profile) const;
     void removeProfileFile(QString id) const;
     QString profileFilePath(QString id) const;
@@ -413,6 +431,11 @@ private:
     QTimer                *_statsTimer;
     bool                   _showForwardedContext;
     QString                _uiLanguage;
+    QByteArray             _mainWindowGeometry;
+    QByteArray             _mainWindowState;
+    int                    _leftDockWidth;
+    int                    _projectDockHeight;
+    int                    _graphThumbDockHeight;
 };
 
 #endif // APPSETTINGS_H

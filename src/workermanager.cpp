@@ -298,7 +298,9 @@ void WorkerManager::sltLimitsChanged()
         if (!worker || !worker->session() || !worker->session()->agent())
             continue;
         Agent *agent = worker->session()->agent();
-        agent->applyRoleSettings(worker->type());
+        const LlmProfile profile = AppSettings::instance()->profileForWorker(
+                                       worker->type(), worker->llmProfileId());
+        agent->applyProfileLimits(profile);
         agent->refreshContextUsage();
     }
     sltScheduleQueuePump();
@@ -2748,7 +2750,7 @@ QString WorkerManager::runMediaExecutor(Worker *worker, bool *ok)
         else
         {
             toolName = QString::fromUtf8("text_to_speech");
-            args.insert(QString::fromUtf8("text"), task);
+            args = buildTextToSpeechToolArgs(task, 0);
         }
         break;
     }
@@ -2819,7 +2821,9 @@ void WorkerManager::installTools(Worker *worker)
         addLlmRoleTools(this, agent, worker);
     }
 
-    agent->applyRoleSettings(worker->type());
+    const LlmProfile profile = AppSettings::instance()->profileForWorker(
+                                   worker->type(), worker->llmProfileId());
+    agent->applyProfileLimits(profile);
     agent->setProjectDirectory(_workspace ? _workspace->root() : QString());
 }
 
@@ -2968,12 +2972,21 @@ QString WorkerManager::promptFor(Worker *worker) const
         return QString();
     const AppLocale *locale = AppLocale::instance();
     const WorkerType type = worker->type();
+    const QString verificationDepth = locale->model(
+        QString::fromUtf8("verification_depth"),
+        QString::fromUtf8(
+            "\nVERIFICATION DEPTH: Deep / exhaustive testing and formal verification ONLY when "
+            "the user (or an explicit parent assignment quoting the user) asks for it. "
+            "By default prefer fast, lightweight, and if needed indirect checks "
+            "(build/compile, smoke run, spot-check one path). Do not expand into full test "
+            "suites, long regressions, fuzzing, or broad manual QA on your own."));
     QString base;
     if (worker->isGroupInterlocutor())
     {
         base = locale->model(QString::fromUtf8("group_interlocutor"),
                              QString::fromUtf8(
                                  "You are a GROUP INTERLOCUTOR named in your first message."));
+        base += verificationDepth;
         base += locale->model(QString::fromUtf8("sequence_suffix"));
         return base;
     }
@@ -3007,6 +3020,7 @@ QString WorkerManager::promptFor(Worker *worker) const
         break;
     }
     base += locale->model(QString::fromUtf8("communication_suffix"));
+    base += verificationDepth;
     base += locale->model(QString::fromUtf8("sequence_suffix"));
     return base;
 }

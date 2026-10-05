@@ -7,6 +7,7 @@
 #include <QList>
 #include <QPointer>
 #include <QString>
+#include <QUrl>
 
 class Agent;
 class QLabel;
@@ -30,15 +31,20 @@ class JournalWidget : public ConversationWidget
 public:
     explicit JournalWidget(QWidget *parent = 0);
 
-    void attachAgent(Agent *agent, QString label);
+    void attachAgent(Agent *agent, QString label, QString workerId = QString());
     void detachAgent(Agent *agent);
     void setAgentLabel(Agent *agent, QString label);
     void clearMessages();
 
+signals:
+    void workerChatRequested(const QString &workerId);
+
 public slots:
-    void addPermanent(const QString &author, const QString &text, bool fromUser);
+    void addPermanent(const QString &author, const QString &text, bool fromUser,
+                      const QString &workerId = QString());
     void addTransient(const QString &author, const QString &title,
-                      const QString &text, const QString &kind = QString());
+                      const QString &text, const QString &kind = QString(),
+                      const QString &workerId = QString());
 
 private slots:
     void sltJournalUser(const QString &text);
@@ -53,9 +59,13 @@ private slots:
     void sltJournalCompactingChanged(bool compacting);
     void sltLiveActionRotate();
     void sltLiveActionFade();
+    void sltMessageLinkActivated(const QUrl &url);
 
 private:
     QString labelFor(QObject *sender) const;
+    QString workerIdFor(QObject *sender) const;
+    static QString workerChatUrl(const QString &workerId);
+    static QString workerIdFromUrl(const QUrl &url);
     static QString caption(const QString &author, const QString &title);
     static QString actionTitleForTool(const QString &name);
     static QString toolArgsExcerpt(const QString &name, const QString &arguments);
@@ -68,6 +78,7 @@ private:
     void ensureLiveActionAtEnd();
     void refreshLiveActionText();
     void applyLiveActionFadeStyle();
+    void bindTitleLink(QWidget *bubble, const QString &workerId);
 
     struct LiveAction
     {
@@ -76,6 +87,7 @@ private:
     };
 
     QHash<QObject *, QString>  _labels;
+    QHash<QObject *, QString>  _workerIds;
     QHash<QObject *, QString>  _agentActions;
     QList<LiveAction>          _liveActions;
     QPointer<QWidget>          _transient;

@@ -2,7 +2,9 @@
 #define WORKERGRAPHWIDGET_H
 
 #include <QGraphicsView>
+#include <QPixmap>
 #include <QPointer>
+#include <QSize>
 
 #include "workertypes.h"
 
@@ -27,6 +29,11 @@ public:
 
     void rebuild(WorkerManager *manager);
     void applyTheme();
+    /**
+     * @brief Миниатюра текущей сцены для превью у композера.
+     *        Пустой pixmap, если граф ещё не построен.
+     */
+    QPixmap overviewPixmap(QSize size) const;
 
 signals:
     void workerActivated(const QString &id);

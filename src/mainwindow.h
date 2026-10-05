@@ -15,6 +15,8 @@
 class ChatSession;
 class ComposerInput;
 class ConversationWidget;
+class GraphThumb;
+class QDockWidget;
 class JournalWidget;
 class ProjectTreeDock;
 class ProjectWorkspace;
@@ -101,9 +103,11 @@ private slots:
     void sltContinuationAnswered(bool retry);
     void sltShowGraph();
     void sltShowJournal();
+    void sltJournalWorkerChatRequested(const QString &workerId);
     void sltShowSettings();
     void sltShowProjectSettings();
     void sltShowStatistics();
+    void sltShowAbout();
     void sltShowBalance();
     void sltAppearanceApplied();
     void sltProfilesChanged();
@@ -145,6 +149,7 @@ private:
     void scheduleUiRefresh();
     void refreshBusyTabs();
     void rebuildGraphIfVisible();
+    void updateGraphThumb();
     void setupUi();
     void setupMenus();
     void retranslateUi();
@@ -167,6 +172,8 @@ private:
     void saveOpenChats(bool wait = false);
     void scheduleSaveOpenChats();
     void waitForChatSave();
+    void saveAppWindowLayout();
+    void restoreAppWindowLayout();
     void saveProjectUiState();
     void restoreProjectUiState(bool preferJournalIfEmpty);
     QString tabKeyForWidget(QWidget *widget) const;
@@ -248,6 +255,7 @@ private:
     SettingsPage        *_settingsPage;
     SettingsPage        *_projectSettingsPage;
     ProjectTreeDock     *_projectDock;
+    QDockWidget         *_graphThumbDock;
     QMenu               *_fileMenu;
     QMenu               *_windowMenu;
     QMenu               *_projectMenu;
@@ -260,6 +268,7 @@ private:
     QAction             *_windowJournalAction;
     QAction             *_windowSettingsAction;
     QAction             *_helpStatsAction;
+    QAction             *_helpAboutAction;
     QAction             *_openProjectAction;
     QAction             *_newProjectAction;
     QAction             *_openLastAction;
@@ -273,6 +282,7 @@ private:
     QAction             *_projectSettingsAction;
     QCheckBox           *_inspectCheck;
     ComposerInput       *_composerBar;
+    GraphThumb          *_graphThumb;
     QPlainTextEdit      *_composer;
     QStringList          _composerAttachments;
     QProgressBar        *_progressBar;
@@ -287,6 +297,7 @@ private:
     bool                 _resetting;
     bool                 _loadingProject;
     bool                 _projectStoreEnabled;
+    bool                 _appWindowLayoutRestored;
     bool                 _chatSavePending;
     QStringList          _recentProjects;
     QString              _pendingSwitchRoot;

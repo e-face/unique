@@ -14,6 +14,13 @@ static QIcon loadIcon(const char *resourcePath)
 
 //----------------------------------------------
 
+QIcon AppIcons::appIcon()
+{
+    return loadIcon(":/icons/unique.png");
+}
+
+//----------------------------------------------
+
 QIcon AppIcons::clearAll()
 {
     return loadIcon(":/icons/clear.png");

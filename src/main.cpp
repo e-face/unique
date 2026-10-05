@@ -4,6 +4,7 @@
 #include "appsettings.h"
 //----------------------------------------------
 #include <QApplication>
+#include <QIcon>
 #ifdef Q_OS_WIN
 #include <stdio.h>
 #include <wchar.h>
@@ -13,14 +14,14 @@
 //----------------------------------------------
 
 #ifdef Q_OS_WIN
-static LONG WINAPI dsagentCrashFilter(EXCEPTION_POINTERS *info)
+static LONG WINAPI uniqueCrashFilter(EXCEPTION_POINTERS *info)
 {
     wchar_t path[MAX_PATH];
     if (GetModuleFileNameW(0, path, MAX_PATH) == 0)
         return EXCEPTION_CONTINUE_SEARCH;
     wchar_t *slash = wcsrchr(path, L'\\');
     if (slash)
-        wcscpy(slash + 1, L"dsagent_crash.log");
+        wcscpy(slash + 1, L"Unique_crash.log");
     FILE *file = _wfopen(path, L"w");
     if (file && info && info->ExceptionRecord)
     {
@@ -38,11 +39,12 @@ static LONG WINAPI dsagentCrashFilter(EXCEPTION_POINTERS *info)
 int main(int argc, char *argv[])
 {
 #ifdef Q_OS_WIN
-    SetUnhandledExceptionFilter(dsagentCrashFilter);
+    SetUnhandledExceptionFilter(uniqueCrashFilter);
 #endif
     QApplication app(argc, argv);
-    app.setOrganizationName(QString::fromUtf8("dsagent"));
-    app.setApplicationName(QString::fromUtf8("dsagent"));
+    app.setOrganizationName(QString::fromUtf8("Unique"));
+    app.setApplicationName(QString::fromUtf8("Unique"));
+    app.setWindowIcon(QIcon(QString::fromUtf8(":/icons/unique.png")));
     AppSettings::instance()->load();
     AppLocale::instance()->setLanguage(AppSettings::instance()->uiLanguage());
 

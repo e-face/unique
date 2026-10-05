@@ -4,10 +4,12 @@
 #include "applocale.h"
 #include "appicons.h"
 #include "appsettings.h"
+#include "appversion.h"
 #include "balancedialog.h"
 #include "chatsession.h"
 #include "composerinput.h"
 #include "conversationwidget.h"
+#include "graphthumb.h"
 #include "filechangestore.h"
 #include "journalwidget.h"
 #include "knowledgestore.h"
@@ -32,6 +34,7 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDockWidget>
 #include <QDir>
 #include <QEvent>
 #include <QEventLoop>
@@ -298,6 +301,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _settingsPage(0)
     , _projectSettingsPage(0)
     , _projectDock(0)
+    , _graphThumbDock(0)
     , _fileMenu(0)
     , _windowMenu(0)
     , _projectMenu(0)
@@ -310,6 +314,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _windowJournalAction(0)
     , _windowSettingsAction(0)
     , _helpStatsAction(0)
+    , _helpAboutAction(0)
     , _openProjectAction(0)
     , _newProjectAction(0)
     , _openLastAction(0)
@@ -323,6 +328,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _projectSettingsAction(0)
     , _inspectCheck(0)
     , _composerBar(0)
+    , _graphThumb(0)
     , _composer(0)
     , _progressBar(0)
     , _chatSaveThread(0)
@@ -334,12 +340,15 @@ MainWindow::MainWindow(QWidget *parent)
     , _resetting(false)
     , _loadingProject(false)
     , _projectStoreEnabled(false)
+    , _appWindowLayoutRestored(false)
     , _chatSavePending(false)
     , _pendingSwitchLoad(false)
     , _pendingSwitchTries(0)
 {
-    setWindowTitle(QString::fromUtf8("dsagent"));
-    setWindowIcon(AppIcons::mainChat());
+    setWindowTitle(QString::fromUtf8("%1 %2")
+                       .arg(QString::fromUtf8(UNIQUE_APP_NAME),
+                            QString::fromUtf8(UNIQUE_APP_VERSION)));
+    setWindowIcon(AppIcons::appIcon());
     resize(960, 720);
 
     setupUi();
@@ -379,6 +388,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     _closing = true;
     if (statusBar())
         statusBar()->showMessage(tr("Сохранение…"));
+    saveAppWindowLayout();
     saveProjectUiState();
     saveOpenChats(true);
     sltSaveSettings();
@@ -393,6 +403,7 @@ void MainWindow::showEvent(QShowEvent *event)
     if (_chatsShown)
         return;
     _chatsShown = true;
+    restoreAppWindowLayout();
     if (!hasOpenProject())
     {
         updateComposerState();
@@ -1064,7 +1075,12 @@ void MainWindow::sendRootComposerMessage(QString text, QJsonArray contentParts)
         return;
     ChatSession *session = rootSession();
     if (!session)
-        return;
+    {
+        session = createSession(QString(), nextChatTitle());
+        if (!session)
+            return;
+        _workers->createRoot(session);
+    }
     if (session->worker() && !session->worker()->isRoot())
         return;
 
@@ -1077,7 +1093,11 @@ void MainWindow::sendRootComposerMessage(QString text, QJsonArray contentParts)
     applyProjectDirectory();
     ensureProjectStore();
     applyClientToSession(session);
-    ensureSessionVisible(session);
+    if (_tabs && _tabs->count() == 0)
+    {
+        createJournalWindow();
+        ensureTabVisible(_journal, tr("Журнал"), AppIcons::journal());
+    }
     if (session->worker() && session->worker()->isRoot())
     {
         session->worker()->clearWorkPlan();
@@ -1399,8 +1419,21 @@ void MainWindow::createJournalWindow()
     if (_journal)
         return;
     _journal = new JournalWidget();
+    connect(_journal, SIGNAL(workerChatRequested(QString)),
+            this, SLOT(sltJournalWorkerChatRequested(QString)));
     if (_tabBar)
         _tabBar->setJournalPage(_journal);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltJournalWorkerChatRequested(const QString &workerId)
+{
+    if (!_workers || workerId.trimmed().isEmpty())
+        return;
+    Worker *worker = _workers->workerById(workerId.trimmed());
+    if (worker)
+        focusWorkerSession(worker);
 }
 
 //----------------------------------------------
@@ -1546,11 +1579,12 @@ void MainWindow::sltWorkerCreated(Worker *worker)
     }
     if (_journal && worker->session() && worker->session()->agent())
     {
-        _journal->attachAgent(worker->session()->agent(), workerWindowTitle(worker));
+        _journal->attachAgent(worker->session()->agent(), workerWindowTitle(worker),
+                              worker->id());
         if (!_resetting && !_loadingProject && !worker->isRoot())
             _journal->addTransient(workerWindowTitle(worker), tr("Создан"),
                                    worker->task().isEmpty() ? tr("Новый воркер") : worker->task(),
-                                   QString::fromUtf8("noticeMsg"));
+                                   QString::fromUtf8("noticeMsg"), worker->id());
     }
     sltWorkerTreeChanged();
 }
@@ -1607,6 +1641,7 @@ void MainWindow::sltRefreshWorkerUi()
     {
         _uiRefreshTree = false;
         rebuildGraphIfVisible();
+        updateGraphThumb();
         if (_workers)
         {
             foreach (Worker *worker, _workers->workers())
@@ -1621,12 +1656,35 @@ void MainWindow::sltRefreshWorkerUi()
 
 void MainWindow::rebuildGraphIfVisible()
 {
-    if (!_graph)
-        return;
-    if (!_tabs || _tabs->currentWidget() != _graph)
+    // Сцену держим актуальной и для вкладки, и для миниатюры у композера.
+    createGraphWindow();
+    if (!_graph || !_graphDirty)
         return;
     _graph->rebuild(_workers);
     _graphDirty = false;
+}
+
+//----------------------------------------------
+
+void MainWindow::updateGraphThumb()
+{
+    if (!_graphThumb)
+        return;
+    rebuildGraphIfVisible();
+    if (!_graph)
+    {
+        _graphThumb->setOverview(QPixmap());
+        return;
+    }
+    if (_graphDirty)
+    {
+        _graph->rebuild(_workers);
+        _graphDirty = false;
+    }
+    QSize thumbSize(240, 180);
+    if (_graphThumb->width() > 40 && _graphThumb->height() > 40)
+        thumbSize = QSize(_graphThumb->width() * 2, _graphThumb->height() * 2);
+    _graphThumb->setOverview(_graph->overviewPixmap(thumbSize));
 }
 
 //----------------------------------------------
@@ -1781,7 +1839,7 @@ void MainWindow::sltToolRemoveRequested(const QString &id)
     if (_journal)
         _journal->addTransient(workerWindowTitle(tool), tr("Удалён"),
                                tr("Инструмент удалён пользователем"),
-                               QString::fromUtf8("noticeMsg"));
+                               QString::fromUtf8("noticeMsg"), tool->id());
     _workers->destroyTool(id);
     if (!_closing && !_resetting)
         scheduleSaveOpenChats();
@@ -1812,7 +1870,7 @@ void MainWindow::sltWorkerRemoveRequested(const QString &id)
     if (_journal)
         _journal->addTransient(title, tr("Удалён"),
                                tr("Воркер удалён пользователем с графа"),
-                               QString::fromUtf8("noticeMsg"));
+                               QString::fromUtf8("noticeMsg"), id);
     if (!_closing && !_resetting)
         scheduleSaveOpenChats();
 }
@@ -1830,7 +1888,7 @@ void MainWindow::sltPermissionRequested(const QString &action)
             action, worker->permissionOfferAlways());
     if (_journal)
         _journal->addTransient(workerWindowTitle(worker), tr("Запрос подтверждения"),
-                               action, QString::fromUtf8("noticeMsg"));
+                               action, QString::fromUtf8("noticeMsg"), worker->id());
 }
 
 //----------------------------------------------
@@ -1858,7 +1916,7 @@ void MainWindow::sltSubtreeBudgetRequested(const QString &text)
         worker->session()->widget()->showSubtreeBudgetRequest(text);
     if (_journal)
         _journal->addTransient(workerWindowTitle(worker), tr("Бюджет поддерева"),
-                               text, QString::fromUtf8("noticeMsg"));
+                               text, QString::fromUtf8("noticeMsg"), worker->id());
 }
 
 //----------------------------------------------
@@ -1891,7 +1949,8 @@ void MainWindow::sltToolBudgetExhausted(int chunk)
             _journal->addTransient(workerWindowTitle(session->worker()),
                                    tr("Бюджет функций"),
                                    tr("Исчерпан лимит вызовов функций. Нужно решение."),
-                                   QString::fromUtf8("noticeMsg"));
+                                   QString::fromUtf8("noticeMsg"),
+                                   session->worker()->id());
         break;
     }
 }
@@ -1931,6 +1990,7 @@ void MainWindow::sltShowGraph()
     {
         _graph->rebuild(_workers);
         _graphDirty = false;
+        updateGraphThumb();
     }
 }
 
@@ -1963,6 +2023,21 @@ void MainWindow::sltShowBalance()
 {
     BalanceDialog dialog(this);
     dialog.exec();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltShowAbout()
+{
+    const QString text = tr(
+        "<h3>%1</h3>"
+        "<p>Версия %2</p>"
+        "<p>Агент ИИ для работы над проектами.</p>"
+        "<p>Qt %3</p>")
+                             .arg(QString::fromUtf8(UNIQUE_APP_NAME),
+                                  QString::fromUtf8(UNIQUE_APP_VERSION),
+                                  QString::fromUtf8(QT_VERSION_STR));
+    QMessageBox::about(this, tr("О программе"), text);
 }
 
 //----------------------------------------------
@@ -2077,81 +2152,9 @@ void MainWindow::sltComposerSend()
     if (text.isEmpty() && _composerAttachments.isEmpty())
         return;
 
-    ChatSession *session = currentSession();
-    Worker *worker = session ? session->worker() : 0;
     const LlmProfile profile = profileForComposerTarget();
     const ModelCapabilities caps =
         ModelCapabilityService::instance()->capabilitiesFor(profile);
-
-    // Media-воркер: JSON brief с вложениями.
-    if (worker && _workers
-        && workerTaskKindIsMediaExecutor(_workers->modalityOf(worker)))
-    {
-        if (caps.requiresImageReference() && _composerAttachments.isEmpty()
-            && caps.acceptsImage())
-        {
-            statusBar()->showMessage(
-                tr("Модель требует референс-картинку — прикрепите файл."));
-            return;
-        }
-        QJsonObject brief;
-        brief.insert(QString::fromUtf8("prompt"), text);
-        if (!_composerAttachments.isEmpty())
-        {
-            const QString first = _composerAttachments.first();
-            const QString lower = first.toLower();
-            if (lower.endsWith(QString::fromUtf8(".png"))
-                || lower.endsWith(QString::fromUtf8(".jpg"))
-                || lower.endsWith(QString::fromUtf8(".jpeg"))
-                || lower.endsWith(QString::fromUtf8(".webp"))
-                || lower.endsWith(QString::fromUtf8(".gif"))
-                || lower.endsWith(QString::fromUtf8(".bmp")))
-                brief.insert(QString::fromUtf8("reference_path"), first);
-            else if (lower.endsWith(QString::fromUtf8(".wav"))
-                     || lower.endsWith(QString::fromUtf8(".mp3"))
-                     || lower.endsWith(QString::fromUtf8(".m4a"))
-                     || lower.endsWith(QString::fromUtf8(".ogg"))
-                     || lower.endsWith(QString::fromUtf8(".flac")))
-                brief.insert(QString::fromUtf8("path"), first);
-            else
-                brief.insert(QString::fromUtf8("reference_path"), first);
-            if (_composerAttachments.size() > 1)
-            {
-                QJsonArray extra;
-                for (int i = 1; i < _composerAttachments.size(); ++i)
-                    extra.append(_composerAttachments.at(i));
-                brief.insert(QString::fromUtf8("extra_paths"), extra);
-            }
-        }
-        const QString payload =
-            QString::fromUtf8(QJsonDocument(brief).toJson(QJsonDocument::Compact));
-        _composer->clear();
-        _composerAttachments.clear();
-        updateComposerAttachmentsUi();
-
-        if (worker->state() == WorkerStateIdle
-            || worker->state() == WorkerStateCompleted
-            || worker->state() == WorkerStateFailed
-            || worker->canAcceptFollowUp())
-        {
-            if (worker->task().trimmed().isEmpty()
-                && worker->state() == WorkerStateIdle)
-            {
-                worker->setTask(payload);
-                _workers->requestStart(worker);
-            }
-            else
-                worker->beginFollowUp(payload);
-        }
-        else
-        {
-            statusBar()->showMessage(tr("Воркер занят — дождитесь завершения."));
-            return;
-        }
-        ensureSessionVisible(session);
-        updateComposerState();
-        return;
-    }
 
     // LLM-чат: картинки → image_url; аудио → input_audio; текст → text;
     // PDF/file → file; иначе путь для инструментов.
@@ -2390,11 +2393,6 @@ void MainWindow::sltComposerAttachPlus()
     const LlmProfile profile = profileForComposerTarget();
     const ModelCapabilities caps =
         ModelCapabilityService::instance()->cachedOrHeuristic(profile);
-    ChatSession *session = currentSession();
-    Worker *worker = session ? session->worker() : 0;
-    const bool isMedia = worker && _workers
-                         && workerTaskKindIsMediaExecutor(_workers->modalityOf(worker));
-
     QStringList filters;
     if (caps.acceptsImage() || caps.allowsImageReference()
         || profile.modality == WorkerTaskKindImageGeneration
@@ -2405,8 +2403,7 @@ void MainWindow::sltComposerAttachPlus()
         filters << tr("Аудио (*.wav *.mp3 *.m4a *.ogg *.flac *.aac *.webm)");
     if (caps.acceptsVideo() || profile.modality == WorkerTaskKindVideoGeneration)
         filters << tr("Видео (*.mp4 *.webm *.mov *.mkv *.avi)");
-    if (!isMedia)
-        filters << tr("Все файлы (*.*)");
+    filters << tr("Все файлы (*.*)");
     if (filters.isEmpty())
         filters << tr("Все файлы (*.*)");
 
@@ -2883,7 +2880,7 @@ QString MainWindow::importAttachmentIntoProject(QString absolutePath, QString *e
 LlmProfile MainWindow::profileForComposerTarget() const
 {
     LlmProfile profile;
-    ChatSession *session = currentSession();
+    ChatSession *session = rootSession();
     Worker *worker = session ? session->worker() : 0;
     if (worker && !worker->llmProfileId().trimmed().isEmpty())
         profile = AppSettings::instance()->profileById(worker->llmProfileId());
@@ -3044,10 +3041,39 @@ void MainWindow::setupUi()
     _projectDock = new ProjectTreeDock(this);
     addDockWidget(Qt::LeftDockWidgetArea, _projectDock);
 
+    _graphThumbDock = new QDockWidget(QString(), this);
+    _graphThumbDock->setObjectName(QString::fromUtf8("graphThumbDock"));
+    _graphThumbDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    // Без заголовка: пустой titleBarWidget убирает title bar у QDockWidget.
+    _graphThumbDock->setTitleBarWidget(new QWidget(_graphThumbDock));
+    _graphThumbDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    _graphThumb = new GraphThumb(_graphThumbDock);
+    _graphThumbDock->setWidget(_graphThumb);
+    connect(_graphThumb, SIGNAL(clicked()), this, SLOT(sltShowGraph()));
+    addDockWidget(Qt::LeftDockWidgetArea, _graphThumbDock);
+    // По умолчанию — под деревом файлов.
+    splitDockWidget(_projectDock, _graphThumbDock, Qt::Vertical);
+    // Дефолтные размеры только если ещё нет сохранённых в настройках.
+    {
+        AppSettings *settings = AppSettings::instance();
+        const bool haveSplit = settings->leftDockWidth() > 0
+                               || (settings->projectDockHeight() > 0
+                                   && settings->graphThumbDockHeight() > 0);
+        if (settings->mainWindowState().isEmpty() && !haveSplit)
+        {
+            QList<QDockWidget *> docks;
+            docks << _projectDock << _graphThumbDock;
+            QList<int> sizes;
+            sizes << 260 << 140;
+            resizeDocks(docks, sizes, Qt::Vertical);
+        }
+    }
+
     createGraphWindow();
     createJournalWindow();
     applyAppStyle();
     updateComposerState();
+    updateGraphThumb();
 
     _progressBar = new QProgressBar(this);
     _progressBar->setMaximumWidth(220);
@@ -3118,6 +3144,9 @@ void MainWindow::setupMenus()
     _helpMenu = menuBar()->addMenu(L("menu.help"));
     _helpStatsAction = _helpMenu->addAction(L("menu.help.stats"));
     connect(_helpStatsAction, SIGNAL(triggered()), this, SLOT(sltShowStatistics()));
+    _helpMenu->addSeparator();
+    _helpAboutAction = _helpMenu->addAction(L("menu.help.about"));
+    connect(_helpAboutAction, SIGNAL(triggered()), this, SLOT(sltShowAbout()));
 }
 
 //----------------------------------------------
@@ -3158,6 +3187,8 @@ void MainWindow::retranslateUi()
         _helpMenu->setTitle(L("menu.help"));
     if (_helpStatsAction)
         _helpStatsAction->setText(L("menu.help.stats"));
+    if (_helpAboutAction)
+        _helpAboutAction->setText(L("menu.help.about"));
     if (_clearAction)
     {
         _clearAction->setText(L("toolbar.clear"));
@@ -3337,7 +3368,7 @@ void MainWindow::applyClientToSession(ChatSession *session)
     session->client()->setBaseUrl(profile.baseUrl);
     session->client()->setModel(profile.model);
     session->client()->setApiKey(profile.apiKey);
-    session->agent()->applyRoleSettings(type);
+    session->agent()->applyProfileLimits(profile);
 
     if (session->agent()->isBusy())
     {
@@ -3777,11 +3808,14 @@ void MainWindow::sltAdvanceConfirmation()
 
 void MainWindow::updateWindowTitle()
 {
+    const QString base = QString::fromUtf8("%1 %2")
+                             .arg(QString::fromUtf8(UNIQUE_APP_NAME),
+                                  QString::fromUtf8(UNIQUE_APP_VERSION));
     if (_workspace && _workspace->isSet())
-        setWindowTitle(QString::fromUtf8("dsagent — %1")
-                           .arg(QDir::toNativeSeparators(_workspace->root())));
+        setWindowTitle(QString::fromUtf8("%1 — %2")
+                           .arg(base, QDir::toNativeSeparators(_workspace->root())));
     else
-        setWindowTitle(QString::fromUtf8("dsagent"));
+        setWindowTitle(base);
 }
 
 //----------------------------------------------
@@ -3893,13 +3927,84 @@ void MainWindow::openTabByKey(const QString &key, bool makeCurrent)
 
 //----------------------------------------------
 
+void MainWindow::saveAppWindowLayout()
+{
+    AppSettings *settings = AppSettings::instance();
+    settings->setMainWindowLayout(saveGeometry(), saveState());
+    if (_projectDock && _graphThumbDock)
+    {
+        settings->setMainWindowDockSplit(_projectDock->width(),
+                                         _projectDock->height(),
+                                         _graphThumbDock->height());
+    }
+}
+
+//----------------------------------------------
+
+void MainWindow::restoreAppWindowLayout()
+{
+    if (_appWindowLayoutRestored)
+        return;
+    AppSettings *settings = AppSettings::instance();
+    QByteArray geometry = settings->mainWindowGeometry();
+    QByteArray state = settings->mainWindowState();
+    // Миграция: старые проекты хранили геометрию в ___project___/ui.json.
+    if (geometry.isEmpty() || state.isEmpty())
+    {
+        ProjectUiState legacy;
+        if (ChatStore::loadUiState(&legacy))
+        {
+            if (geometry.isEmpty())
+                geometry = legacy.geometry;
+            if (state.isEmpty())
+                state = legacy.windowState;
+            if (!geometry.isEmpty() || !state.isEmpty())
+                settings->setMainWindowLayout(geometry, state);
+        }
+    }
+    if (!geometry.isEmpty())
+        restoreGeometry(geometry);
+    if (!state.isEmpty())
+        restoreState(state);
+
+    // Явные размеры сплиттеров левой колонки (поверх restoreState).
+    if (_projectDock)
+    {
+        const int leftW = settings->leftDockWidth();
+        if (leftW > 40)
+        {
+            QList<QDockWidget *> docks;
+            docks << _projectDock;
+            QList<int> sizes;
+            sizes << leftW;
+            resizeDocks(docks, sizes, Qt::Horizontal);
+        }
+    }
+    if (_projectDock && _graphThumbDock)
+    {
+        const int projH = settings->projectDockHeight();
+        const int graphH = settings->graphThumbDockHeight();
+        if (projH > 40 && graphH > 40)
+        {
+            QList<QDockWidget *> docks;
+            docks << _projectDock << _graphThumbDock;
+            QList<int> sizes;
+            sizes << projH << graphH;
+            resizeDocks(docks, sizes, Qt::Vertical);
+        }
+    }
+    _appWindowLayoutRestored = true;
+}
+
+//----------------------------------------------
+
 void MainWindow::saveProjectUiState()
 {
+    saveAppWindowLayout();
     if (!hasOpenProject() || !_projectStoreEnabled)
         return;
     ProjectUiState ui;
-    ui.geometry = saveGeometry();
-    ui.windowState = saveState();
+    // Геометрия окна и доки — в настройках программы; в проекте только вкладки.
     if (_tabs)
     {
         for (int i = 0; i < _tabs->count(); ++i)
@@ -3919,12 +4024,10 @@ void MainWindow::saveProjectUiState()
 
 void MainWindow::restoreProjectUiState(bool preferJournalIfEmpty)
 {
+    restoreAppWindowLayout();
+
     ProjectUiState ui;
     const bool haveUi = ChatStore::loadUiState(&ui);
-    if (!ui.geometry.isEmpty())
-        restoreGeometry(ui.geometry);
-    if (!ui.windowState.isEmpty())
-        restoreState(ui.windowState);
 
     if (!haveUi || (ui.openTabs.isEmpty() && ui.activePage.isEmpty()))
     {
@@ -4314,6 +4417,9 @@ void MainWindow::applyAppStyle()
         _projectDock->applyTheme();
     if (_composerBar)
         _composerBar->applyTheme(panel, input, text, border, muted, accent);
+    if (_graphThumb)
+        _graphThumb->applyTheme(panel, text, border, muted);
+    updateGraphThumb();
 
     foreach (ChatSession *session, _sessions)
     {
@@ -4373,9 +4479,7 @@ void MainWindow::updateComposerState()
     if (!_composer || !_composerBar)
         return;
 
-    ChatSession *session = currentSession();
-    if (!session)
-        session = rootSession();
+    ChatSession *session = rootSession();
     Worker *worker = session ? session->worker() : 0;
     Agent *agent = session ? session->agent() : 0;
     const bool busy = agent && agent->isBusy();
@@ -4388,15 +4492,9 @@ void MainWindow::updateComposerState()
                   || worker->state() == WorkerStateWaitingContinuation;
     }
 
-    const bool isMedia = worker && _workers
-                         && workerTaskKindIsMediaExecutor(_workers->modalityOf(worker));
-    const bool isRoot = worker && worker->isRoot();
-    // В media-вкладку можно писать follow-up / brief; в корень — как раньше.
-    const bool targetOk = isRoot || isMedia;
-    const bool canSend = hasOpenProject() && session && targetOk && !_resetting
-                         && !busy && !waiting;
+    const bool canSend = hasOpenProject() && session && !_resetting && !busy && !waiting;
     const bool active = anyWorkActive();
-    const bool composerOn = hasOpenProject() && session && !_resetting;
+    const bool composerOn = hasOpenProject() && !_resetting;
     _composerBar->setReadOnly(!canSend);
     _composerBar->setComposerEnabled(composerOn);
     _composerBar->setSendEnabled(canSend);
@@ -4430,19 +4528,14 @@ void MainWindow::updateComposerState()
     if (!hasOpenProject())
         _composerBar->setPlaceholder(tr("Откройте или создайте проект"));
     else if (!session)
-        _composerBar->setPlaceholder(tr("Нет чата"));
-    else if (!targetOk)
-        _composerBar->setPlaceholder(
-            tr("Переключитесь на главный чат или media-воркера для ввода"));
+        _composerBar->setPlaceholder(tr("Нет главного менеджера — отправка создаст чат"));
     else if (!canSend)
         _composerBar->setPlaceholder(
-            tr("Чат занят: ожидание модели или дочерних воркеров…"));
-    else if (isMedia)
-        _composerBar->setPlaceholder(
-            tr("Запрос media-воркеру… Enter — отправить, можно перетащить файлы"));
+            tr("Главный менеджер занят: ожидание модели или дочерних воркеров…"));
     else
         _composerBar->setPlaceholder(
-            tr("Сообщение… Enter — отправить, Shift+Enter — строка, перетащите файлы сюда"));
+            tr("Сообщение главному менеджеру… Enter — отправить, Shift+Enter — строка, "
+               "перетащите файлы сюда"));
 }
 
 //----------------------------------------------

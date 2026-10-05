@@ -7,6 +7,7 @@
 //----------------------------------------------
 #include <QAbstractTextDocumentLayout>
 #include <QColor>
+#include <QDesktopServices>
 #include <QEvent>
 #include <QFont>
 #include <QCursor>
@@ -26,6 +27,7 @@
 #include <QTextDocument>
 #include <QTextEdit>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QtGlobal>
 #include <QtMath>
@@ -107,13 +109,21 @@ QColor AuthorBadge::colorFor(QString authorKey)
 
 //----------------------------------------------
 
-QString AuthorBadge::titleHtml(QString title, QString authorKey)
+QString AuthorBadge::titleHtml(QString title, QString authorKey, QString linkUrl)
 {
     const QString shown = title.trimmed().isEmpty() ? QString::fromUtf8("?") : title.trimmed();
     const QColor color = colorFor(authorKey.isEmpty() ? shown : authorKey);
+    const QString escaped = MarkdownFormatter::escapeHtml(shown);
+    if (linkUrl.trimmed().isEmpty())
+    {
+        return QString::fromUtf8(
+                   "<span style=\"font-weight:700; color:%1;\">%2</span>")
+            .arg(color.name(), escaped);
+    }
     return QString::fromUtf8(
-               "<span style=\"font-weight:700; color:%1;\">%2</span>")
-        .arg(color.name(), MarkdownFormatter::escapeHtml(shown));
+               "<a href=\"%1\" style=\"font-weight:700; color:%2; "
+               "text-decoration:underline;\">%3</a>")
+        .arg(MarkdownFormatter::escapeHtml(linkUrl.trimmed()), color.name(), escaped);
 }
 
 //----------------------------------------------
@@ -124,6 +134,7 @@ ChatMessageFrame::ChatMessageFrame(QString title, QString html, QString preview,
     : QFrame(parent)
     , _title(title)
     , _authorKey(authorKey.trimmed().isEmpty() ? title : authorKey)
+    , _titleLink()
     , _bodyHtml(html)
     , _preview(firstPhrase(preview))
     , _view(new QTextBrowser(this))
@@ -145,13 +156,15 @@ ChatMessageFrame::ChatMessageFrame(QString title, QString html, QString preview,
     connect(_toggle, SIGNAL(clicked()), this, SLOT(sltToggle()));
 
     _view->setFrameShape(QFrame::NoFrame);
-    _view->setOpenExternalLinks(true);
+    _view->setOpenExternalLinks(false);
+    _view->setOpenLinks(false);
     _view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     _view->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     _view->setUndoRedoEnabled(false);
     _view->setLineWrapMode(QTextEdit::WidgetWidth);
     _view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
     _view->document()->setDocumentMargin(2);
+    connect(_view, SIGNAL(anchorClicked(QUrl)), this, SLOT(sltAnchorClicked(QUrl)));
     applyTheme();
 
     QHBoxLayout *inner = new QHBoxLayout();
@@ -212,7 +225,32 @@ void ChatMessageFrame::applyTheme()
 
 QString ChatMessageFrame::titleBadgeHtml() const
 {
-    return AuthorBadge::titleHtml(_title, _authorKey);
+    return AuthorBadge::titleHtml(_title, _authorKey, _titleLink);
+}
+
+//----------------------------------------------
+
+void ChatMessageFrame::setTitleLink(QString url)
+{
+    const QString next = url.trimmed();
+    if (_titleLink == next)
+        return;
+    _titleLink = next;
+    applyCollapsed();
+}
+
+//----------------------------------------------
+
+void ChatMessageFrame::sltAnchorClicked(const QUrl &url)
+{
+    if (!url.isValid())
+        return;
+    if (url.scheme() == QString::fromUtf8("unique-worker"))
+    {
+        emit linkActivated(url);
+        return;
+    }
+    QDesktopServices::openUrl(url);
 }
 
 //----------------------------------------------
@@ -617,7 +655,9 @@ void ConversationWidget::clearMessages()
             QLayoutItem *item = _messagesLayout->itemAt(i);
             if (!item || !item->widget())
                 continue;
-            if (item->widget() == _liveActionLine)
+            // Только пузыри сообщений: служебные строки (чат / журнал)
+            // и растяжка layout трогать нельзя.
+            if (!qobject_cast<ChatMessageFrame *>(item->widget()))
                 continue;
             _messagesLayout->takeAt(i);
             item->widget()->deleteLater();
@@ -1479,15 +1519,15 @@ void ConversationWidget::trimOldBubbles()
 {
     if (!_messagesLayout)
         return;
-    // В layout есть растяжка без виджета — её пропускаем, удаляем самый
-    // старый пузырь (первый элемент с виджетом).
+    // В layout есть растяжка и служебные строки — удаляем только
+    // самый старый пузырь ChatMessageFrame.
     while (_messagesLayout->count() > kMaxVisibleBubbles + 2)
     {
         int index = -1;
         for (int i = 0; i < _messagesLayout->count(); ++i)
         {
             QLayoutItem *probe = _messagesLayout->itemAt(i);
-            if (probe && probe->widget() && probe->widget() != _liveActionLine)
+            if (probe && qobject_cast<ChatMessageFrame *>(probe->widget()))
             {
                 index = i;
                 break;
@@ -1540,6 +1580,7 @@ QWidget *ConversationWidget::addBubble(QString title, QString html, QString prev
     ChatMessageFrame *frame = new ChatMessageFrame(title, html, preview, objectName,
                                                    alignRight, collapsed, _messagesHost,
                                                    authorKey);
+    connect(frame, SIGNAL(linkActivated(QUrl)), this, SIGNAL(messageLinkActivated(QUrl)));
     _messagesLayout->addWidget(frame, 0, Qt::AlignTop);
     ensureLiveActionAtEnd();
     trimOldBubbles();

@@ -8,6 +8,7 @@
 #include <QFrame>
 #include <QList>
 #include <QString>
+#include <QUrl>
 #include <QWidget>
 
 class Agent;
@@ -35,6 +36,10 @@ public:
                      QWidget *parent = 0, QString authorKey = QString());
     void applyTheme();
     /**
+     * @brief Ссылка в заголовке (например unique-worker:&lt;id&gt;).
+     */
+    void setTitleLink(QString url);
+    /**
      * @brief Добавить абзац (экранированный текст) в уже существующее сообщение.
      */
     void appendEscapedParagraph(QString text);
@@ -43,12 +48,16 @@ public:
      */
     void appendHtmlParagraph(QString html, QString previewSource);
 
+signals:
+    void linkActivated(const QUrl &url);
+
 protected:
     virtual void resizeEvent(QResizeEvent *event);
 
 private slots:
     void sltToggle();
     void sltFitDocumentHeight();
+    void sltAnchorClicked(const QUrl &url);
 
 private:
     void applyCollapsed();
@@ -59,6 +68,7 @@ private:
 
     QString      _title;
     QString      _authorKey;
+    QString      _titleLink;
     QString      _bodyHtml;
     QString      _preview;
     QTextBrowser *_view;
@@ -79,7 +89,8 @@ namespace AuthorBadge
 {
 QString normalizeKey(QString author);
 QColor colorFor(QString authorKey);
-QString titleHtml(QString title, QString authorKey = QString());
+QString titleHtml(QString title, QString authorKey = QString(),
+                  QString linkUrl = QString());
 }
 
 //----------------------------------------------
@@ -147,6 +158,7 @@ signals:
     void permissionAnswered(bool approved, bool always, const QString &comment);
     void continuationAnswered(bool retry);
     void subtreeBudgetAnswered(bool granted);
+    void messageLinkActivated(const QUrl &url);
 
 public slots:
     void retranslateUi();
