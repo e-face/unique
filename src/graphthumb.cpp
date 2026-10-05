@@ -27,7 +27,7 @@ GraphThumb::GraphThumb(QWidget *parent)
     _preview->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
     QVBoxLayout *lay = new QVBoxLayout(this);
-    lay->setContentsMargins(8, 8, 8, 8);
+    lay->setContentsMargins(12, 12, 12, 12);
     lay->addWidget(_preview, 1);
 
     applyTheme(QString::fromUtf8("#ffffff"), QString::fromUtf8("#222222"),
@@ -67,9 +67,9 @@ void GraphThumb::applyTheme(QString panel, QString text, QString border, QString
     _fill = panel;
     _border = border;
     setStyleSheet(QString::fromUtf8(
-        "QFrame#graphThumb { background:%1; border:none; }"
-        "QLabel { color:%2; background:transparent; border:none; font-size:11px; }")
-                      .arg(panel, muted.isEmpty() ? text : muted));
+        "QFrame#graphThumb { background:transparent; border:none; }"
+        "QLabel { color:%1; background:transparent; border:none; font-size:11px; }")
+                      .arg(muted.isEmpty() ? text : muted));
     update();
 }
 

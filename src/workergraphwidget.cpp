@@ -228,14 +228,15 @@ WorkerGraphWidget::WorkerGraphWidget(QWidget *parent)
 
 void WorkerGraphWidget::applyTheme()
 {
-    // Тот же фон, что у страниц чатов (панель), без рамки QGraphicsView,
-    // чтобы вкладка «Команда» не отличалась оттенком от остальных.
-    const QColor panel = AppSettings::instance()->panelColor();
-    _scene->setBackgroundBrush(QBrush(panel));
-    setBackgroundBrush(QBrush(panel));
+    // Тот же фон, что у окна/ленты чата — без ступеньки яркости на вкладке.
+    const QColor bg = AppSettings::instance()->isLightTheme()
+                      ? AppSettings::instance()->windowColor()
+                      : AppSettings::instance()->panelColor();
+    _scene->setBackgroundBrush(QBrush(bg));
+    setBackgroundBrush(QBrush(bg));
     QPalette pal = viewport()->palette();
-    pal.setColor(QPalette::Base, panel);
-    pal.setColor(QPalette::Window, panel);
+    pal.setColor(QPalette::Base, bg);
+    pal.setColor(QPalette::Window, bg);
     viewport()->setPalette(pal);
     viewport()->setAutoFillBackground(true);
 }

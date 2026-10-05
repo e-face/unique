@@ -1,4 +1,4 @@
-#include "mainwindow.h"
+﻿#include "mainwindow.h"
 //----------------------------------------------
 #include "agent.h"
 #include "applocale.h"
@@ -196,7 +196,7 @@ public:
             if (_permission.contains(i))
                 setTabTextColor(i, QColor(250, 250, 250));
             else
-                setTabTextColor(i, QColor(210, 210, 210));
+                setTabTextColor(i, AppSettings::instance()->textColor());
         }
         update();
     }
@@ -218,24 +218,35 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing, true);
 
         AppSettings *s = AppSettings::instance();
-        const QColor tabBg = s->toolbarColor();
-        const QColor tabActive = tabBg.lighter(118);
+        const QColor border = s->borderColor();
+        const QColor win = s->windowColor();
+        const QColor panel = s->panelColor();
         const QColor textColor = s->textColor();
+        const QColor muted = s->mutedTextColor();
 
         for (int i = 0; i < count(); ++i)
         {
-            const QRect r = tabRect(i).adjusted(1, 1, -2, 0);
-            QColor bg = (i == currentIndex()) ? tabActive : tabBg;
+            const QRect r = tabRect(i).adjusted(1, 2, -1, 0);
+            const bool active = (i == currentIndex());
+            QColor bg = active ? panel : win;
             if (_permission.contains(i))
                 bg = QColor(199, 93, 66, 235);
-            painter.setPen(Qt::NoPen);
+            painter.setPen(QPen(border, 1));
             painter.setBrush(bg);
-            painter.drawRoundedRect(r, 4, 4);
+            painter.drawRoundedRect(r, 8, 8);
+            if (active && !_permission.contains(i))
+            {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(panel);
+                painter.drawRect(r.adjusted(1, r.height() / 2, -1, 1));
+            }
 
-            const QRect textRect = tabRect(i).adjusted(8, 0, -22, 0);
+            const QRect textRect = tabRect(i).adjusted(10, 0, -24, 0);
             const QString shown = fontMetrics().elidedText(tabText(i), Qt::ElideRight,
                                                           qMax(8, textRect.width()));
-            painter.setPen(_permission.contains(i) ? QColor(250, 250, 250) : textColor);
+            painter.setPen(_permission.contains(i)
+                               ? QColor(250, 250, 250)
+                               : (active ? textColor : muted));
             painter.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, shown);
         }
 
@@ -243,13 +254,13 @@ protected:
             return;
         const int alpha = _blinkOn ? 210 : 75;
         painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(QColor(130, 205, 140, alpha), 1.8));
+        painter.setPen(QPen(QColor(34, 197, 94, alpha), 1.6));
         foreach (int index, _busy)
         {
             if (index < 0 || index >= count())
                 continue;
-            const QRect r = tabRect(index).adjusted(2, 2, -3, -1);
-            painter.drawRoundedRect(r, 4, 4);
+            const QRect r = tabRect(index).adjusted(2, 3, -2, 1);
+            painter.drawRoundedRect(r, 8, 8);
         }
     }
 
@@ -3034,7 +3045,10 @@ void MainWindow::setupUi()
             this, SLOT(sltComposerFilesDropped(QStringList)));
 
     QVBoxLayout *root = new QVBoxLayout(central);
-    root->setContentsMargins(6, 6, 6, 6);
+    // Единый визуальный шаг между доками / вкладками / композером.
+    const int gap = 12;
+    root->setContentsMargins(gap, gap, gap, gap);
+    root->setSpacing(gap);
     root->addWidget(_tabs, 1);
     root->addWidget(_composerBar);
 
@@ -4342,76 +4356,96 @@ void MainWindow::applyAppStyle()
     const QString panel = s->panelColor().name();
     const QString accent = s->accentColor().name();
     const QString input = s->inputColor().name();
-    const QString bar = s->toolbarColor().name();
     const QString border = s->borderColor().name();
     const QString muted = s->mutedTextColor().name();
     const QString select = s->selectionColor().name();
     const QString scroll = s->scrollbarColor().name();
-    const QString tabSel = s->isLightTheme() ? panel : QColor(bar).lighter(118).name();
+    const QString hover = s->isLightTheme()
+                          ? QColor(s->windowColor()).darker(104).name()
+                          : QColor(s->toolbarColor()).lighter(118).name();
 
     setStyleSheet(QString::fromUtf8(
         "QMainWindow { background:%1; color:%2; }"
-        "QMenuBar { background:%6; color:%2; border-bottom:1px solid %8; }"
-        "QMenuBar::item:selected { background:%3; }"
-        "QMenu { background:%3; color:%2; border:1px solid %8; }"
-        "QMenu::item:selected { background:%9; }"
-        "QStatusBar { background:%6; color:%2; border-top:1px solid %8; }"
-        "QToolBar { background:%6; border:1px solid %8; spacing:4px; padding:2px 6px; }"
-        "QToolButton { background:transparent; color:%2; border:none; padding:4px; }"
-        "QToolButton:hover { background:%3; border-radius:4px; }"
+        "QMainWindow::separator { background:%6; width:1px; height:1px; }"
+        "QMenuBar { background:%1; color:%2; border:none;"
+        "  border-bottom:1px solid %6; padding:2px 6px; }"
+        "QMenuBar::item { background:transparent; padding:6px 10px; border-radius:6px; }"
+        "QMenuBar::item:selected { background:%HOVER%; }"
+        "QMenu { background:%3; color:%2; border:1px solid %6; border-radius:8px;"
+        "  padding:6px; }"
+        "QMenu::item { padding:7px 28px 7px 12px; border-radius:6px; }"
+        "QMenu::item:selected { background:%7; }"
+        "QMenu::separator { height:1px; background:%6; margin:6px 8px; }"
+        "QStatusBar { background:%1; color:%MUTED%; border:none;"
+        "  border-top:1px solid %6; }"
+        "QToolBar { background:%1; border:none; border-bottom:1px solid %6;"
+        "  spacing:4px; padding:4px 8px; }"
+        "QToolBar::separator { background:%6; width:1px; margin:6px 4px; }"
+        "QToolButton { background:transparent; color:%2; border:none;"
+        "  padding:6px; border-radius:8px; }"
+        "QToolButton:hover { background:%HOVER%; }"
+        "QToolButton:pressed { background:%7; }"
         "QToolButton:disabled { color:%MUTED%; }"
-        "QDockWidget { titlebar-close-icon: url(none); color:%2; }"
-        "QDockWidget::title { background:%6; padding:5px; border:1px solid %8; }"
-        "QTreeView { background:%3; color:%2; alternate-background-color:%6;"
-        "  border:none; }"
+        "QDockWidget { color:%2; border:none; titlebar-close-icon: url(none); }"
+        "QDockWidget::title { background:%1; color:%2; padding:8px 12px;"
+        "  border:none; border-bottom:1px solid %6; }"
+        "QTreeView { background:%3; color:%2; alternate-background-color:%1;"
+        "  border:none; outline:none; }"
         "QTreeView::branch { background:transparent; image:none; border-image:none; }"
-        "QTreeView::item { color:%2; }"
-        "QTreeView::item:selected { background:%9; color:%2; }"
-        "QListWidget { background:%3; color:%2; border:1px solid %8; }"
-        "QListWidget::item:selected { background:%9; color:%2; }"
-        "QGroupBox { color:%2; border:1px solid %8; border-radius:4px;"
-        "  margin-top:12px; padding-top:8px; }"
-        "QGroupBox::title { subcontrol-origin: margin; left:10px; padding:0 4px; }"
+        "QTreeView::item { color:%2; padding:3px 4px; border-radius:6px; }"
+        "QTreeView::item:selected { background:%7; color:%2; }"
+        "QTreeView::item:hover { background:%HOVER%; }"
+        "QListWidget { background:%3; color:%2; border:1px solid %6; border-radius:8px; }"
+        "QListWidget::item { padding:4px 6px; border-radius:6px; }"
+        "QListWidget::item:selected { background:%7; color:%2; }"
+        "QGroupBox { color:%2; border:1px solid %6; border-radius:8px;"
+        "  margin-top:14px; padding-top:10px; background:%3; }"
+        "QGroupBox::title { subcontrol-origin: margin; left:12px; padding:0 6px; }"
         "QLabel { color:%2; }"
-        "QLineEdit, QComboBox, QPlainTextEdit, QSpinBox {"
-        "  background:%5; color:%2; border:1px solid %8;"
-        "  border-radius:4px; padding:4px 6px; selection-background-color:%9; }"
-        "QComboBox::drop-down { border:none; }"
-        "QPushButton { background:%3; color:%2; border:1px solid %8;"
-        "  border-radius:4px; padding:5px 12px; }"
-        "QPushButton:hover { background:%6; }"
-        "QPushButton:pressed { background:%9; }"
+        "QLineEdit, QComboBox, QPlainTextEdit, QSpinBox, QTextEdit {"
+        "  background:%5; color:%2; border:1px solid %6;"
+        "  border-radius:8px; padding:6px 8px; selection-background-color:%7; }"
+        "QComboBox::drop-down { border:none; width:22px; }"
+        "QComboBox QAbstractItemView { background:%3; color:%2; border:1px solid %6;"
+        "  border-radius:8px; selection-background-color:%7; }"
+        "QPushButton { background:%3; color:%2; border:1px solid %6;"
+        "  border-radius:8px; padding:6px 14px; }"
+        "QPushButton:hover { background:%HOVER%; }"
+        "QPushButton:pressed { background:%7; }"
         "QPushButton:disabled { color:%MUTED%; }"
-        "QCheckBox { color:%2; spacing:6px; }"
-        "QTabWidget::pane { border:none; background:%3; top:-1px; }"
-        "QTabBar { background:%1; }"
-        "QTabBar::tab { background:%6; color:%2; padding:7px 10px 7px 10px;"
-        "  border:1px solid %8; margin-right:2px; }"
-        "QTabBar::tab:selected { background:%7; color:%2;"
-        "  border:1px solid %8; border-bottom:2px solid %4; }"
+        "QCheckBox { color:%2; spacing:8px; }"
+        "QTabWidget::pane { border:1px solid %6; border-radius:10px;"
+        "  background:%3; top:-1px; margin-top:-1px; }"
+        "QTabBar { background:transparent; }"
+        "QTabBar::tab { background:transparent; color:%MUTED%;"
+        "  padding:8px 14px 8px 12px; border:none; margin-right:4px; min-height:22px; }"
+        "QTabBar::tab:selected { color:%2; }"
         "QTabBar::tab:hover { color:%2; }"
         "QTabBar::close-button { margin-left:4px; }"
-        "QScrollBar:vertical { background:%3; width:10px; margin:0; }"
-        "QScrollBar::handle:vertical { background:%SCROLL%; min-height:24px; border-radius:4px; }"
+        "QScrollBar:vertical { background:transparent; width:10px; margin:2px; }"
+        "QScrollBar::handle:vertical { background:%SCROLL%; min-height:24px;"
+        "  border-radius:5px; }"
         "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
-        "QScrollBar:horizontal { background:%3; height:10px; }"
-        "QScrollBar::handle:horizontal { background:%SCROLL%; min-width:24px; border-radius:4px; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:none; }"
+        "QScrollBar:horizontal { background:transparent; height:10px; margin:2px; }"
+        "QScrollBar::handle:horizontal { background:%SCROLL%; min-width:24px;"
+        "  border-radius:5px; }"
+        "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width:0; }"
         "QDialog, QMessageBox { background:%3; color:%2; }"
         "QMessageBox QLabel { color:%2; }"
-        "QProgressBar { background:%5; color:%2; border:1px solid %8;"
-        "  border-radius:4px; text-align:center; max-height:14px; }"
-        "QProgressBar::chunk { background:%4; }")
+        "QProgressBar { background:%5; color:%2; border:1px solid %6;"
+        "  border-radius:6px; text-align:center; max-height:14px; }"
+        "QProgressBar::chunk { background:%4; border-radius:5px; }")
                       .arg(win)
                       .arg(text)
                       .arg(panel)
                       .arg(accent)
                       .arg(input)
-                      .arg(bar)
-                      .arg(tabSel)
                       .arg(border)
                       .arg(select)
                       .replace(QString::fromUtf8("%MUTED%"), muted)
-                      .replace(QString::fromUtf8("%SCROLL%"), scroll));
+                      .replace(QString::fromUtf8("%SCROLL%"), scroll)
+                      .replace(QString::fromUtf8("%HOVER%"), hover));
 
     if (_projectDock)
         _projectDock->applyTheme();
@@ -4419,6 +4453,10 @@ void MainWindow::applyAppStyle()
         _composerBar->applyTheme(panel, input, text, border, muted, accent);
     if (_graphThumb)
         _graphThumb->applyTheme(panel, text, border, muted);
+    if (_graph)
+        _graph->applyTheme();
+    if (_journal)
+        _journal->applyTheme();
     updateGraphThumb();
 
     foreach (ChatSession *session, _sessions)

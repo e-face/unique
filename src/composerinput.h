@@ -8,6 +8,7 @@
 #include <QString>
 #include <QStringList>
 
+class QEvent;
 class QHBoxLayout;
 class QLabel;
 class QPlainTextEdit;
@@ -52,6 +53,7 @@ signals:
     void filesDropped(const QStringList &absolutePaths);
 
 protected:
+    virtual bool eventFilter(QObject *watched, QEvent *event);
     virtual void dragEnterEvent(QDragEnterEvent *event);
     virtual void dragMoveEvent(QDragMoveEvent *event);
     virtual void dragLeaveEvent(QDragLeaveEvent *event);
@@ -66,6 +68,8 @@ private:
     bool acceptDrop(const QMimeData *mime) const;
     QStringList absolutePathsFromMime(const QMimeData *mime) const;
     void updateAttachStripVisible();
+    void setDropHighlight(bool on);
+    bool handleChildDrag(QEvent *event);
 
     QWidget        *_attachHost;
     QHBoxLayout    *_attachLayout;

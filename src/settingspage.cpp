@@ -115,7 +115,7 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     QWidget *host = new QWidget(this);
     QVBoxLayout *root = new QVBoxLayout(host);
     root->setContentsMargins(16, 16, 16, 16);
-    root->setSpacing(14);
+    root->setSpacing(12);
     root->addWidget(buildHintBox());
     if (_kind == SettingsKindDefaults)
         root->addWidget(buildLanguageBox());

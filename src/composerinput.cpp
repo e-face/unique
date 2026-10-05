@@ -4,6 +4,7 @@
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -15,7 +16,9 @@
 #include <QScrollArea>
 #include <QStyleOption>
 #include <QToolButton>
+#include <QRegExp>
 #include <QUrl>
+#include <QVariant>
 #include <QVBoxLayout>
 #include <QtGlobal>
 
@@ -88,7 +91,17 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         QPainterPath path;
         path.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10);
-        p.fillPath(path, QColor(245, 245, 245));
+        QColor fill = QColor(245, 245, 245);
+        QWidget *bar = parentWidget();
+        while (bar && bar->objectName() != QString::fromUtf8("composerInput"))
+            bar = bar->parentWidget();
+        if (bar)
+        {
+            const QVariant v = bar->property("chipFill");
+            if (v.isValid())
+                fill = QColor(v.toString());
+        }
+        p.fillPath(path, fill);
         p.setPen(QPen(QColor(210, 210, 210), 1));
         p.drawPath(path);
     }
@@ -126,10 +139,15 @@ ComposerInput::ComposerInput(QWidget *parent)
     _attachScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     _attachScroll->setFixedHeight(76);
     _attachScroll->setFrameShape(QFrame::NoFrame);
-    _attachScroll->setStyleSheet(QString::fromUtf8(
-        "QScrollArea { background:transparent; border:none; }"));
+    _attachScroll->setAcceptDrops(false);
+    _attachScroll->setObjectName(QString::fromUtf8("composerAttachScroll"));
+    if (_attachScroll->viewport())
+        _attachScroll->viewport()->setAutoFillBackground(true);
 
     _attachHost = new QWidget(_attachScroll);
+    _attachHost->setObjectName(QString::fromUtf8("composerAttachHost"));
+    _attachHost->setAcceptDrops(false);
+    _attachHost->setAutoFillBackground(true);
     _attachLayout = new QHBoxLayout(_attachHost);
     _attachLayout->setContentsMargins(4, 4, 4, 0);
     _attachLayout->setSpacing(8);
@@ -145,6 +163,11 @@ ComposerInput::ComposerInput(QWidget *parent)
     _editor->setTabChangesFocus(false);
     _editor->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     _editor->viewport()->setAutoFillBackground(false);
+    // Иначе Qt вставляет пути файлов текстом вместо наших чипов.
+    _editor->setAcceptDrops(false);
+    _editor->viewport()->setAcceptDrops(false);
+    _editor->installEventFilter(this);
+    _editor->viewport()->installEventFilter(this);
 
     _plusButton = new QToolButton(this);
     _plusButton->setObjectName(QString::fromUtf8("composerPlus"));
@@ -185,8 +208,8 @@ ComposerInput::ComposerInput(QWidget *parent)
     toolbar->addWidget(_sendButton, 0, Qt::AlignVCenter);
 
     QVBoxLayout *root = new QVBoxLayout(this);
-    root->setContentsMargins(10, 10, 10, 8);
-    root->setSpacing(4);
+    root->setContentsMargins(12, 12, 12, 10);
+    root->setSpacing(6);
     root->addWidget(_attachScroll);
     root->addWidget(_editor, 1);
     root->addLayout(toolbar);
@@ -293,11 +316,16 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
                                QString muted, QString accent)
 {
     Q_UNUSED(panel);
+    const QString hover = QColor(muted).lighter(170).name();
     setStyleSheet(QString::fromUtf8(
         "QFrame#composerInput {"
-        "  background:%1; border:1px solid %2; border-radius:18px; }"
+        "  background:%1; border:1px solid %2; border-radius:16px; }"
+        "QScrollArea#composerAttachScroll,"
+        "QScrollArea#composerAttachScroll > QWidget > QWidget,"
+        "QWidget#composerAttachHost {"
+        "  background:%1; border:none; }"
         "QPlainTextEdit#composerEditor {"
-        "  background:transparent; color:%3; border:none; padding:2px 4px;"
+        "  background:%1; color:%3; border:none; padding:4px 6px;"
         "  selection-background-color:%4; }"
         "QLabel#composerCapsHint { color:%5; background:transparent; border:none; }"
         "QToolButton#composerPlus {"
@@ -306,18 +334,19 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
         "QToolButton#composerPlus:hover { background:%6; }"
         "QToolButton#composerPlus:disabled { color:%5; }"
         "QPushButton#composerSend {"
-        "  background:%3; color:%1; border:none; border-radius:18px;"
+        "  background:%3; color:%1; border:none; border-radius:16px;"
         "  font-size:16px; font-weight:bold; padding:0; }"
         "QPushButton#composerSend:hover { background:%4; }"
         "QPushButton#composerSend:disabled { background:%5; color:%1; }"
         "QPushButton#composerStop {"
-        "  background:transparent; color:%3; border:1px solid %2; border-radius:14px;"
+        "  background:transparent; color:%3; border:1px solid %2; border-radius:12px;"
         "  padding:4px 10px; }"
         "QPushButton#composerStop:hover { background:%6; }"
         "QPushButton#composerStop:disabled { color:%5; border-color:%5; }"
         "QFrame#composerChip { background:transparent; border:none; }")
-                      .arg(input, border, text, accent, muted,
-                           QColor(muted).lighter(160).name()));
+                      .arg(input, border, text, accent, muted, hover));
+    // Чипы: заливка как у поля ввода, чтобы полоса вложений не отличалась.
+    setProperty("chipFill", input);
     update();
 }
 
@@ -376,17 +405,7 @@ bool ComposerInput::acceptDrop(const QMimeData *mime) const
 {
     if (!mime || !isEnabled())
         return false;
-    if (!mime->hasUrls())
-        return false;
-    foreach (const QUrl &url, mime->urls())
-    {
-        if (!url.isLocalFile())
-            continue;
-        const QString path = url.toLocalFile();
-        if (QFileInfo(path).isFile())
-            return true;
-    }
-    return false;
+    return !absolutePathsFromMime(mime).isEmpty();
 }
 
 //----------------------------------------------
@@ -396,15 +415,104 @@ QStringList ComposerInput::absolutePathsFromMime(const QMimeData *mime) const
     QStringList out;
     if (!mime)
         return out;
-    foreach (const QUrl &url, mime->urls())
+    if (mime->hasUrls())
     {
-        if (!url.isLocalFile())
-            continue;
-        const QString path = QFileInfo(url.toLocalFile()).absoluteFilePath();
-        if (QFileInfo(path).isFile() && !out.contains(path))
-            out.append(path);
+        foreach (const QUrl &url, mime->urls())
+        {
+            if (!url.isLocalFile())
+                continue;
+            const QString path = QFileInfo(url.toLocalFile()).absoluteFilePath();
+            if (QFileInfo(path).isFile() && !out.contains(path))
+                out.append(path);
+        }
+    }
+    // Некоторые источники (в т.ч. текст из проводника) отдают только пути строкой.
+    if (out.isEmpty() && mime->hasText())
+    {
+        const QStringList lines = mime->text().split(QRegExp(QString::fromUtf8("[\\r\\n]+")),
+                                                     QString::SkipEmptyParts);
+        foreach (QString line, lines)
+        {
+            line = line.trimmed();
+            if (line.startsWith(QString::fromUtf8("file:///"), Qt::CaseInsensitive))
+                line = QUrl(line).toLocalFile();
+            line.replace(QChar('"'), QString());
+            const QString path = QFileInfo(line).absoluteFilePath();
+            if (QFileInfo(path).isFile() && !out.contains(path))
+                out.append(path);
+        }
     }
     return out;
+}
+
+//----------------------------------------------
+
+void ComposerInput::setDropHighlight(bool on)
+{
+    if (_dropHighlight == on)
+        return;
+    _dropHighlight = on;
+    update();
+}
+
+//----------------------------------------------
+
+bool ComposerInput::handleChildDrag(QEvent *event)
+{
+    if (!event)
+        return false;
+    if (event->type() == QEvent::DragEnter)
+    {
+        QDragEnterEvent *e = static_cast<QDragEnterEvent *>(event);
+        if (acceptDrop(e->mimeData()))
+        {
+            e->acceptProposedAction();
+            setDropHighlight(true);
+            return true;
+        }
+    }
+    else if (event->type() == QEvent::DragMove)
+    {
+        QDragMoveEvent *e = static_cast<QDragMoveEvent *>(event);
+        if (acceptDrop(e->mimeData()))
+        {
+            e->acceptProposedAction();
+            setDropHighlight(true);
+            return true;
+        }
+    }
+    else if (event->type() == QEvent::DragLeave)
+    {
+        setDropHighlight(false);
+        event->accept();
+        return true;
+    }
+    else if (event->type() == QEvent::Drop)
+    {
+        QDropEvent *e = static_cast<QDropEvent *>(event);
+        setDropHighlight(false);
+        if (acceptDrop(e->mimeData()))
+        {
+            const QStringList paths = absolutePathsFromMime(e->mimeData());
+            e->acceptProposedAction();
+            if (!paths.isEmpty())
+                emit filesDropped(paths);
+            return true;
+        }
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+bool ComposerInput::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == _editor || (_editor && watched == _editor->viewport()))
+    {
+        if (handleChildDrag(event))
+            return true;
+    }
+    return QFrame::eventFilter(watched, event);
 }
 
 //----------------------------------------------
@@ -414,8 +522,7 @@ void ComposerInput::dragEnterEvent(QDragEnterEvent *event)
     if (event && acceptDrop(event->mimeData()))
     {
         event->acceptProposedAction();
-        _dropHighlight = true;
-        update();
+        setDropHighlight(true);
         return;
     }
     QFrame::dragEnterEvent(event);
@@ -428,6 +535,7 @@ void ComposerInput::dragMoveEvent(QDragMoveEvent *event)
     if (event && acceptDrop(event->mimeData()))
     {
         event->acceptProposedAction();
+        setDropHighlight(true);
         return;
     }
     QFrame::dragMoveEvent(event);
@@ -437,8 +545,7 @@ void ComposerInput::dragMoveEvent(QDragMoveEvent *event)
 
 void ComposerInput::dragLeaveEvent(QDragLeaveEvent *event)
 {
-    _dropHighlight = false;
-    update();
+    setDropHighlight(false);
     QFrame::dragLeaveEvent(event);
 }
 
@@ -446,8 +553,7 @@ void ComposerInput::dragLeaveEvent(QDragLeaveEvent *event)
 
 void ComposerInput::dropEvent(QDropEvent *event)
 {
-    _dropHighlight = false;
-    update();
+    setDropHighlight(false);
     if (!event || !acceptDrop(event->mimeData()))
     {
         QFrame::dropEvent(event);

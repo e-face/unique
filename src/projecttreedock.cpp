@@ -731,10 +731,12 @@ void ProjectTreeDock::sltFlashTick()
 void ProjectTreeDock::applyTheme()
 {
     AppSettings *s = AppSettings::instance();
-    // В два раза светлее окна (V * 2 в HSV).
-    const QString treeBg = s->windowColor().lighter(200).name();
+    const QString treeBg = s->panelColor().name();
     const QString text = s->textColor().name();
     const QString select = s->selectionColor().name();
+    const QString hover = s->isLightTheme()
+                          ? QColor(s->windowColor()).darker(104).name()
+                          : select;
     if (_emptyLabel)
     {
         _emptyLabel->setStyleSheet(QString::fromUtf8(
@@ -745,11 +747,12 @@ void ProjectTreeDock::applyTheme()
         return;
     _tree->setStyleSheet(QString::fromUtf8(
         "QTreeView#projectTree { background:%1; color:%2; border:none; outline:none; }"
-        "QTreeView#projectTree::item { color:%2; background:transparent; }"
-        "QTreeView#projectTree::item:hover { background:%3; }"
+        "QTreeView#projectTree::item { color:%2; background:transparent;"
+        "  padding:2px 4px; border-radius:6px; }"
+        "QTreeView#projectTree::item:hover { background:%4; }"
         "QTreeView#projectTree::item:selected { background:%3; color:%2; }"
         "QTreeView#projectTree::branch { background:transparent; image:none; border-image:none; }")
-                             .arg(treeBg, text, select));
+                             .arg(treeBg, text, select, hover));
 }
 
 //----------------------------------------------

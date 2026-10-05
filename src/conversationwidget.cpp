@@ -168,7 +168,7 @@ ChatMessageFrame::ChatMessageFrame(QString title, QString html, QString preview,
     applyTheme();
 
     QHBoxLayout *inner = new QHBoxLayout();
-    inner->setContentsMargins(10, 6, 10, 6);
+    inner->setContentsMargins(12, 8, 12, 8);
     inner->setSpacing(6);
     inner->addWidget(_toggle, 0, Qt::AlignTop);
     inner->addWidget(_view, 1);
@@ -179,7 +179,7 @@ ChatMessageFrame::ChatMessageFrame(QString title, QString html, QString preview,
     bubble->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 
     QHBoxLayout *row = new QHBoxLayout(this);
-    row->setContentsMargins(8, 2, 8, 2);
+    row->setContentsMargins(0, 0, 0, 0);
     row->setSpacing(0);
     if (alignRight)
         row->addStretch(1);
@@ -431,6 +431,8 @@ ConversationWidget::ConversationWidget(QWidget *parent)
             this, SIGNAL(reportToParentRequested()));
 
     QHBoxLayout *contextRow = new QHBoxLayout();
+    contextRow->setContentsMargins(12, 10, 12, 8);
+    contextRow->setSpacing(8);
     contextRow->addWidget(_contextBar);
     contextRow->addWidget(_contextLabel, 1);
     contextRow->addWidget(_compactButton);
@@ -441,8 +443,8 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     _messagesHost->setObjectName(QString::fromUtf8("messagesHost"));
     _messagesHost->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     _messagesLayout = new QVBoxLayout(_messagesHost);
-    _messagesLayout->setContentsMargins(0, 0, 0, 0);
-    _messagesLayout->setSpacing(2);
+    _messagesLayout->setContentsMargins(12, 4, 12, 8);
+    _messagesLayout->setSpacing(8);
     _messagesLayout->addStretch(1);
 
     _liveActionLine = new QLabel(_messagesHost);
@@ -511,7 +513,8 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     permissionButtons->addWidget(_rejectButton);
 
     QVBoxLayout *permissionLayout = new QVBoxLayout();
-    permissionLayout->setContentsMargins(8, 8, 8, 8);
+    permissionLayout->setContentsMargins(12, 10, 12, 10);
+    permissionLayout->setSpacing(8);
     permissionLayout->addWidget(_permissionLabel);
     permissionLayout->addLayout(permissionButtons);
 
@@ -1061,12 +1064,12 @@ void ConversationWidget::applyTheme()
 {
     AppSettings *s = AppSettings::instance();
     const QString text = s->textColor().name();
-    // Фон ленты чата/журнала: чуть темнее панели (светлая тема — #f0f0f0).
+    // Фон ленты = окно: без «ступеньки» яркости относительно вкладок/доков.
     const QString chatBg = s->isLightTheme()
-                           ? QString::fromUtf8("#f0f0f0")
+                           ? s->windowColor().name()
                            : s->panelColor().darker(108).name();
     const QString bubble = s->isLightTheme()
-                           ? QString::fromUtf8("#f3f3f3")
+                           ? QString::fromUtf8("#f3f4f6")
                            : s->panelColor().lighter(114).name();
     const QString input = s->inputColor().name();
     const QString accent = s->accentColor().name();
@@ -1075,6 +1078,9 @@ void ConversationWidget::applyTheme()
     const QString other = s->chatOtherColor().name();
     const QString border = s->borderColor().name();
     const QString muted = s->mutedTextColor().name();
+    const QString hover = s->isLightTheme()
+                          ? QColor(s->windowColor()).darker(104).name()
+                          : bubble;
     const QString permBg = s->isLightTheme()
                            ? QString::fromUtf8("#fef2f2")
                            : QString::fromUtf8("#b44532");
@@ -1086,34 +1092,36 @@ void ConversationWidget::applyTheme()
                             : QString::fromUtf8("#8f3424");
     setStyleSheet(QString::fromUtf8(
         "ConversationWidget { background:%1; color:%2; }"
-        "QProgressBar { background:%3; border:none; border-radius:4px; }"
-        "QProgressBar::chunk { background:%4; border-radius:4px; }"
+        "QProgressBar { background:%3; border:none; border-radius:6px; }"
+        "QProgressBar::chunk { background:%4; border-radius:6px; }"
         "QScrollArea { background:%1; border:none; }"
         "QWidget#messagesHost { background:%1; }"
         "QFrame#userMsg QFrame#bubble { background:%6; border:1px solid %9;"
-        "  border-radius:10px; }"
+        "  border-radius:12px; }"
         "QFrame#assistantMsg QFrame#bubble { background:%7; border:1px solid %9;"
-        "  border-radius:8px; }"
+        "  border-radius:12px; }"
         "QFrame#toolMsg QFrame#bubble { background:%8; border:1px solid %9;"
-        "  border-radius:8px; }"
+        "  border-radius:10px; }"
         "QFrame#noticeMsg QFrame#bubble { background:%8; border:1px solid %9;"
-        "  border-radius:8px; }"
+        "  border-radius:10px; }"
         "QFrame#errorMsg QFrame#bubble { background:%8; border:1px solid %9;"
-        "  border-radius:8px; }"
-        "QWidget#permissionHost { background:%PERMBG%; border-top:2px solid %PERMBORDER%; }"
+        "  border-radius:10px; }"
+        "QWidget#permissionHost { background:%PERMBG%; border-top:1px solid %PERMBORDER%; }"
         "QWidget#permissionHost QLabel { color:%2; }"
         "QWidget#permissionHost QPushButton { background:%PERMBTN%; color:%2;"
-        "  border:1px solid %PERMBORDER%; }"
+        "  border:1px solid %PERMBORDER%; border-radius:8px; }"
         "QLabel { color:%2; background:transparent; }"
         "QTextBrowser { color:%2; background:transparent; border:none; }"
         "QPlainTextEdit { background:%5; color:%2; border:1px solid %9;"
-        "  border-radius:8px; padding:6px; }"
-        "QPushButton { background:%3; color:%2; border:1px solid %9;"
-        "  border-radius:4px; padding:5px 12px; }"
-        "QPushButton:hover { background:%5; }"
+        "  border-radius:10px; padding:8px; }"
+        "QPushButton { background:%PANEL%; color:%2; border:1px solid %9;"
+        "  border-radius:8px; padding:6px 14px; }"
+        "QPushButton:hover { background:%HOVER%; }"
         "QPushButton:disabled { color:%MUTED%; }")
                       .arg(chatBg, text, bubble, accent, input, user, assistant, other, border)
                       .replace(QString::fromUtf8("%MUTED%"), muted)
+                      .replace(QString::fromUtf8("%HOVER%"), hover)
+                      .replace(QString::fromUtf8("%PANEL%"), s->panelColor().name())
                       .replace(QString::fromUtf8("%PERMBG%"), permBg)
                       .replace(QString::fromUtf8("%PERMBORDER%"), permBorder)
                       .replace(QString::fromUtf8("%PERMBTN%"), permBtn));

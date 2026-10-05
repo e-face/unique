@@ -30,7 +30,7 @@ static const int kDefaultRoleContextCap[4]     = { 0, 32000, 16000, 16000 };
 static const int kMinRoleToolIterations        = 2;
 static const int kMaxRoleToolIterations        = 10000;
 static const int kMaxRoleContextCap            = 4000000;
-static const int kAppearanceVersion = 2;
+static const int kAppearanceVersion = 3;
 
 //----------------------------------------------
 
@@ -72,13 +72,13 @@ AppSettings::AppSettings(QObject *parent)
     : QObject(parent)
     , _projectOpen(false)
     , _fontPointSize(11)
-    , _textColor(QString::fromUtf8("#1f1f1f"))
-    , _windowColor(QString::fromUtf8("#f5f5f5"))
+    , _textColor(QString::fromUtf8("#1a1a1a"))
+    , _windowColor(QString::fromUtf8("#f7f7f8"))
     , _panelColor(QString::fromUtf8("#ffffff"))
-    , _accentColor(QString::fromUtf8("#2563eb"))
+    , _accentColor(QString::fromUtf8("#262626"))
     , _chatUserColor(QString::fromUtf8("#ffffff"))
     , _chatAssistantColor(QString::fromUtf8("#ffffff"))
-    , _chatOtherColor(QString::fromUtf8("#f3f3f3"))
+    , _chatOtherColor(QString::fromUtf8("#f3f4f6"))
     , _statsTimer(0)
     , _showForwardedContext(true)
     , _uiLanguage(QString::fromUtf8("ru"))
@@ -641,33 +641,33 @@ void AppSettings::load()
     else
     {
         _textColor = QColor(settings.value(QString::fromUtf8("ui/textColor"),
-                                           QString::fromUtf8("#1f1f1f")).toString());
+                                           QString::fromUtf8("#1a1a1a")).toString());
         _windowColor = QColor(settings.value(QString::fromUtf8("ui/windowColor"),
-                                             QString::fromUtf8("#f5f5f5")).toString());
+                                             QString::fromUtf8("#f7f7f8")).toString());
         _panelColor = QColor(settings.value(QString::fromUtf8("ui/panelColor"),
                                             QString::fromUtf8("#ffffff")).toString());
         _accentColor = QColor(settings.value(QString::fromUtf8("ui/accentColor"),
-                                             QString::fromUtf8("#2563eb")).toString());
+                                             QString::fromUtf8("#262626")).toString());
         _chatUserColor = QColor(settings.value(QString::fromUtf8("ui/chatUserColor"),
                                                QString::fromUtf8("#ffffff")).toString());
         _chatAssistantColor = QColor(settings.value(QString::fromUtf8("ui/chatAssistantColor"),
                                                     QString::fromUtf8("#ffffff")).toString());
         _chatOtherColor = QColor(settings.value(QString::fromUtf8("ui/chatOtherColor"),
-                                                QString::fromUtf8("#f3f3f3")).toString());
+                                                QString::fromUtf8("#f3f4f6")).toString());
         if (!_textColor.isValid())
-            _textColor = QColor(QString::fromUtf8("#1f1f1f"));
+            _textColor = QColor(QString::fromUtf8("#1a1a1a"));
         if (!_windowColor.isValid())
-            _windowColor = QColor(QString::fromUtf8("#f5f5f5"));
+            _windowColor = QColor(QString::fromUtf8("#f7f7f8"));
         if (!_panelColor.isValid())
             _panelColor = QColor(QString::fromUtf8("#ffffff"));
         if (!_accentColor.isValid())
-            _accentColor = QColor(QString::fromUtf8("#2563eb"));
+            _accentColor = QColor(QString::fromUtf8("#262626"));
         if (!_chatUserColor.isValid())
             _chatUserColor = QColor(QString::fromUtf8("#ffffff"));
         if (!_chatAssistantColor.isValid())
             _chatAssistantColor = QColor(QString::fromUtf8("#ffffff"));
         if (!_chatOtherColor.isValid())
-            _chatOtherColor = QColor(QString::fromUtf8("#f3f3f3"));
+            _chatOtherColor = QColor(QString::fromUtf8("#f3f4f6"));
     }
     loadUsage(&settings, &_globalUsage);
     _projectUsage.clear();
@@ -1145,8 +1145,10 @@ QColor AppSettings::inputColor() const
 
 QColor AppSettings::toolbarColor() const
 {
+    // Плоский фон как у окна — без «полосы» другой яркости.
     if (isLightTheme())
-        return QColor(QString::fromUtf8("#ececec"));
+        return _windowColor.isValid() ? _windowColor
+                                      : QColor(QString::fromUtf8("#f7f7f8"));
     QColor c = _windowColor.lighter(185);
     if (!c.isValid())
         c = QColor(QString::fromUtf8("#4f4f4f"));
@@ -1157,7 +1159,7 @@ QColor AppSettings::toolbarColor() const
 
 QColor AppSettings::borderColor() const
 {
-    return isLightTheme() ? QColor(QString::fromUtf8("#d4d4d4"))
+    return isLightTheme() ? QColor(QString::fromUtf8("#e5e5e5"))
                           : QColor(QString::fromUtf8("#555555"));
 }
 
@@ -1165,7 +1167,7 @@ QColor AppSettings::borderColor() const
 
 QColor AppSettings::mutedTextColor() const
 {
-    return isLightTheme() ? QColor(QString::fromUtf8("#6b6b6b"))
+    return isLightTheme() ? QColor(QString::fromUtf8("#737373"))
                           : QColor(QString::fromUtf8("#8a8a8a"));
 }
 
@@ -1173,7 +1175,7 @@ QColor AppSettings::mutedTextColor() const
 
 QColor AppSettings::selectionColor() const
 {
-    return isLightTheme() ? QColor(QString::fromUtf8("#d6e4ff"))
+    return isLightTheme() ? QColor(QString::fromUtf8("#ececec"))
                           : QColor(QString::fromUtf8("#1a5580"));
 }
 
@@ -1181,7 +1183,7 @@ QColor AppSettings::selectionColor() const
 
 QColor AppSettings::scrollbarColor() const
 {
-    return isLightTheme() ? QColor(QString::fromUtf8("#c4c4c4"))
+    return isLightTheme() ? QColor(QString::fromUtf8("#d4d4d4"))
                           : QColor(QString::fromUtf8("#6a6a6a"));
 }
 
@@ -1311,13 +1313,13 @@ void AppSettings::setMainWindowDockSplit(int leftWidth, int projectHeight, int g
 
 void AppSettings::applyLightDefaults()
 {
-    _textColor = QColor(QString::fromUtf8("#1f1f1f"));
-    _windowColor = QColor(QString::fromUtf8("#f5f5f5"));
+    _textColor = QColor(QString::fromUtf8("#1a1a1a"));
+    _windowColor = QColor(QString::fromUtf8("#f7f7f8"));
     _panelColor = QColor(QString::fromUtf8("#ffffff"));
-    _accentColor = QColor(QString::fromUtf8("#2563eb"));
+    _accentColor = QColor(QString::fromUtf8("#262626"));
     _chatUserColor = QColor(QString::fromUtf8("#ffffff"));
     _chatAssistantColor = QColor(QString::fromUtf8("#ffffff"));
-    _chatOtherColor = QColor(QString::fromUtf8("#f3f3f3"));
+    _chatOtherColor = QColor(QString::fromUtf8("#f3f4f6"));
 }
 
 //----------------------------------------------
