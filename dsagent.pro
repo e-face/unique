@@ -30,6 +30,7 @@ HEADERS += \
     src/contextoptimizer.h \
     src/conversationwidget.h \
     src/debugagenttools.h \
+    src/docktitlebar.h \
     src/filechangestore.h \
     src/graphthumb.h \
     src/deepseekclient.h \
@@ -70,6 +71,7 @@ SOURCES += \
     src/contextoptimizer.cpp \
     src/conversationwidget.cpp \
     src/debugagenttools.cpp \
+    src/docktitlebar.cpp \
     src/filechangestore.cpp \
     src/graphthumb.cpp \
     src/deepseekclient.cpp \

@@ -8,6 +8,7 @@
 
 class ProjectTreeDelegate;
 class ProjectTreeWatchThread;
+class DockTitleBar;
 class QFileSystemModel;
 class QFileSystemWatcher;
 class QLabel;
@@ -16,6 +17,7 @@ class QSortFilterProxyModel;
 class QStackedWidget;
 class QTimer;
 class QTreeView;
+class QWidget;
 
 //----------------------------------------------
 
@@ -63,13 +65,16 @@ private:
     void addWatch(QString dir);
     void startFlash(QString absPath);
     void refreshView();
+    void setDockTitle(QString title);
 
     QFileSystemModel      *_model;
     QSortFilterProxyModel *_proxy;
+    QWidget               *_contentHost;
     QStackedWidget        *_stack;
     QLabel                *_emptyLabel;
     QTreeView             *_tree;
     ProjectTreeDelegate   *_delegate;
+    DockTitleBar          *_titleBar;
     QFileSystemWatcher       *_watcher;
     ProjectTreeWatchThread   *_osWatch;
     QTimer                   *_flashTimer;

@@ -9,6 +9,7 @@
 #include "chatsession.h"
 #include "composerinput.h"
 #include "conversationwidget.h"
+#include "docktitlebar.h"
 #include "graphthumb.h"
 #include "filechangestore.h"
 #include "journalwidget.h"
@@ -38,6 +39,7 @@
 #include <QDir>
 #include <QEvent>
 #include <QEventLoop>
+#include <QVBoxLayout>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFile>
@@ -3055,14 +3057,23 @@ void MainWindow::setupUi()
     _projectDock = new ProjectTreeDock(this);
     addDockWidget(Qt::LeftDockWidgetArea, _projectDock);
 
-    _graphThumbDock = new QDockWidget(QString(), this);
+    _graphThumbDock = new QDockWidget(tr("Команда"), this);
     _graphThumbDock->setObjectName(QString::fromUtf8("graphThumbDock"));
     _graphThumbDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    // Без заголовка: пустой titleBarWidget убирает title bar у QDockWidget.
-    _graphThumbDock->setTitleBarWidget(new QWidget(_graphThumbDock));
-    _graphThumbDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
-    _graphThumb = new GraphThumb(_graphThumbDock);
-    _graphThumbDock->setWidget(_graphThumb);
+    _graphThumbDock->setFeatures(QDockWidget::DockWidgetMovable
+                                 | QDockWidget::DockWidgetFloatable);
+    DockTitleBar *graphTitle = new DockTitleBar(tr("Команда"), _graphThumbDock);
+    graphTitle->setObjectName(QString::fromUtf8("graphThumbTitleBar"));
+    _graphThumbDock->setTitleBarWidget(graphTitle);
+    QWidget *graphHost = new QWidget(_graphThumbDock);
+    graphHost->setObjectName(QString::fromUtf8("graphThumbDockContent"));
+    graphHost->setAttribute(Qt::WA_StyledBackground, true);
+    _graphThumb = new GraphThumb(graphHost);
+    QVBoxLayout *graphLay = new QVBoxLayout(graphHost);
+    graphLay->setContentsMargins(0, 0, 0, 0);
+    graphLay->setSpacing(0);
+    graphLay->addWidget(_graphThumb, 1);
+    _graphThumbDock->setWidget(graphHost);
     connect(_graphThumb, SIGNAL(clicked()), this, SLOT(sltShowGraph()));
     addDockWidget(Qt::LeftDockWidgetArea, _graphThumbDock);
     // По умолчанию — под деревом файлов.
@@ -3287,6 +3298,14 @@ void MainWindow::retranslateUi()
     }
     if (_projectDock)
         _projectDock->retranslateUi();
+    if (_graphThumbDock)
+    {
+        _graphThumbDock->setWindowTitle(tr("Команда"));
+        DockTitleBar *title = qobject_cast<DockTitleBar *>(
+            _graphThumbDock->titleBarWidget());
+        if (title)
+            title->setTitle(tr("Команда"));
+    }
 }
 
 //----------------------------------------------
@@ -4386,9 +4405,11 @@ void MainWindow::applyAppStyle()
         "QToolButton:hover { background:%HOVER%; }"
         "QToolButton:pressed { background:%7; }"
         "QToolButton:disabled { color:%MUTED%; }"
-        "QDockWidget { color:%2; border:none; titlebar-close-icon: url(none); }"
-        "QDockWidget::title { background:%1; color:%2; padding:8px 12px;"
-        "  border:none; border-bottom:1px solid %6; }"
+        "QDockWidget#projectDock, QDockWidget#graphThumbDock {"
+        "  background:%3; color:%2; border:1px solid %6; border-radius:10px;"
+        "  titlebar-close-icon: url(none); titlebar-normal-icon: url(none); }"
+        "QWidget#projectDockContent, QWidget#graphThumbDockContent {"
+        "  background:%3; border:none; }"
         "QTreeView { background:%3; color:%2; alternate-background-color:%1;"
         "  border:none; outline:none; }"
         "QTreeView::branch { background:transparent; image:none; border-image:none; }"
@@ -4449,6 +4470,18 @@ void MainWindow::applyAppStyle()
 
     if (_projectDock)
         _projectDock->applyTheme();
+    if (_graphThumbDock)
+    {
+        _graphThumbDock->setStyleSheet(QString::fromUtf8(
+            "QDockWidget#graphThumbDock {"
+            "  background:%1; border:1px solid %2; border-radius:10px; }"
+            "QWidget#graphThumbDockContent { background:%1; border:none; }")
+                                           .arg(panel, border));
+        DockTitleBar *title = qobject_cast<DockTitleBar *>(
+            _graphThumbDock->titleBarWidget());
+        if (title)
+            title->applyTheme(panel, text, border, muted);
+    }
     if (_composerBar)
         _composerBar->applyTheme(panel, input, text, border, muted, accent);
     if (_graphThumb)

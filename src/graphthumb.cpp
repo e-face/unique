@@ -4,7 +4,6 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPainterPath>
 #include <QResizeEvent>
 #include <QVBoxLayout>
 
@@ -68,7 +67,7 @@ void GraphThumb::applyTheme(QString panel, QString text, QString border, QString
     _border = border;
     setStyleSheet(QString::fromUtf8(
         "QFrame#graphThumb { background:transparent; border:none; }"
-        "QLabel { color:%1; background:transparent; border:none; font-size:11px; }")
+        "QLabel { color:%1; background:transparent; border:none; font-size:12px; }")
                       .arg(muted.isEmpty() ? text : muted));
     update();
 }
@@ -113,18 +112,13 @@ void GraphThumb::resizeEvent(QResizeEvent *event)
 void GraphThumb::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
+    // Фон даёт родительский dock-panel; лёгкий hover без второй «карточки».
+    if (!_hover)
+        return;
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-
-    const QColor border = _hover
-                              ? QColor(_border).darker(130)
-                              : QColor(_border.isEmpty() ? QString::fromUtf8("#c8c8c8")
-                                                          : _border);
-    const QColor fill = QColor(_fill.isEmpty() ? QString::fromUtf8("#ffffff") : _fill);
-
-    QPainterPath body;
-    body.addRoundedRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5), 10, 10);
-    p.fillPath(body, fill);
-    p.setPen(QPen(border, _hover ? 1.5 : 1));
-    p.drawPath(body);
+    const QColor tint = QColor(_border.isEmpty() ? QString::fromUtf8("#c8c8c8") : _border);
+    QColor fill = tint;
+    fill.setAlpha(28);
+    p.fillRect(rect(), fill);
 }

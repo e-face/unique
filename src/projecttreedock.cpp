@@ -1,6 +1,7 @@
 #include "projecttreedock.h"
 //----------------------------------------------
 #include "appsettings.h"
+#include "docktitlebar.h"
 //----------------------------------------------
 #include <QApplication>
 #include <QClipboard>
@@ -27,6 +28,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QTreeView>
+#include <QVBoxLayout>
 #include <QUrl>
 #include <QtGlobal>
 #ifdef Q_OS_WIN
@@ -353,10 +355,12 @@ ProjectTreeDock::ProjectTreeDock(QWidget *parent)
     : QDockWidget(parent)
     , _model(new QFileSystemModel(this))
     , _proxy(new ProjectNameFilter(this))
-    , _stack(new QStackedWidget(this))
-    , _emptyLabel(new QLabel(this))
-    , _tree(new ProjectTreeView(this))
+    , _contentHost(new QWidget(this))
+    , _stack(new QStackedWidget(_contentHost))
+    , _emptyLabel(new QLabel(_contentHost))
+    , _tree(new ProjectTreeView(_contentHost))
     , _delegate(0)
+    , _titleBar(new DockTitleBar(tr("Проект"), this))
     , _watcher(new QFileSystemWatcher(this))
     , _osWatch(0)
     , _flashTimer(new QTimer(this))
@@ -365,6 +369,12 @@ ProjectTreeDock::ProjectTreeDock(QWidget *parent)
     setWindowTitle(tr("Проект"));
     setObjectName(QString::fromUtf8("projectDock"));
     setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+    _titleBar->setObjectName(QString::fromUtf8("projectDockTitleBar"));
+    setTitleBarWidget(_titleBar);
+
+    _contentHost->setObjectName(QString::fromUtf8("projectDockContent"));
+    _contentHost->setAttribute(Qt::WA_StyledBackground, true);
 
     _emptyLabel->setAlignment(Qt::AlignCenter);
     _emptyLabel->setWordWrap(true);
@@ -397,7 +407,11 @@ ProjectTreeDock::ProjectTreeDock(QWidget *parent)
 
     _stack->addWidget(_emptyLabel);
     _stack->addWidget(_tree);
-    setWidget(_stack);
+    QVBoxLayout *hostLay = new QVBoxLayout(_contentHost);
+    hostLay->setContentsMargins(0, 0, 0, 0);
+    hostLay->setSpacing(0);
+    hostLay->addWidget(_stack, 1);
+    setWidget(_contentHost);
     showEmptyState();
     applyTheme();
 }
@@ -464,7 +478,7 @@ void ProjectTreeDock::setProjectRoot(QString path)
     }
     if (_stack)
         _stack->setCurrentWidget(_tree);
-    setWindowTitle(tr("Проект — %1").arg(QDir(root).dirName()));
+    setDockTitle(tr("Проект — %1").arg(QDir(root).dirName()));
     QTimer::singleShot(0, this, SLOT(sltStartWatch()));
 }
 
@@ -475,7 +489,7 @@ void ProjectTreeDock::showEmptyState()
     _root.clear();
     if (_stack)
         _stack->setCurrentWidget(_emptyLabel);
-    setWindowTitle(tr("Проект"));
+    setDockTitle(tr("Проект"));
 }
 
 //----------------------------------------------
@@ -484,12 +498,12 @@ void ProjectTreeDock::retranslateUi()
 {
     if (_root.isEmpty())
     {
-        setWindowTitle(tr("Проект"));
+        setDockTitle(tr("Проект"));
         if (_emptyLabel)
             _emptyLabel->setText(tr("Проект не открыт"));
     }
     else
-        setWindowTitle(tr("Проект — %1").arg(QDir(_root).dirName()));
+        setDockTitle(tr("Проект — %1").arg(QDir(_root).dirName()));
 }
 
 //----------------------------------------------
@@ -731,17 +745,30 @@ void ProjectTreeDock::sltFlashTick()
 void ProjectTreeDock::applyTheme()
 {
     AppSettings *s = AppSettings::instance();
-    const QString treeBg = s->panelColor().name();
+    const QString panel = s->panelColor().name();
+    const QString win = s->windowColor().name();
     const QString text = s->textColor().name();
+    const QString border = s->borderColor().name();
+    const QString muted = s->mutedTextColor().name();
     const QString select = s->selectionColor().name();
     const QString hover = s->isLightTheme()
                           ? QColor(s->windowColor()).darker(104).name()
                           : select;
+
+    setStyleSheet(QString::fromUtf8(
+        "QDockWidget#projectDock {"
+        "  background:%1; border:1px solid %2; border-radius:10px; }"
+        "QWidget#projectDockContent { background:%1; border:none; }")
+                      .arg(panel, border));
+
+    if (_titleBar)
+        _titleBar->applyTheme(panel, text, border, muted);
+
     if (_emptyLabel)
     {
         _emptyLabel->setStyleSheet(QString::fromUtf8(
             "QLabel { background:%1; color:%2; }")
-                                       .arg(treeBg, text));
+                                       .arg(panel, muted));
     }
     if (!_tree)
         return;
@@ -752,7 +779,17 @@ void ProjectTreeDock::applyTheme()
         "QTreeView#projectTree::item:hover { background:%4; }"
         "QTreeView#projectTree::item:selected { background:%3; color:%2; }"
         "QTreeView#projectTree::branch { background:transparent; image:none; border-image:none; }")
-                             .arg(treeBg, text, select, hover));
+                             .arg(panel, text, select, hover));
+    Q_UNUSED(win);
+}
+
+//----------------------------------------------
+
+void ProjectTreeDock::setDockTitle(QString title)
+{
+    setWindowTitle(title);
+    if (_titleBar)
+        _titleBar->setTitle(title);
 }
 
 //----------------------------------------------
