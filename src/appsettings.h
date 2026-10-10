@@ -340,6 +340,15 @@ public:
     void updateWorkerPreset(SettingsKind kind, const WorkerPreset &preset, QString *error = 0);
     void removeWorkerPreset(QString id);
     void removeWorkerPreset(SettingsKind kind, QString id);
+    /** Пресеты, ссылающиеся на профиль (оба набора настроек). */
+    QList<WorkerPreset> presetsUsingProfile(QString profileId) const;
+    QList<WorkerPreset> presetsUsingProfile(SettingsKind kind, QString profileId) const;
+    /** Пресеты проекта с profileId, которого нет в списке профилей. */
+    QList<WorkerPreset> orphanProjectPresets() const;
+    /** Удалить пресеты с данным profileId из defaults и/или проекта. */
+    int removePresetsUsingProfile(QString profileId);
+    /** Удалить пресеты проекта с неизвестным profileId. */
+    int removeOrphanProjectPresets();
     QString workerPresetsSummary() const;
     QString workerPresetsSummary(SettingsKind kind) const;
 
@@ -394,6 +403,10 @@ private:
     void saveWorkerPresets(QSettings *settings, const WorkspaceSettings &bundle) const;
     void ensureWorkerPresetsSeeded(WorkspaceSettings *bundle);
     void ensureRootWorkerPresetId(WorkspaceSettings *bundle);
+    void syncPresetTaskKind(WorkerPreset *preset) const;
+    void syncBundlePresetTaskKinds(WorkspaceSettings *bundle) const;
+    void dedupePresetsByTypeProfile(WorkspaceSettings *bundle) const;
+    int removePresetsUsingProfile(SettingsKind kind, QString profileId);
     void migrateLegacyProviders(QSettings *settings, WorkspaceSettings *bundle);
     void migrateFromNativeRegistry();
     void migrateProjectLocalProfiles();

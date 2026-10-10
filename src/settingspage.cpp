@@ -4,6 +4,7 @@
 #include "appsettings.h"
 #include "modelprofilepresets.h"
 #include "openaicompatibleclient.h"
+#include "workermanager.h"
 #include "workertypes.h"
 //----------------------------------------------
 #include <QCheckBox>
@@ -42,6 +43,7 @@ static void setFormLabelText(QFormLayout *form, QWidget *field, const QString &t
 SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     : QScrollArea(parent)
     , _kind(kind)
+    , _workers(0)
     , _viewBox(0)
     , _apiBox(0)
     , _profilesRefBox(0)
@@ -82,7 +84,6 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _removeProfileButton(0)
     , _presetList(0)
     , _presetTypeCombo(0)
-    , _presetTaskKindCombo(0)
     , _presetProfileCombo(0)
     , _rootPresetCombo(0)
     , _addPresetButton(0)
@@ -173,6 +174,13 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
 SettingsKind SettingsPage::kind() const
 {
     return _kind;
+}
+
+//----------------------------------------------
+
+void SettingsPage::setWorkerManager(WorkerManager *manager)
+{
+    _workers = manager;
 }
 
 //----------------------------------------------
@@ -402,7 +410,6 @@ void SettingsPage::retranslateUi()
     if (_presetForm)
     {
         setFormLabelText(_presetForm, _presetTypeCombo, tr("Тип воркера:"));
-        setFormLabelText(_presetForm, _presetTaskKindCombo, tr("Класс задач:"));
         setFormLabelText(_presetForm, _presetProfileCombo, tr("Профиль модели:"));
     }
     if (_presetTypeCombo)
@@ -429,44 +436,6 @@ void SettingsPage::retranslateUi()
                 break;
             }
             _presetTypeCombo->setItemText(i, text);
-        }
-    }
-    if (_presetTaskKindCombo)
-    {
-        const QSignalBlocker blocker(_presetTaskKindCombo);
-        for (int i = 0; i < _presetTaskKindCombo->count(); ++i)
-        {
-            const WorkerTaskKind kind = WorkerTaskKind(_presetTaskKindCombo->itemData(i).toInt());
-            QString text;
-            switch (kind)
-            {
-            case WorkerTaskKindImageGeneration:
-                text = tr("Генерация изображений");
-                break;
-            case WorkerTaskKindSpeech:
-                text = tr("Речь (TTS/STT)");
-                break;
-            case WorkerTaskKindAudioGeneration:
-                text = tr("Генерация аудио");
-                break;
-            case WorkerTaskKindVideoGeneration:
-                text = tr("Генерация видео");
-                break;
-            case WorkerTaskKindEmbedding:
-                text = tr("Эмбеддинги");
-                break;
-            case WorkerTaskKindDecisions:
-                text = tr("Decisions (решения)");
-                break;
-            case WorkerTaskKindOther:
-                text = tr("Другое");
-                break;
-            case WorkerTaskKindLlm:
-            default:
-                text = tr("LLM (текст / агент)");
-                break;
-            }
-            _presetTaskKindCombo->setItemText(i, text);
         }
     }
     if (_rootPresetCombo)
@@ -1027,17 +996,6 @@ QWidget *SettingsPage::buildWorkersBox()
     _presetTypeCombo->addItem(tr("Тестировщик"), int(WorkerTypeTester));
     _presetTypeCombo->addItem(tr("Инструмент"), int(WorkerTypeTool));
 
-    _presetTaskKindCombo = new QComboBox(box);
-    _presetTaskKindCombo->addItem(tr("LLM (текст / агент)"), int(WorkerTaskKindLlm));
-    _presetTaskKindCombo->addItem(tr("Генерация изображений"),
-                                  int(WorkerTaskKindImageGeneration));
-    _presetTaskKindCombo->addItem(tr("Речь (TTS/STT)"), int(WorkerTaskKindSpeech));
-    _presetTaskKindCombo->addItem(tr("Генерация аудио"), int(WorkerTaskKindAudioGeneration));
-    _presetTaskKindCombo->addItem(tr("Генерация видео"), int(WorkerTaskKindVideoGeneration));
-    _presetTaskKindCombo->addItem(tr("Эмбеддинги"), int(WorkerTaskKindEmbedding));
-    _presetTaskKindCombo->addItem(tr("Decisions (решения)"), int(WorkerTaskKindDecisions));
-    _presetTaskKindCombo->addItem(tr("Другое"), int(WorkerTaskKindOther));
-
     _presetProfileCombo = new QComboBox(box);
     _presetProfileCombo->setMinimumWidth(220);
 
@@ -1048,8 +1006,6 @@ QWidget *SettingsPage::buildWorkersBox()
             this, SLOT(sltPresetSelected()));
     connect(_presetTypeCombo, SIGNAL(currentIndexChanged(int)),
             this, SLOT(sltPresetFieldChanged()));
-    connect(_presetTaskKindCombo, SIGNAL(currentIndexChanged(int)),
-            this, SLOT(sltPresetFieldChanged()));
     connect(_presetProfileCombo, SIGNAL(currentIndexChanged(int)),
             this, SLOT(sltPresetFieldChanged()));
     connect(_addPresetButton, SIGNAL(clicked()), this, SLOT(sltAddPreset()));
@@ -1057,7 +1013,6 @@ QWidget *SettingsPage::buildWorkersBox()
 
     _presetForm = new QFormLayout();
     _presetForm->addRow(tr("Тип воркера:"), _presetTypeCombo);
-    _presetForm->addRow(tr("Класс задач:"), _presetTaskKindCombo);
     _presetForm->addRow(tr("Профиль модели:"), _presetProfileCombo);
 
     QHBoxLayout *presetButtons = new QHBoxLayout();
@@ -1164,8 +1119,12 @@ QString SettingsPage::presetListLabel(const WorkerPreset &preset) const
         typeName = tr("Менеджер");
         break;
     }
+    const LlmProfile profile = AppSettings::instance()->profileById(preset.profileId);
     QString taskName;
-    switch (preset.taskKind)
+    const WorkerTaskKind modality = profile.id.isEmpty()
+                                    ? preset.taskKind
+                                    : profile.modality;
+    switch (modality)
     {
     case WorkerTaskKindImageGeneration:
         taskName = tr("Image");
@@ -1193,7 +1152,6 @@ QString SettingsPage::presetListLabel(const WorkerPreset &preset) const
         taskName = tr("LLM");
         break;
     }
-    const LlmProfile profile = AppSettings::instance()->profileById(preset.profileId);
     QString profileName = profile.name.trimmed();
     if (profileName.isEmpty())
         profileName = preset.profileId;
@@ -1274,14 +1232,6 @@ void SettingsPage::loadPresets()
             index = 0;
         _presetTypeCombo->setCurrentIndex(index);
     }
-    if (_presetTaskKindCombo && !id.isEmpty())
-    {
-        const QSignalBlocker blocker(_presetTaskKindCombo);
-        int index = _presetTaskKindCombo->findData(int(current.taskKind));
-        if (index < 0)
-            index = 0;
-        _presetTaskKindCombo->setCurrentIndex(index);
-    }
     if (_presetProfileCombo && !id.isEmpty())
     {
         const QSignalBlocker blocker(_presetProfileCombo);
@@ -1350,14 +1300,6 @@ void SettingsPage::sltPresetSelected()
             index = 0;
         _presetTypeCombo->setCurrentIndex(index);
     }
-    if (_presetTaskKindCombo)
-    {
-        const QSignalBlocker blocker(_presetTaskKindCombo);
-        int index = _presetTaskKindCombo->findData(int(preset.taskKind));
-        if (index < 0)
-            index = 0;
-        _presetTaskKindCombo->setCurrentIndex(index);
-    }
     if (_presetProfileCombo)
     {
         const QSignalBlocker blocker(_presetProfileCombo);
@@ -1384,8 +1326,6 @@ void SettingsPage::sltPresetFieldChanged()
         return;
     if (_presetTypeCombo)
         preset.type = WorkerType(_presetTypeCombo->currentData().toInt());
-    if (_presetTaskKindCombo)
-        preset.taskKind = WorkerTaskKind(_presetTaskKindCombo->currentData().toInt());
     if (_presetProfileCombo)
         preset.profileId = _presetProfileCombo->currentData().toString();
 
@@ -1416,9 +1356,6 @@ void SettingsPage::sltAddPreset()
     WorkerType preferType = _presetTypeCombo
                             ? WorkerType(_presetTypeCombo->currentData().toInt())
                             : WorkerTypeManager;
-    WorkerTaskKind preferTask = _presetTaskKindCombo
-                                ? WorkerTaskKind(_presetTaskKindCombo->currentData().toInt())
-                                : WorkerTaskKindLlm;
     QString preferProfile;
     if (_presetProfileCombo)
         preferProfile = _presetProfileCombo->currentData().toString();
@@ -1429,20 +1366,6 @@ void SettingsPage::sltAddPreset()
     {
         if (kTypes[i] != preferType)
             typeOrder.append(kTypes[i]);
-    }
-
-    QList<WorkerTaskKind> taskOrder;
-    static const WorkerTaskKind kTaskKinds[] = {
-        WorkerTaskKindLlm, WorkerTaskKindImageGeneration, WorkerTaskKindSpeech,
-        WorkerTaskKindAudioGeneration, WorkerTaskKindVideoGeneration,
-        WorkerTaskKindEmbedding, WorkerTaskKindDecisions, WorkerTaskKindOther
-    };
-    const int kTaskKindCount = int(sizeof(kTaskKinds) / sizeof(kTaskKinds[0]));
-    taskOrder.append(preferTask);
-    for (int i = 0; i < kTaskKindCount; ++i)
-    {
-        if (kTaskKinds[i] != preferTask)
-            taskOrder.append(kTaskKinds[i]);
     }
 
     QStringList profileOrder;
@@ -1459,21 +1382,15 @@ void SettingsPage::sltAddPreset()
     QString id;
     foreach (WorkerType type, typeOrder)
     {
-        foreach (WorkerTaskKind taskKind, taskOrder)
+        foreach (const QString &profileId, profileOrder)
         {
-            foreach (const QString &profileId, profileOrder)
-            {
-                if (profileId.isEmpty())
-                    continue;
-                preset = WorkerPreset();
-                preset.type = type;
-                preset.taskKind = taskKind;
-                preset.profileId = profileId;
-                error.clear();
-                id = s->addWorkerPreset(_kind, preset, &error);
-                if (!id.isEmpty())
-                    break;
-            }
+            if (profileId.isEmpty())
+                continue;
+            preset = WorkerPreset();
+            preset.type = type;
+            preset.profileId = profileId;
+            error.clear();
+            id = s->addWorkerPreset(_kind, preset, &error);
             if (!id.isEmpty())
                 break;
         }
@@ -1485,7 +1402,7 @@ void SettingsPage::sltAddPreset()
     {
         QMessageBox::warning(
             this, tr("Пресеты воркеров"),
-            tr("Все комбинации тип+класс задач+профиль уже заняты.\n"
+            tr("Все комбинации тип+профиль уже заняты.\n"
                "Добавьте новый профиль модели или измените существующий пресет."));
         return;
     }
@@ -1746,8 +1663,61 @@ void SettingsPage::sltRemoveProfile()
     const QString id = currentProfileId();
     if (id.isEmpty())
         return;
-    AppSettings::instance()->removeProfile(id);
+
+    AppSettings *s = AppSettings::instance();
+    const LlmProfile profile = s->profileById(id);
+    QString profileName = profile.name.trimmed();
+    if (profileName.isEmpty())
+        profileName = id;
+
+    const QList<WorkerPreset> used = s->presetsUsingProfile(id);
+    const int liveCount = _workers ? _workers->countWorkersUsingProfile(id) : 0;
+    if (!used.isEmpty() || liveCount > 0)
+    {
+        QStringList lines;
+        foreach (const WorkerPreset &preset, used)
+            lines << presetListLabel(preset);
+        QString text;
+        if (!lines.isEmpty() && liveCount > 0)
+        {
+            text = tr(
+                "Профиль «%1» используется пресетами воркеров в настройках "
+                "программы и/или открытого проекта:\n\n%2\n\n"
+                "Также в текущем проекте есть воркеры с этой моделью: %3.\n\n"
+                "Удалить эти пресеты из настроек проекта и программы "
+                "и воркеров, использовавших эту модель?")
+                       .arg(profileName, lines.join(QChar('\n')))
+                       .arg(liveCount);
+        }
+        else if (!lines.isEmpty())
+        {
+            text = tr(
+                "Профиль «%1» используется пресетами воркеров в настройках "
+                "программы и/или открытого проекта:\n\n%2\n\n"
+                "Удалить эти пресеты из настроек проекта и программы?")
+                       .arg(profileName, lines.join(QChar('\n')));
+        }
+        else
+        {
+            text = tr(
+                "В текущем проекте есть воркеры, использующие модель «%1»: %2.\n\n"
+                "Удалить этих воркеров (корням сбросить профиль) вместе с профилем?")
+                       .arg(profileName)
+                       .arg(liveCount);
+        }
+        const int answer = QMessageBox::question(
+            this, tr("Удаление профиля модели"), text,
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
+        if (!used.isEmpty())
+            s->removePresetsUsingProfile(id);
+        emit removeWorkersForProfile(id);
+    }
+
+    s->removeProfile(id);
     loadProfiles();
+    loadPresets();
     emit profilesChanged();
 }
 

@@ -1165,7 +1165,7 @@ QString SpeechToTextTool::invoke(QString argumentsJson, bool *ok)
 
     const LlmProfile profile = modalityProfileForWorker(_owner);
     ModalityApiClient client(profile);
-    const QString boundary = QString::fromUtf8("----dsagent%1")
+    const QString boundary = QString::fromUtf8("----unique%1")
                                  .arg(QString::number(qAbs(qint64(audio.size()) ^ 0x5a5a)));
     QByteArray body;
     auto addField = [&](QString name, QByteArray value) {

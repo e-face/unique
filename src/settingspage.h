@@ -16,6 +16,7 @@ class QListWidget;
 class QFormLayout;
 class QPushButton;
 class QSpinBox;
+class WorkerManager;
 
 //----------------------------------------------
 
@@ -35,6 +36,7 @@ public:
     SettingsKind kind() const;
     QCheckBox  *inspectCheck() const;
     void setProjectPath(QString path);
+    void setWorkerManager(WorkerManager *manager);
 
     void loadAppearance();
     void refreshPermissionsList();
@@ -49,6 +51,8 @@ public slots:
 signals:
     void appearanceApplied();
     void profilesChanged();
+    /** Удалить живых воркеров текущего проекта, использовавших профиль. */
+    void removeWorkersForProfile(const QString &profileId);
 
 private slots:
     void sltProjectSettingsChanged();
@@ -100,6 +104,7 @@ private:
     QString presetListLabel(const WorkerPreset &preset) const;
 
     SettingsKind _kind;
+    WorkerManager *_workers;
     QGroupBox   *_viewBox;
     QGroupBox   *_apiBox;
     QGroupBox   *_profilesRefBox;
@@ -140,7 +145,6 @@ private:
     QPushButton *_removeProfileButton;
     QListWidget *_presetList;
     QComboBox   *_presetTypeCombo;
-    QComboBox   *_presetTaskKindCombo;
     QComboBox   *_presetProfileCombo;
     QComboBox   *_rootPresetCombo;
     QPushButton *_addPresetButton;

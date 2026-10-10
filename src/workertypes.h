@@ -184,9 +184,10 @@ inline bool workerTaskKindUsesAgentChat(WorkerTaskKind kind)
 //----------------------------------------------
 
 /**
- * @brief Заранее заданный шаблон воркера: роль + профиль + класс задач.
+ * @brief Заранее заданный шаблон воркера: роль + профиль модели.
  *
- * Уникальна комбинация type + profileId + taskKind.
+ * Класс задач (taskKind) наследуется от modality выбранного профиля.
+ * Уникальна комбинация type + profileId.
  */
 struct WorkerPreset
 {
@@ -199,6 +200,7 @@ struct WorkerPreset
     QString         id;
     WorkerType      type;
     QString         profileId;
+    /** Копия modality профиля; при сохранении/загрузке синхронизируется. */
     WorkerTaskKind  taskKind;
 };
 

@@ -2142,6 +2142,17 @@ void MainWindow::sltDefaultProfilesChanged()
 
 //----------------------------------------------
 
+void MainWindow::sltRemoveWorkersForProfile(const QString &profileId)
+{
+    if (!_workers || profileId.trimmed().isEmpty())
+        return;
+    _workers->removeWorkersUsingProfile(profileId);
+    if (!_closing && !_resetting)
+        scheduleSaveOpenChats();
+}
+
+//----------------------------------------------
+
 void MainWindow::sltPrevConfirmation()
 {
     cycleConfirmation(-1);
@@ -2964,6 +2975,8 @@ void MainWindow::setupUi()
 
     _settingsPage = new SettingsPage(SettingsKindDefaults, this);
     _projectSettingsPage = new SettingsPage(SettingsKindProject, this);
+    _settingsPage->setWorkerManager(_workers);
+    _projectSettingsPage->setWorkerManager(_workers);
     _inspectCheck = _settingsPage->inspectCheck();
 
     if (_inspectCheck)
@@ -2973,6 +2986,8 @@ void MainWindow::setupUi()
             this, SLOT(sltAppearanceApplied()));
     connect(_settingsPage, SIGNAL(profilesChanged()),
             this, SLOT(sltDefaultProfilesChanged()));
+    connect(_settingsPage, SIGNAL(removeWorkersForProfile(QString)),
+            this, SLOT(sltRemoveWorkersForProfile(QString)));
     connect(_projectSettingsPage, SIGNAL(profilesChanged()),
             this, SLOT(sltProfilesChanged()));
     connect(AppSettings::instance(), SIGNAL(profilesChanged()),
@@ -4169,9 +4184,43 @@ void MainWindow::applyProjectDirectory(bool loadFileChanges, bool bindTree)
         updateProjectActions();
         return;
     }
+    promptOrphanProjectPresets();
     if (_progressDepth <= 0)
         statusBar()->showMessage(tr("Проект: %1").arg(QDir::toNativeSeparators(root)));
     updateProjectActions();
+}
+
+//----------------------------------------------
+
+void MainWindow::promptOrphanProjectPresets()
+{
+    AppSettings *s = AppSettings::instance();
+    const QList<WorkerPreset> orphans = s->orphanProjectPresets();
+    if (orphans.isEmpty())
+        return;
+
+    QStringList lines;
+    foreach (const WorkerPreset &preset, orphans)
+    {
+        QString typeName = workerTypeToString(preset.type);
+        lines << QString::fromUtf8("%1 · %2")
+                     .arg(typeName, preset.profileId);
+    }
+    const QString text = tr(
+        "В настройках проекта есть пресеты воркеров, ссылающиеся на профили "
+        "моделей, которых нет в настройках программы:\n\n%1\n\n"
+        "Удалить эти пресеты из настроек проекта?")
+                             .arg(lines.join(QChar('\n')));
+    const int answer = askStyledQuestion(
+        tr("Отсутствующие профили моделей"), text,
+        tr("Удалить"), tr("Оставить"));
+    if (answer != QMessageBox::Yes)
+        return;
+    s->removeOrphanProjectPresets();
+    if (_projectSettingsPage)
+        _projectSettingsPage->reloadAll();
+    if (_settingsPage)
+        _settingsPage->reloadAll();
 }
 
 //----------------------------------------------

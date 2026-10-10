@@ -173,6 +173,12 @@ public:
     bool dismissChild(Worker *parent, QString childId, QString *error);
     /** Удалить воркера, уже завершившего работу (Completed/Failed), с дочерними. */
     bool forceRemoveFinished(Worker *worker, QString *error);
+    /**
+     * @brief Удалить инструменты и некорневых воркеров с данным профилем;
+     *        у корней сбросить llmProfileId (подставится профиль роли).
+     */
+    int removeWorkersUsingProfile(QString profileId);
+    int countWorkersUsingProfile(QString profileId) const;
     QString runAndWait(Worker *worker);
 
     void installTools(Worker *worker);

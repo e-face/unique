@@ -2176,6 +2176,7 @@ void AppSettings::updateProfile(const LlmProfile &profile)
     const int index = profileIndexById(profile.id);
     if (index < 0)
         return;
+    const WorkerTaskKind oldModality = _defaults.profiles.at(index).modality;
     const QString oldStem = sanitizeProfileFileStem(_defaults.profiles.at(index).id);
     _defaults.profiles[index] = profile;
     _defaults.profiles[index].contextCap =
@@ -2188,9 +2189,19 @@ void AppSettings::updateProfile(const LlmProfile &profile)
     const QString newStem = sanitizeProfileFileStem(_defaults.profiles.at(index).id);
     if (oldStem != newStem)
         QFile::remove(aiProfilesDir() + QChar('/') + oldStem + QString::fromUtf8(".ini"));
+    if (oldModality != _defaults.profiles.at(index).modality)
+    {
+        syncBundlePresetTaskKinds(&_defaults);
+        if (_projectOpen)
+            syncBundlePresetTaskKinds(&_project);
+        if (_projectOpen)
+            saveProjectWorkspace();
+    }
     saveDefaultsWorkspace();
     emit profilesChanged();
     emit workerLimitsChanged();
+    if (oldModality != _defaults.profiles.at(index).modality)
+        emit workerPresetsChanged();
 }
 
 //----------------------------------------------
@@ -2372,18 +2383,17 @@ void AppSettings::ensureWorkerPresetsSeeded(WorkspaceSettings *bundle)
         WorkerPreset preset;
         preset.id = QUuid::createUuid().toString().remove(QChar('{')).remove(QChar('}'));
         preset.type = types[i];
-        preset.taskKind = WorkerTaskKindLlm;
         preset.profileId = bundle->workerProfileId[row];
         if (preset.profileId.isEmpty() && !_defaults.profiles.isEmpty())
             preset.profileId = _defaults.profiles.first().id;
         if (preset.profileId.isEmpty())
             continue;
+        syncPresetTaskKind(&preset);
         bool clash = false;
         foreach (const WorkerPreset &existing, bundle->workerPresets)
         {
             if (existing.type == preset.type
-                && existing.profileId == preset.profileId
-                && existing.taskKind == preset.taskKind)
+                && existing.profileId == preset.profileId)
             {
                 clash = true;
                 break;
@@ -2447,9 +2457,11 @@ void AppSettings::loadWorkerPresets(QSettings *settings, WorkspaceSettings *bund
             preset.id = QUuid::createUuid().toString().remove(QChar('{')).remove(QChar('}'));
         if (preset.profileId.isEmpty())
             continue;
+        syncPresetTaskKind(&preset);
         bundle->workerPresets.append(preset);
     }
     settings->endArray();
+    dedupePresetsByTypeProfile(bundle);
     ensureWorkerPresetsSeeded(bundle);
 }
 
@@ -2492,15 +2504,15 @@ QString AppSettings::addWorkerPreset(SettingsKind kind, WorkerPreset preset, QSt
             *error = QString::fromUtf8("Не выбран профиль модели.");
         return QString();
     }
+    syncPresetTaskKind(&preset);
     foreach (const WorkerPreset &existing, bundle.workerPresets)
     {
         if (existing.type == preset.type
-            && existing.profileId == preset.profileId
-            && existing.taskKind == preset.taskKind)
+            && existing.profileId == preset.profileId)
         {
             if (error)
                 *error = QString::fromUtf8(
-                    "Такая комбинация тип+профиль+класс задач уже есть.");
+                    "Такая комбинация тип+профиль уже есть.");
             return QString();
         }
     }
@@ -2540,24 +2552,176 @@ void AppSettings::updateWorkerPreset(SettingsKind kind, const WorkerPreset &pres
             *error = QString::fromUtf8("Пресет не найден.");
         return;
     }
+    WorkerPreset next = preset;
+    syncPresetTaskKind(&next);
     foreach (const WorkerPreset &existing, bundle.workerPresets)
     {
-        if (existing.id == preset.id)
+        if (existing.id == next.id)
             continue;
-        if (existing.type == preset.type
-            && existing.profileId == preset.profileId
-            && existing.taskKind == preset.taskKind)
+        if (existing.type == next.type
+            && existing.profileId == next.profileId)
         {
             if (error)
                 *error = QString::fromUtf8(
-                    "Такая комбинация тип+профиль+класс задач уже есть.");
+                    "Такая комбинация тип+профиль уже есть.");
             return;
         }
     }
-    bundle.workerPresets[index] = preset;
+    bundle.workerPresets[index] = next;
     ensureRootWorkerPresetId(&bundle);
     save(kind);
     emit workerPresetsChanged();
+}
+
+//----------------------------------------------
+
+void AppSettings::syncPresetTaskKind(WorkerPreset *preset) const
+{
+    if (!preset)
+        return;
+    const LlmProfile profile = profileById(preset->profileId);
+    if (!profile.id.isEmpty())
+        preset->taskKind = profile.modality;
+}
+
+//----------------------------------------------
+
+void AppSettings::syncBundlePresetTaskKinds(WorkspaceSettings *bundle) const
+{
+    if (!bundle)
+        return;
+    for (int i = 0; i < bundle->workerPresets.size(); ++i)
+        syncPresetTaskKind(&bundle->workerPresets[i]);
+}
+
+//----------------------------------------------
+
+void AppSettings::dedupePresetsByTypeProfile(WorkspaceSettings *bundle) const
+{
+    if (!bundle)
+        return;
+    QList<WorkerPreset> unique;
+    foreach (const WorkerPreset &preset, bundle->workerPresets)
+    {
+        bool clash = false;
+        foreach (const WorkerPreset &kept, unique)
+        {
+            if (kept.type == preset.type && kept.profileId == preset.profileId)
+            {
+                clash = true;
+                break;
+            }
+        }
+        if (!clash)
+            unique.append(preset);
+    }
+    bundle->workerPresets = unique;
+}
+
+//----------------------------------------------
+
+QList<WorkerPreset> AppSettings::presetsUsingProfile(QString profileId) const
+{
+    QList<WorkerPreset> out = presetsUsingProfile(SettingsKindDefaults, profileId);
+    if (_projectOpen)
+        out += presetsUsingProfile(SettingsKindProject, profileId);
+    return out;
+}
+
+//----------------------------------------------
+
+QList<WorkerPreset> AppSettings::presetsUsingProfile(SettingsKind kind,
+                                                      QString profileId) const
+{
+    QList<WorkerPreset> out;
+    const QString clean = profileId.trimmed();
+    if (clean.isEmpty())
+        return out;
+    foreach (const WorkerPreset &preset, ws(kind).workerPresets)
+    {
+        if (preset.profileId == clean)
+            out.append(preset);
+    }
+    return out;
+}
+
+//----------------------------------------------
+
+QList<WorkerPreset> AppSettings::orphanProjectPresets() const
+{
+    QList<WorkerPreset> out;
+    if (!_projectOpen)
+        return out;
+    foreach (const WorkerPreset &preset, _project.workerPresets)
+    {
+        if (preset.profileId.trimmed().isEmpty())
+            continue;
+        if (profileById(preset.profileId).id.isEmpty())
+            out.append(preset);
+    }
+    return out;
+}
+
+//----------------------------------------------
+
+int AppSettings::removePresetsUsingProfile(SettingsKind kind, QString profileId)
+{
+    const QString clean = profileId.trimmed();
+    if (clean.isEmpty())
+        return 0;
+    WorkspaceSettings &bundle = ws(kind);
+    int removed = 0;
+    for (int i = bundle.workerPresets.size() - 1; i >= 0; --i)
+    {
+        if (bundle.workerPresets.at(i).profileId == clean)
+        {
+            bundle.workerPresets.removeAt(i);
+            ++removed;
+        }
+    }
+    if (removed > 0)
+    {
+        ensureRootWorkerPresetId(&bundle);
+        save(kind);
+    }
+    return removed;
+}
+
+//----------------------------------------------
+
+int AppSettings::removePresetsUsingProfile(QString profileId)
+{
+    int removed = removePresetsUsingProfile(SettingsKindDefaults, profileId);
+    if (_projectOpen)
+        removed += removePresetsUsingProfile(SettingsKindProject, profileId);
+    if (removed > 0)
+        emit workerPresetsChanged();
+    return removed;
+}
+
+//----------------------------------------------
+
+int AppSettings::removeOrphanProjectPresets()
+{
+    if (!_projectOpen)
+        return 0;
+    int removed = 0;
+    for (int i = _project.workerPresets.size() - 1; i >= 0; --i)
+    {
+        const QString pid = _project.workerPresets.at(i).profileId.trimmed();
+        if (pid.isEmpty() || profileById(pid).id.isEmpty())
+        {
+            _project.workerPresets.removeAt(i);
+            ++removed;
+        }
+    }
+    if (removed > 0)
+    {
+        ensureRootWorkerPresetId(&_project);
+        saveProjectWorkspace();
+        emit workerPresetsChanged();
+    }
+    return removed;
 }
 
 //----------------------------------------------
@@ -2673,11 +2837,11 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
     QStringList lines;
     lines << QString::fromUtf8(
         "Available worker presets (pick preset_id in delegate_task / add_group_member):\n"
-        "task_kind: intended job for this preset (llm | image_generation | speech | "
-        "audio_generation | video_generation | embedding | decisions | other).\n"
-        "modality: capability of the linked model profile (same enum) — pick a preset "
-        "whose modality matches the subtask (image → image_generation, ASR/TTS → speech, "
-        "music/SFX → audio_generation, video → video_generation, vectors → embedding, "
+        "modality / task_kind: inherited from the linked model profile "
+        "(llm | image_generation | speech | audio_generation | video_generation | "
+        "embedding | decisions | other) — pick a preset whose modality matches the "
+        "subtask (image → image_generation, ASR/TTS → speech, music/SFX → "
+        "audio_generation, video → video_generation, vectors → embedding, "
         "structured choices → decisions, coding/agents → llm).\n"
         "purpose: short human note on WHAT this model is for (e.g. text-to-image generation "
         "vs object segmentation on an image). Prefer the preset whose purpose best matches "
@@ -2699,12 +2863,14 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
             purpose = QString::fromUtf8("(no purpose set)");
         else if (purpose.size() > 200)
             purpose = purpose.left(197) + QString::fromUtf8("...");
+        const WorkerTaskKind modality = profile.id.isEmpty()
+                                        ? preset.taskKind
+                                        : profile.modality;
         lines << QString::fromUtf8(
-                     "- preset_id=%1 type=%2 task_kind=%3 modality=%4 profile=\"%5\" "
-                     "model=%6 purpose=\"%7\"")
+                     "- preset_id=%1 type=%2 modality=%3 profile=\"%4\" "
+                     "model=%5 purpose=\"%6\"")
                      .arg(preset.id, workerTypeToString(preset.type),
-                          workerTaskKindToString(preset.taskKind),
-                          workerTaskKindToString(profile.modality), profileName, model,
+                          workerTaskKindToString(modality), profileName, model,
                           purpose);
     }
     return lines.join(QChar('\n'));

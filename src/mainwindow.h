@@ -112,6 +112,7 @@ private slots:
     void sltAppearanceApplied();
     void sltProfilesChanged();
     void sltDefaultProfilesChanged();
+    void sltRemoveWorkersForProfile(const QString &profileId);
     void sltPrevConfirmation();
     void sltNextConfirmation();
     void sltComposerSend();
@@ -188,6 +189,7 @@ private:
     QString nextChatTitle();
     void loadSettings();
     void applyProjectDirectory(bool loadFileChanges = true, bool bindTree = true);
+    void promptOrphanProjectPresets();
     bool retireProjectStore(QString storeDir);
     void ensureProjectStore();
     void persistAndStopCurrentProject();

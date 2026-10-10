@@ -2568,6 +2568,65 @@ bool WorkerManager::forceRemoveFinished(Worker *worker, QString *error)
 
 //----------------------------------------------
 
+int WorkerManager::countWorkersUsingProfile(QString profileId) const
+{
+    const QString clean = profileId.trimmed();
+    if (clean.isEmpty())
+        return 0;
+    int count = 0;
+    foreach (Worker *worker, _workers)
+    {
+        if (worker && worker->llmProfileId().trimmed() == clean)
+            ++count;
+    }
+    return count;
+}
+
+//----------------------------------------------
+
+int WorkerManager::removeWorkersUsingProfile(QString profileId)
+{
+    const QString clean = profileId.trimmed();
+    if (clean.isEmpty())
+        return 0;
+
+    QList<Worker *> doomed;
+    QList<Worker *> rootsToClear;
+    foreach (Worker *worker, _workers)
+    {
+        if (!worker || worker->llmProfileId().trimmed() != clean)
+            continue;
+        if (worker->isRoot())
+            rootsToClear.append(worker);
+        else
+            doomed.append(worker);
+    }
+
+    int removed = 0;
+    // Сначала листья/инструменты: destroyWorkerNow сносит и детей.
+    for (int i = doomed.size() - 1; i >= 0; --i)
+    {
+        Worker *worker = doomed.at(i);
+        if (!_workers.contains(worker))
+            continue;
+        destroyWorkerNow(worker);
+        ++removed;
+    }
+    foreach (Worker *root, rootsToClear)
+    {
+        if (!root)
+            continue;
+        root->setLlmProfileId(QString());
+        refreshPrompt(root);
+        ++removed;
+    }
+    if (removed > 0)
+        emit treeChanged();
+    return removed;
+}
+
+//----------------------------------------------
+
 QString WorkerManager::runAndWait(Worker *worker)
 {
     if (!worker)
@@ -3122,7 +3181,7 @@ QString WorkerManager::startupContextFor(Worker *worker) const
                     "(modality = API capability: llm | image_generation | speech | "
                     "audio_generation | video_generation | embedding | decisions | other; "
                     "purpose = what THIS model is specialized for). "
-                    "When you spawn children, pick preset_id whose task_kind, modality AND "
+                    "When you spawn children, pick preset_id whose modality AND "
                     "purpose fit the subtask (e.g. text-to-image vs object segmentation are "
                     "both image-related but different purposes; TTS vs STT within speech; "
                     "coding→llm). Read purpose on every preset — do not treat same-modality "

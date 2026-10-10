@@ -646,19 +646,19 @@ bool ChatStore::writeJsonFile(QString path, const QJsonObject &root)
     const QString dir = QFileInfo(path).absolutePath();
     if (!QDir().mkpath(dir))
     {
-        qWarning("dsagent: не удалось создать каталог сессий %s", qPrintable(dir));
+        qWarning("unique: не удалось создать каталог сессий %s", qPrintable(dir));
         return false;
     }
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly))
     {
-        qWarning("dsagent: не удалось записать %s", qPrintable(path));
+        qWarning("unique: не удалось записать %s", qPrintable(path));
         return false;
     }
     file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
     if (!file.commit())
     {
-        qWarning("dsagent: не удалось сохранить %s", qPrintable(path));
+        qWarning("unique: не удалось сохранить %s", qPrintable(path));
         return false;
     }
     return true;

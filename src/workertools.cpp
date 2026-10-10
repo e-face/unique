@@ -865,20 +865,13 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
                 *ok = false;
             return QString::fromUtf8("Preset %1 has an empty profileId.").arg(presetId);
         }
-        const LlmProfile profile = AppSettings::instance()->profileById(llmProfileId);
-        if (!profile.id.isEmpty() && profile.modality != preset.taskKind
-            && preset.taskKind != WorkerTaskKindOther
-            && profile.modality != WorkerTaskKindOther)
+        if (AppSettings::instance()->profileById(llmProfileId).id.isEmpty())
         {
             if (ok)
                 *ok = false;
             return QString::fromUtf8(
-                "preset_id=%1 task_kind=%2 but linked profile modality=%3. "
-                "Align task_kind with the profile modality "
-                "(image_generation / speech / audio_generation / video_generation / "
-                "embedding / decisions / llm).")
-                .arg(presetId, workerTaskKindToString(preset.taskKind),
-                     workerTaskKindToString(profile.modality));
+                "preset_id=%1 points to unknown profileId=%2.")
+                .arg(presetId, llmProfileId);
         }
     }
 
@@ -1632,16 +1625,6 @@ QString CreateToolTool::invoke(QString argumentsJson, bool *ok)
                 *ok = false;
             return QString::fromUtf8("Preset %1 points to unknown profileId=%2.")
                 .arg(presetId, llmProfileId);
-        }
-        if (preset.taskKind != WorkerTaskKindOther && profile.modality != WorkerTaskKindOther
-            && preset.taskKind != profile.modality)
-        {
-            if (ok)
-                *ok = false;
-            return QString::fromUtf8(
-                "preset_id=%1 task_kind=%2 but profile modality=%3. Align them.")
-                .arg(presetId, workerTaskKindToString(preset.taskKind),
-                     workerTaskKindToString(profile.modality));
         }
         modalityNote = QString::fromUtf8(
                            " modality=%1 profile=\"%2\" model=%3 purpose=\"%4\" (preset_id=%5)")
