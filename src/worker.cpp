@@ -377,9 +377,13 @@ void Worker::sendFollowUp(QString message)
     {
         _task = trimmed;
         pushTaskAnchor();
+        _session->agent()->recordLocalExchange(
+            trimmed, QString(), AgentUserIngressFollowUp);
         bool ok = false;
         const QString report = manager->runMediaExecutor(this, &ok);
         _lastAssistant = report;
+        _session->agent()->recordLocalExchange(
+            QString(), report, AgentUserIngressFollowUp);
         complete(report, ok);
         return;
     }
@@ -1412,9 +1416,14 @@ void Worker::startTask()
     if (manager && workerTaskKindIsMediaExecutor(manager->modalityOf(this)))
     {
         // Image/speech/audio/video/embedding — без chat tool_calls.
+        pushTaskAnchor();
+        _session->agent()->recordLocalExchange(
+            _task, QString(), AgentUserIngressAssignment);
         bool ok = false;
         const QString report = manager->runMediaExecutor(this, &ok);
         _lastAssistant = report;
+        _session->agent()->recordLocalExchange(
+            QString(), report, AgentUserIngressAssignment);
         complete(report, ok);
         return;
     }

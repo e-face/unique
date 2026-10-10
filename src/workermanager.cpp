@@ -858,26 +858,47 @@ Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QStr
 
 QString WorkerManager::allocatePersonName() const
 {
-    static const char *kNames[] = {
+    static const char *kNamesRu[] = {
         "Алексей", "Мария", "Иван", "Елена", "Дмитрий", "Анна", "Сергей", "Ольга",
         "Андрей", "Наталья", "Павел", "Екатерина", "Николай", "Татьяна", "Михаил",
         "Юлия", "Артём", "Ирина", "Владимир", "Светлана", "Роман", "Виктория",
         "Кирилл", "Дарья", "Максим", "Полина", "Игорь", "Алина", "Егор", "София",
         "Глеб", "Валерия", "Лев", "Ксения", "Тимур", "Вера", "Марк", "Людмила", 0
     };
+    static const char *kNamesEn[] = {
+        "Alex", "Maria", "Ivan", "Helen", "Dmitri", "Anna", "Serge", "Olga",
+        "Andrew", "Natalie", "Paul", "Catherine", "Nicholas", "Tatiana", "Michael",
+        "Julia", "Artem", "Irene", "Vladimir", "Svetlana", "Roman", "Victoria",
+        "Kirill", "Daria", "Maxim", "Polina", "Igor", "Alina", "Egor", "Sophia",
+        "Gleb", "Valeria", "Lev", "Ksenia", "Timur", "Vera", "Mark", "Lyudmila", 0
+    };
+    static const char *kNamesZh[] = {
+        "阿列克谢", "玛丽亚", "伊万", "叶莲娜", "德米特里", "安娜", "谢尔盖", "奥尔加",
+        "安德烈", "娜塔莉娅", "帕维尔", "叶卡捷琳娜", "尼古拉", "塔季扬娜", "米哈伊尔",
+        "尤利娅", "阿尔乔姆", "伊琳娜", "弗拉基米尔", "斯维特兰娜", "罗曼", "维多利亚",
+        "基里尔", "达丽娅", "马克西姆", "波琳娜", "伊戈尔", "阿琳娜", "叶戈尔", "索菲亚",
+        "格列布", "瓦列里娅", "列夫", "克谢尼娅", "季穆尔", "维拉", "马克", "柳德米拉", 0
+    };
+    const QString lang = AppLocale::instance()->language();
+    const char **names = kNamesRu;
+    if (lang == QString::fromUtf8("en"))
+        names = kNamesEn;
+    else if (lang == QString::fromUtf8("zh"))
+        names = kNamesZh;
+
     QSet<QString> used;
     foreach (Worker *worker, _workers)
     {
         if (worker && !worker->personName().isEmpty())
             used.insert(worker->personName());
     }
-    for (int i = 0; kNames[i]; ++i)
+    for (int i = 0; names[i]; ++i)
     {
-        const QString name = QString::fromUtf8(kNames[i]);
+        const QString name = QString::fromUtf8(names[i]);
         if (!used.contains(name))
             return name;
     }
-    return QString::fromUtf8("Воркер-%1").arg(used.size() + 1);
+    return tr("Воркер-%1").arg(used.size() + 1);
 }
 
 //----------------------------------------------

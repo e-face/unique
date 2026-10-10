@@ -2042,14 +2042,13 @@ void MainWindow::sltShowBalance()
 
 void MainWindow::sltShowAbout()
 {
-    const QString text = tr(
-        "<h3>%1</h3>"
-        "<p>Версия %2</p>"
-        "<p>Агент ИИ для работы над проектами.</p>"
-        "<p>Qt %3</p>")
-                             .arg(QString::fromUtf8(UNIQUE_APP_NAME),
-                                  QString::fromUtf8(UNIQUE_APP_VERSION),
-                                  QString::fromUtf8(QT_VERSION_STR));
+    const QString email = QString::fromUtf8("e-face@bk.ru");
+    const QString text =
+        QString::fromUtf8("<h3>%1</h3><p>%2</p><p>%3</p><p>%4</p>")
+            .arg(QString::fromUtf8(UNIQUE_APP_NAME),
+                 tr("Версия %1").arg(QString::fromUtf8(UNIQUE_APP_VERSION)),
+                 tr("Агент ИИ с функциями распределения ролей."),
+                 tr("Связь: <a href=\"mailto:%1\">%1</a>").arg(email));
     QMessageBox::about(this, tr("О программе"), text);
 }
 
@@ -3245,7 +3244,7 @@ void MainWindow::retranslateUi()
         _nextConfirmAction->setToolTip(L("toolbar.nextConfirmTip"));
     }
     if (_composerBar)
-        _composerBar->setPlaceholder(L("composer.placeholder"));
+        _composerBar->retranslateUi();
     QToolBar *toolbar = findChild<QToolBar *>(QString::fromUtf8("mainToolBar"));
     if (toolbar)
         toolbar->setWindowTitle(L("toolbar.title"));
@@ -3283,6 +3282,14 @@ void MainWindow::retranslateUi()
     {
         if (!session || !session->widget())
             continue;
+        Worker *worker = session->worker();
+        if (worker)
+        {
+            session->widget()->setAuthorLabels(
+                tr("Пользователь"), workerWindowTitle(worker));
+            if (_journal && session->agent())
+                _journal->setAgentLabel(session->agent(), workerWindowTitle(worker));
+        }
         session->widget()->retranslateUi();
         updateSessionTabTitle(session);
     }
@@ -3306,6 +3313,8 @@ void MainWindow::retranslateUi()
         if (title)
             title->setTitle(tr("Команда"));
     }
+    // Placeholder/кнопки композера зависят от языка и состояния сессии.
+    updateComposerState();
 }
 
 //----------------------------------------------
@@ -4597,16 +4606,13 @@ void MainWindow::updateComposerState()
     updateComposerAttachmentsUi();
 
     if (!hasOpenProject())
-        _composerBar->setPlaceholder(tr("Откройте или создайте проект"));
+        _composerBar->setPlaceholder(L("composer.placeholder.noProject"));
     else if (!session)
-        _composerBar->setPlaceholder(tr("Нет главного менеджера — отправка создаст чат"));
+        _composerBar->setPlaceholder(L("composer.placeholder.noRoot"));
     else if (!canSend)
-        _composerBar->setPlaceholder(
-            tr("Главный менеджер занят: ожидание модели или дочерних воркеров…"));
+        _composerBar->setPlaceholder(L("composer.placeholder.busy"));
     else
-        _composerBar->setPlaceholder(
-            tr("Сообщение главному менеджеру… Enter — отправить, Shift+Enter — строка, "
-               "перетащите файлы сюда"));
+        _composerBar->setPlaceholder(L("composer.placeholder.ready"));
 }
 
 //----------------------------------------------

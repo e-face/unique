@@ -448,7 +448,7 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
     lines << typeLabelFor(worker);
     const QString profileName = profileLabel(worker);
     if (!profileName.isEmpty())
-        lines << elideLine(tr("модель: ") + profileName, fm, textMaxW);
+        lines << elideLine(tr("модель: %1").arg(profileName), fm, textMaxW);
     QString tip;
     if (worker->isTool())
     {
@@ -480,7 +480,7 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
         {
             if (!tip.isEmpty())
                 tip += QString::fromUtf8("\n");
-            tip += tr("Профиль: ") + profileName;
+            tip += tr("Профиль: %1").arg(profileName);
         }
         if (!tip.isEmpty())
             tip += QString::fromUtf8("\n");
@@ -492,7 +492,7 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
         QStringList names;
         foreach (Worker *child, waiting)
             names.append(typeLabelFor(child));
-        lines << elideLine(tr("ждёт: ") + names.join(tr(", ")),
+        lines << elideLine(tr("ждёт: %1").arg(names.join(tr(", "))),
                            fm, textMaxW);
     }
     while (lines.size() > 5)

@@ -244,7 +244,12 @@ void AppLocale::loadLegacyTranslator(const QString &dir)
         translation.replace(QString::fromUtf8("\\n"), QString::fromUtf8("\n"));
         source.replace(QString::fromUtf8("\x01"), QString::fromUtf8("\\"));
         translation.replace(QString::fromUtf8("\x01"), QString::fromUtf8("\\"));
-        source = source.trimmed();
+        // Не source.trimmed(): ключи tr() часто с хвостовым пробелом
+        // («модель: », «ждёт: », «, ») — иначе lookup не находит перевод.
+        while (!source.isEmpty()
+               && (source.at(0) == QLatin1Char(' ')
+                   || source.at(0) == QLatin1Char('\t')))
+            source = source.mid(1);
         if (translation.startsWith(QLatin1Char(' ')))
             translation = translation.mid(1);
         if (!source.isEmpty() && !translation.isEmpty())

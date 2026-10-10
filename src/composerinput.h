@@ -44,6 +44,7 @@ public:
     void setReadOnly(bool on);
     void applyTheme(QString panel, QString input, QString text, QString border,
                     QString muted, QString accent);
+    void retranslateUi();
 
 signals:
     void sendClicked();

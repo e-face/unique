@@ -49,6 +49,7 @@ struct LlmMessage
 {
     LlmMessage()
         : role(LlmRoleUser)
+        , hideInUi(false)
     {
     }
 
@@ -59,6 +60,11 @@ struct LlmMessage
     QString            toolCallId;
     QString            reasoningContent;
     QList<LlmToolCall> toolCalls;
+    /**
+     * @brief Служебный контекст для модели (injectContext): в API уходит,
+     *        в ленте чата не показывается.
+     */
+    bool               hideInUi;
 };
 
 //----------------------------------------------

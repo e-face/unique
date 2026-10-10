@@ -441,6 +441,8 @@ QJsonObject ChatStore::messageToJson(const LlmMessage &message)
         object.insert(QString::fromUtf8("tool_call_id"), message.toolCallId);
     if (!message.reasoningContent.isEmpty())
         object.insert(QString::fromUtf8("reasoning_content"), message.reasoningContent);
+    if (message.hideInUi)
+        object.insert(QString::fromUtf8("hide_in_ui"), true);
 
     if (!message.toolCalls.isEmpty())
     {
@@ -486,6 +488,7 @@ LlmMessage ChatStore::messageFromJson(const QJsonObject &object)
     message.name = object.value(QString::fromUtf8("name")).toString();
     message.toolCallId = object.value(QString::fromUtf8("tool_call_id")).toString();
     message.reasoningContent = object.value(QString::fromUtf8("reasoning_content")).toString();
+    message.hideInUi = object.value(QString::fromUtf8("hide_in_ui")).toBool();
 
     const QJsonArray calls = object.value(QString::fromUtf8("tool_calls")).toArray();
     for (int i = 0; i < calls.size(); ++i)

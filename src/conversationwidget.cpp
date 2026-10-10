@@ -605,6 +605,9 @@ void ConversationWidget::retranslateUi()
                                    .arg(reserve));
         }
     }
+
+    // Подписи пузырей («Функция», «Задание» …) — по kind, не по сохранённому языку.
+    refreshDisplayTitles();
 }
 
 //----------------------------------------------
@@ -701,6 +704,16 @@ void ConversationWidget::restoreDisplayLog(const QList<ChatDisplayItem> &items)
 
 //----------------------------------------------
 
+static bool looksLikeInjectedStartupContext(const QString &text)
+{
+    // Старые чаты без hide_in_ui: служебный префикс воркера.
+    return text.startsWith(QString::fromUtf8("Worker tree limits:"))
+           || text.startsWith(QString::fromUtf8("You are a shared tool outside"))
+           || text.contains(QString::fromUtf8("Available worker presets (pick preset_id"));
+}
+
+//----------------------------------------------
+
 void ConversationWidget::restoreFromHistory(const QList<LlmMessage> &history)
 {
     QList<ChatDisplayItem> items;
@@ -709,6 +722,9 @@ void ConversationWidget::restoreFromHistory(const QList<LlmMessage> &history)
 
     foreach (const LlmMessage &message, history)
     {
+        if (message.hideInUi)
+            continue;
+
         if (message.role == LlmRoleSystem)
         {
             if (skipFirstSystem)
@@ -717,8 +733,9 @@ void ConversationWidget::restoreFromHistory(const QList<LlmMessage> &history)
                 continue;
             }
             ChatDisplayItem item;
-            item.kind = QString::fromUtf8("notice");
-            item.title = tr("Контекст");
+            item.kind = QString::fromUtf8("forwarded");
+            item.title = titleForKind(item.kind);
+            item.authorKey = item.kind;
             item.text = message.content;
             items.append(item);
             continue;
@@ -726,9 +743,12 @@ void ConversationWidget::restoreFromHistory(const QList<LlmMessage> &history)
 
         if (message.role == LlmRoleUser)
         {
+            if (looksLikeInjectedStartupContext(message.content.trimmed()))
+                continue;
             ChatDisplayItem item;
             item.kind = QString::fromUtf8("user");
-            item.title = tr("Вы");
+            item.title = titleForKind(item.kind);
+            item.authorKey = item.kind;
             item.text = message.content;
             items.append(item);
             continue;
@@ -741,7 +761,8 @@ void ConversationWidget::restoreFromHistory(const QList<LlmMessage> &history)
             {
                 ChatDisplayItem item;
                 item.kind = QString::fromUtf8("assistant");
-                item.title = tr("Ассистент");
+                item.title = titleForKind(item.kind);
+                item.authorKey = item.title;
                 item.text = message.content;
                 items.append(item);
             }
@@ -766,7 +787,8 @@ void ConversationWidget::restoreFromHistory(const QList<LlmMessage> &history)
             }
             ChatDisplayItem item;
             item.kind = QString::fromUtf8("tool");
-            item.title = tr("Функция");
+            item.title = titleForKind(item.kind);
+            item.authorKey = item.kind;
             if (!args.isEmpty())
                 item.text = QString::fromUtf8("%1(%2)\n%3").arg(name, args, message.content);
             else
@@ -818,6 +840,120 @@ QString ConversationWidget::assistantAuthorLabel() const
     if (!_assistantAuthor.isEmpty())
         return _assistantAuthor;
     return tr("Ассистент");
+}
+
+//----------------------------------------------
+
+QString ConversationWidget::titleForKind(const QString &kind) const
+{
+    if (kind == QString::fromUtf8("assignment"))
+        return tr("Задание");
+    if (kind == QString::fromUtf8("followup"))
+        return tr("Уточнение");
+    if (kind == QString::fromUtf8("group"))
+        return tr("Группа");
+    if (kind == QString::fromUtf8("user"))
+        return userAuthorLabel();
+    if (kind == QString::fromUtf8("assistant"))
+        return assistantAuthorLabel();
+    if (kind == QString::fromUtf8("tool"))
+        return tr("Функция");
+    if (kind == QString::fromUtf8("tool_error"))
+        return tr("Функция (ошибка)");
+    if (kind == QString::fromUtf8("notice"))
+        return tr("Заметка");
+    if (kind == QString::fromUtf8("forwarded"))
+        return tr("Контекст");
+    if (kind == QString::fromUtf8("error"))
+        return tr("Ошибка");
+    return QString();
+}
+
+//----------------------------------------------
+
+QString ConversationWidget::normalizeDisplayKind(const ChatDisplayItem &item) const
+{
+    const QString kind = item.kind.trimmed();
+    if (kind == QString::fromUtf8("assignment")
+        || kind == QString::fromUtf8("followup")
+        || kind == QString::fromUtf8("group")
+        || kind == QString::fromUtf8("user")
+        || kind == QString::fromUtf8("assistant")
+        || kind == QString::fromUtf8("tool")
+        || kind == QString::fromUtf8("tool_error")
+        || kind == QString::fromUtf8("notice")
+        || kind == QString::fromUtf8("forwarded")
+        || kind == QString::fromUtf8("error"))
+        return kind;
+
+    const QString title = item.title.trimmed();
+    const QString key = item.authorKey.trimmed();
+    const QString probe = key.isEmpty() ? title : key;
+    if (probe == QString::fromUtf8("Задание") || probe == QString::fromUtf8("Task")
+        || probe == QString::fromUtf8("任务") || title == tr("Задание"))
+        return QString::fromUtf8("assignment");
+    if (probe == QString::fromUtf8("Уточнение") || probe == QString::fromUtf8("Clarification")
+        || probe == QString::fromUtf8("澄清") || title == tr("Уточнение"))
+        return QString::fromUtf8("followup");
+    if (probe == QString::fromUtf8("Группа") || probe == QString::fromUtf8("Group")
+        || probe == QString::fromUtf8("群组") || title == tr("Группа"))
+        return QString::fromUtf8("group");
+    if (title == QString::fromUtf8("Функция (ошибка)")
+        || title == QString::fromUtf8("Function (error)")
+        || title == QString::fromUtf8("函数（错误）")
+        || title == tr("Функция (ошибка)"))
+        return QString::fromUtf8("tool_error");
+    if (title == QString::fromUtf8("Функция") || title == QString::fromUtf8("Function")
+        || title == QString::fromUtf8("函数") || title == tr("Функция")
+        || kind == QString::fromUtf8("tool"))
+        return QString::fromUtf8("tool");
+    if (title == QString::fromUtf8("Заметка") || title == QString::fromUtf8("Note")
+        || title == QString::fromUtf8("备注") || title == tr("Заметка"))
+        return QString::fromUtf8("notice");
+    if (title == QString::fromUtf8("Контекст") || title == QString::fromUtf8("Context")
+        || title == QString::fromUtf8("上下文") || title == tr("Контекст"))
+        return QString::fromUtf8("forwarded");
+    if (title == QString::fromUtf8("Ошибка") || title == QString::fromUtf8("Error")
+        || title == QString::fromUtf8("错误") || title == tr("Ошибка")
+        || kind == QString::fromUtf8("error"))
+        return QString::fromUtf8("error");
+    if (kind == QString::fromUtf8("assistant"))
+        return QString::fromUtf8("assistant");
+    if (kind == QString::fromUtf8("user"))
+        return QString::fromUtf8("user");
+    return kind;
+}
+
+//----------------------------------------------
+
+void ConversationWidget::refreshDisplayTitles()
+{
+    if (_displayLog.isEmpty())
+        return;
+    QList<ChatDisplayItem> items = _displayLog;
+    for (int i = 0; i < items.size(); ++i)
+    {
+        ChatDisplayItem &item = items[i];
+        const QString kind = normalizeDisplayKind(item);
+        item.kind = kind;
+        const QString fresh = titleForKind(kind);
+        if (!fresh.isEmpty())
+            item.title = fresh;
+        if (kind == QString::fromUtf8("assignment")
+            || kind == QString::fromUtf8("followup")
+            || kind == QString::fromUtf8("group")
+            || kind == QString::fromUtf8("tool")
+            || kind == QString::fromUtf8("tool_error")
+            || kind == QString::fromUtf8("notice")
+            || kind == QString::fromUtf8("forwarded")
+            || kind == QString::fromUtf8("error"))
+            item.authorKey = kind;
+        else if (kind == QString::fromUtf8("assistant"))
+            item.authorKey = assistantAuthorLabel();
+        else if (kind == QString::fromUtf8("user"))
+            item.authorKey = userAuthorLabel();
+    }
+    restoreDisplayLog(items);
 }
 
 //----------------------------------------------
@@ -1007,29 +1143,35 @@ void ConversationWidget::recordDisplay(QString kind, QString title, QString text
 
 void ConversationWidget::replayDisplayItem(const ChatDisplayItem &item)
 {
-    const QString kind = item.kind;
-    const QString key = item.authorKey.isEmpty() ? item.title : item.authorKey;
-    if (kind == QString::fromUtf8("user"))
-        addPlainBubble(item.title, item.text, QString::fromUtf8("userMsg"), true,
+    const QString kind = normalizeDisplayKind(item);
+    const QString localized = titleForKind(kind);
+    const QString title = localized.isEmpty() ? item.title : localized;
+    const QString key = item.authorKey.isEmpty() ? title : item.authorKey;
+    if (kind == QString::fromUtf8("user")
+        || kind == QString::fromUtf8("assignment")
+        || kind == QString::fromUtf8("followup")
+        || kind == QString::fromUtf8("group"))
+        addPlainBubble(title, item.text, QString::fromUtf8("userMsg"), true,
                        false, false, key);
     else if (kind == QString::fromUtf8("assistant"))
-        addBubble(item.title, MarkdownFormatter::toHtml(item.text), item.text,
+        addBubble(title, MarkdownFormatter::toHtml(item.text), item.text,
                   QString::fromUtf8("assistantMsg"), false, false, key);
-    else if (kind == QString::fromUtf8("tool"))
-        addPlainBubble(item.title, item.text, QString::fromUtf8("toolMsg"), false,
+    else if (kind == QString::fromUtf8("tool")
+             || kind == QString::fromUtf8("tool_error"))
+        addPlainBubble(title, item.text, QString::fromUtf8("toolMsg"), false,
                        false, false, key);
     else if (kind == QString::fromUtf8("error"))
-        addPlainBubble(item.title, item.text, QString::fromUtf8("errorMsg"), false,
+        addPlainBubble(title, item.text, QString::fromUtf8("errorMsg"), false,
                        false, false, key);
     else if (kind == QString::fromUtf8("forwarded"))
     {
         if (!AppSettings::instance()->showForwardedContext())
             return;
-        addPlainBubble(item.title, item.text, QString::fromUtf8("noticeMsg"), false,
+        addPlainBubble(title, item.text, QString::fromUtf8("noticeMsg"), false,
                        false, false, key);
     }
     else
-        addPlainBubble(item.title, item.text, QString::fromUtf8("noticeMsg"), false,
+        addPlainBubble(title, item.text, QString::fromUtf8("noticeMsg"), false,
                        false, false, key);
 }
 
@@ -1378,18 +1520,13 @@ void ConversationWidget::sltUserMessage(const QString &text)
     if (ingress == AgentUserIngressSystem)
         return;
 
-    QString title = userAuthorLabel();
-    QString colorKey = QString::fromUtf8("Пользователь");
+    QString kind = QString::fromUtf8("user");
     QString body = text;
     if (ingress == AgentUserIngressAssignment)
-    {
-        title = tr("Задание");
-        colorKey = title;
-    }
+        kind = QString::fromUtf8("assignment");
     else if (ingress == AgentUserIngressFollowUp)
     {
-        title = tr("Уточнение");
-        colorKey = title;
+        kind = QString::fromUtf8("followup");
         if (body.startsWith(QString::fromUtf8("Follow-up from your parent worker.")))
         {
             const int sep = body.indexOf(QString::fromUtf8("\n\n"));
@@ -1399,8 +1536,7 @@ void ConversationWidget::sltUserMessage(const QString &text)
     }
     else if (ingress == AgentUserIngressGroup)
     {
-        title = tr("Группа");
-        colorKey = title;
+        kind = QString::fromUtf8("group");
         if (body.startsWith(QString::fromUtf8("[Your turn as narrator]")))
             body = tr("Ваш ход в обсуждении");
         else if (body.startsWith(QString::fromUtf8("[Group VOTE required]")))
@@ -1412,7 +1548,9 @@ void ConversationWidget::sltUserMessage(const QString &text)
             body = tr("Ожидание хода");
     }
 
-    recordDisplay(QString::fromUtf8("user"), title, body, colorKey);
+    const QString title = titleForKind(kind);
+    const QString colorKey = kind;
+    recordDisplay(kind, title, body, colorKey);
     addPlainBubble(title, body, QString::fromUtf8("userMsg"), true, false, false, colorKey);
 }
 
@@ -1420,8 +1558,9 @@ void ConversationWidget::sltUserMessage(const QString &text)
 
 void ConversationWidget::sltAssistantMessage(const QString &text)
 {
-    const QString title = assistantAuthorLabel();
-    recordDisplay(QString::fromUtf8("assistant"), title, text, title);
+    const QString kind = QString::fromUtf8("assistant");
+    const QString title = titleForKind(kind);
+    recordDisplay(kind, title, text, title);
     const QString html = MarkdownFormatter::toHtml(clipDisplay(text, 24000));
     addBubble(title, html, text, QString::fromUtf8("assistantMsg"), false, false, title);
 }
@@ -1442,12 +1581,14 @@ void ConversationWidget::sltToolCallFinished(const QString &name, const QString 
     QString body = QString::fromUtf8("%1(%2)").arg(name, _pendingToolArgs);
     body += QChar('\n');
     body += result;
-    const QString title = ok ? tr("Функция") : tr("Функция (ошибка)");
-    recordDisplay(QString::fromUtf8("tool"), title, body, title);
+    const QString kind = ok ? QString::fromUtf8("tool")
+                            : QString::fromUtf8("tool_error");
+    const QString title = titleForKind(kind);
+    recordDisplay(kind, title, body, kind);
     addPlainBubble(title,
                    body,
                    QString::fromUtf8("toolMsg"),
-                   false, false, false, title);
+                   false, false, false, kind);
     _pendingToolName.clear();
     _pendingToolArgs.clear();
     // Media-executor вызывает invokeTool без setBusy — иначе таймер
@@ -1462,29 +1603,35 @@ void ConversationWidget::sltToolCallFinished(const QString &name, const QString 
 
 void ConversationWidget::sltNotice(const QString &text)
 {
-    recordDisplay(QString::fromUtf8("notice"), tr("Заметка"), text, tr("Заметка"));
-    addPlainBubble(tr("Заметка"), text, QString::fromUtf8("noticeMsg"), false,
-                   false, false, tr("Заметка"));
+    const QString kind = QString::fromUtf8("notice");
+    const QString title = titleForKind(kind);
+    recordDisplay(kind, title, text, kind);
+    addPlainBubble(title, text, QString::fromUtf8("noticeMsg"), false,
+                   false, false, kind);
 }
 
 //----------------------------------------------
 
 void ConversationWidget::sltForwardedContext(const QString &text)
 {
-    recordDisplay(QString::fromUtf8("forwarded"), tr("Контекст"), text, tr("Контекст"));
+    const QString kind = QString::fromUtf8("forwarded");
+    const QString title = titleForKind(kind);
+    recordDisplay(kind, title, text, kind);
     if (!AppSettings::instance()->showForwardedContext())
         return;
-    addPlainBubble(tr("Контекст"), text, QString::fromUtf8("noticeMsg"), false,
-                   false, false, tr("Контекст"));
+    addPlainBubble(title, text, QString::fromUtf8("noticeMsg"), false,
+                   false, false, kind);
 }
 
 //----------------------------------------------
 
 void ConversationWidget::sltFailed(const QString &error)
 {
-    recordDisplay(QString::fromUtf8("error"), tr("Ошибка"), error, tr("Ошибка"));
-    addPlainBubble(tr("Ошибка"), error, QString::fromUtf8("errorMsg"), false,
-                   false, false, tr("Ошибка"));
+    const QString kind = QString::fromUtf8("error");
+    const QString title = titleForKind(kind);
+    recordDisplay(kind, title, error, kind);
+    addPlainBubble(title, error, QString::fromUtf8("errorMsg"), false,
+                   false, false, kind);
 }
 
 //----------------------------------------------

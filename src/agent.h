@@ -51,6 +51,10 @@ public:
      * @brief Заметка в чат/журнал (прогресс media-tools и т.п.).
      */
     void postNotice(QString text);
+    /**
+     * @brief Записать ход media-executor в историю и ленту без вызова LLM.
+     */
+    void recordLocalExchange(QString userText, QString assistantText, int ingress = 1);
     void setSystemPrompt(QString prompt);
     QString systemPrompt() const;
     void setProjectDirectory(QString path);

@@ -1,5 +1,7 @@
 #include "composerinput.h"
 //----------------------------------------------
+#include "applocale.h"
+//----------------------------------------------
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
@@ -174,18 +176,14 @@ ComposerInput::ComposerInput(QWidget *parent)
     _plusButton->setText(QString::fromUtf8("+"));
     _plusButton->setFixedSize(32, 32);
     _plusButton->setCursor(Qt::PointingHandCursor);
-    _plusButton->setToolTip(tr("Прикрепить файл"));
     connect(_plusButton, SIGNAL(clicked()), this, SIGNAL(plusClicked()));
 
     _capsHint = new QLabel(this);
     _capsHint->setObjectName(QString::fromUtf8("composerCapsHint"));
-    _capsHint->setText(tr("Auto"));
     _capsHint->setStyleSheet(QString::fromUtf8("font-size:12px;"));
 
     _stopButton = new QPushButton(this);
     _stopButton->setObjectName(QString::fromUtf8("composerStop"));
-    _stopButton->setText(tr("Стоп"));
-    _stopButton->setToolTip(tr("Остановить"));
     _stopButton->setCursor(Qt::PointingHandCursor);
     _stopButton->setEnabled(false);
     connect(_stopButton, SIGNAL(clicked()), this, SIGNAL(stopClicked()));
@@ -194,9 +192,10 @@ ComposerInput::ComposerInput(QWidget *parent)
     _sendButton->setObjectName(QString::fromUtf8("composerSend"));
     _sendButton->setFixedSize(36, 36);
     _sendButton->setCursor(Qt::PointingHandCursor);
-    _sendButton->setToolTip(tr("Отправить"));
     _sendButton->setText(QString::fromUtf8("↑"));
     connect(_sendButton, SIGNAL(clicked()), this, SIGNAL(sendClicked()));
+
+    retranslateUi();
 
     QHBoxLayout *toolbar = new QHBoxLayout();
     toolbar->setContentsMargins(4, 0, 4, 2);
@@ -247,6 +246,35 @@ void ComposerInput::setPlaceholder(QString text)
 {
     if (_editor)
         _editor->setPlaceholderText(text);
+}
+
+//----------------------------------------------
+
+void ComposerInput::retranslateUi()
+{
+    // Placeholder подставляет MainWindow::updateComposerState() по состоянию.
+    if (_plusButton)
+        _plusButton->setToolTip(L("composer.attachTip"));
+    if (_stopButton)
+    {
+        _stopButton->setText(L("composer.stop"));
+        _stopButton->setToolTip(L("composer.stopTip"));
+    }
+    if (_sendButton)
+    {
+        // Стрелка — визуал; доступное имя — локализованный Send.
+        _sendButton->setToolTip(L("composer.send"));
+        _sendButton->setAccessibleName(L("composer.send"));
+    }
+    if (_capsHint)
+    {
+        const QString cur = _capsHint->text().trimmed();
+        if (cur.isEmpty()
+            || cur == QString::fromUtf8("Auto")
+            || cur == QString::fromUtf8("Авто")
+            || cur == QString::fromUtf8("自动"))
+            _capsHint->setText(tr("Auto"));
+    }
 }
 
 //----------------------------------------------

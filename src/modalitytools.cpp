@@ -13,6 +13,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QMimeDatabase>
+#include <QRegExp>
 
 //----------------------------------------------
 
@@ -63,29 +64,207 @@ static bool ttsMetaLine(const QString &line)
     const QString t = line.trimmed();
     if (t.isEmpty())
         return false;
-    QRegExp re(QString::fromUtf8(
-        "^(voice(_id|_description)?|format|instructions?|style|speed|model|output(_path)?|"
-        "response_format|голос|формат|указания|инструкция|стиль|скорость|модель|"
-        "описание\\s+голоса)\\s*[:\\-]"),
-               Qt::CaseInsensitive);
-    return re.indexIn(t) >= 0;
+    const QString low = t.toLower();
+    static const char *prefixes[] = {
+        "voice:", "voice_id:", "voice_description:", "format:", "instruction:",
+        "instructions:", "style:", "speed:", "model:", "output:", "output_path:",
+        "response_format:",
+        "голос:", "формат:", "указания:", "инструкция:", "стиль:", "скорость:",
+        "модель:", "описание голоса:",
+        0
+    };
+    for (int i = 0; prefixes[i]; ++i)
+    {
+        if (low.startsWith(QString::fromUtf8(prefixes[i])))
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+static bool ttsInstructionSuffix(const QString &s)
+{
+    const QString t = s.trimmed().toLower();
+    if (t.isEmpty())
+        return false;
+    static const char *heads[] = {
+        "верни", "возврат", "сохрани", "сохраните", "сообщи", "сообщите",
+        "укажи", "укажите", "return", "save", "report", "tell", "provide",
+        "write", "put",
+        0
+    };
+    for (int i = 0; heads[i]; ++i)
+    {
+        const QString h = QString::fromUtf8(heads[i]);
+        if (t == h || t.startsWith(h + QChar(' ')) || t.startsWith(h + QChar(',')))
+            return true;
+    }
+    return false;
 }
 
 //----------------------------------------------
 
 static bool ttsContentMarkerLine(const QString &line, QString *restOut)
 {
-    const QString t = line.trimmed();
-    QRegExp re(QString::fromUtf8(
-        "^(text\\s+to\\s+speak|speak|script|spoken\\s+text|speech\\s+text|utterance|content|"
-        "input\\s+text|озвуч(ить|и|ка)|текст\\s+для\\s+озвучки|сказать|прочитать|"
-        "синтезировать)\\s*[:\\-]\\s*(.*)$"),
-               Qt::CaseInsensitive);
-    if (re.indexIn(t) < 0)
+    QString t = line.trimmed();
+    if (t.isEmpty())
         return false;
-    if (restOut)
-        *restOut = re.cap(2).trimmed();
-    return true;
+    const QString low = t.toLower();
+    static const char *markers[] = {
+        "text to speak", "spoken text", "speech text", "input text",
+        "synthesize speech", "synthesize", "speak", "script", "utterance",
+        "content", "read aloud", "read out loud", "read the following",
+        "озвучить", "озвучьте", "озвучь", "озвучка",
+        "текст для озвучки", "сказать", "прочитать",
+        "синтезируй речь по тексту", "синтезируйте речь по тексту",
+        "синтезируй речь", "синтезируйте речь",
+        "синтезировать речь по тексту", "синтезировать речь",
+        "синтезируй", "синтезируйте", "синтезировать",
+        0
+    };
+    for (int i = 0; markers[i]; ++i)
+    {
+        const QString m = QString::fromUtf8(markers[i]);
+        if (!low.startsWith(m))
+            continue;
+        QString rest = t.mid(m.size()).trimmed();
+        if (rest.startsWith(QChar(':')) || rest.startsWith(QChar(0xFF1A))
+            || rest.startsWith(QChar('-')))
+            rest = rest.mid(1).trimmed();
+        if (restOut)
+            *restOut = rest;
+        return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+/** Достать реплику из «…» / "…" / “…” — без QRegExp (кириллица/UTF). */
+static QString ttsExtractQuotedSpeech(const QString &text)
+{
+    struct Hit
+    {
+        int     start;
+        QString body;
+    };
+    QList<Hit> hits;
+
+    const QChar openG(0x00AB);  // «
+    const QChar closeG(0x00BB); // »
+    int pos = 0;
+    while (pos < text.size())
+    {
+        const int a = text.indexOf(openG, pos);
+        if (a < 0)
+            break;
+        const int b = text.indexOf(closeG, a + 1);
+        if (b < 0)
+            break;
+        Hit h;
+        h.start = a;
+        h.body = text.mid(a + 1, b - a - 1).trimmed();
+        if (!h.body.isEmpty())
+            hits.append(h);
+        pos = b + 1;
+    }
+
+    pos = 0;
+    while (pos < text.size())
+    {
+        const int a = text.indexOf(QChar('"'), pos);
+        if (a < 0)
+            break;
+        const int b = text.indexOf(QChar('"'), a + 1);
+        if (b < 0)
+            break;
+        Hit h;
+        h.start = a;
+        h.body = text.mid(a + 1, b - a - 1).trimmed();
+        if (!h.body.isEmpty())
+            hits.append(h);
+        pos = b + 1;
+    }
+
+    const QChar openC(0x201C);  // “
+    const QChar closeC(0x201D); // ”
+    pos = 0;
+    while (pos < text.size())
+    {
+        const int a = text.indexOf(openC, pos);
+        if (a < 0)
+            break;
+        const int b = text.indexOf(closeC, a + 1);
+        if (b < 0)
+            break;
+        Hit h;
+        h.start = a;
+        h.body = text.mid(a + 1, b - a - 1).trimmed();
+        if (!h.body.isEmpty())
+            hits.append(h);
+        pos = b + 1;
+    }
+
+    if (hits.isEmpty())
+        return QString();
+
+    Hit best = hits.first();
+    foreach (const Hit &h, hits)
+    {
+        const QString before = text.left(h.start).toLower();
+        const bool afterSynth =
+            before.contains(QString::fromUtf8("синтезир"))
+            || before.contains(QString::fromUtf8("озвуч"))
+            || before.contains(QString::fromUtf8("speak"))
+            || before.contains(QString::fromUtf8("synthes"))
+            || before.contains(QString::fromUtf8("read"))
+            || before.contains(QString::fromUtf8("текст"));
+        const QString bestBefore = text.left(best.start).toLower();
+        const bool bestAfterSynth =
+            bestBefore.contains(QString::fromUtf8("синтезир"))
+            || bestBefore.contains(QString::fromUtf8("озвуч"))
+            || bestBefore.contains(QString::fromUtf8("speak"))
+            || bestBefore.contains(QString::fromUtf8("synthes"));
+        if (afterSynth && !bestAfterSynth)
+            best = h;
+        else if (afterSynth == bestAfterSynth && h.body.size() > best.body.size())
+            best = h;
+    }
+    return best.body;
+}
+
+//----------------------------------------------
+
+static QString ttsStripInstructionWrapper(QString text)
+{
+    text = text.trimmed();
+    if (text.isEmpty())
+        return text;
+
+    QString rest;
+    if (ttsContentMarkerLine(text, &rest) && !rest.isEmpty())
+        text = rest;
+
+    // Хвост: «Верни аудио…» / Return the audio…
+    const QString low = text.toLower();
+    static const char *tails[] = {
+        " верни аудио", " верните аудио", " сообщи", " сообщите",
+        " укажи", " укажите", " сохрани", " сохраните",
+        " return the audio", " return audio", " save the audio",
+        " tell me", " report ",
+        0
+    };
+    int cut = -1;
+    for (int i = 0; tails[i]; ++i)
+    {
+        const int at = low.indexOf(QString::fromUtf8(tails[i]));
+        if (at >= 0 && (cut < 0 || at < cut))
+            cut = at;
+    }
+    if (cut > 0)
+        text = text.left(cut).trimmed();
+    return text.trimmed();
 }
 
 //----------------------------------------------
@@ -112,6 +291,10 @@ static QString ttsHeuristicPlainTask(QString task)
     if (task.isEmpty())
         return task;
 
+    const QString quoted = ttsExtractQuotedSpeech(task);
+    if (!quoted.isEmpty())
+        return quoted;
+
     const QStringList lines = task.split(QChar('\n'));
     QStringList body;
     bool afterMarker = false;
@@ -127,21 +310,41 @@ static QString ttsHeuristicPlainTask(QString task)
             continue;
         }
         if (afterMarker)
+        {
+            if (ttsInstructionSuffix(line))
+                break;
             body.append(line);
-        else if (!ttsMetaLine(line))
+        }
+        else if (!ttsMetaLine(line) && !ttsInstructionSuffix(line))
+        {
             body.append(line);
+        }
     }
     if (!body.isEmpty())
-        return body.join(QString::fromUtf8("\n")).trimmed();
+        return ttsStripInstructionWrapper(body.join(QString::fromUtf8("\n")).trimmed());
 
     QStringList nonMeta;
     foreach (const QString &line, lines)
     {
-        if (!ttsMetaLine(line))
+        if (!ttsMetaLine(line) && !ttsInstructionSuffix(line))
             nonMeta.append(line);
     }
     const QString joined = nonMeta.join(QString::fromUtf8("\n")).trimmed();
-    return joined.isEmpty() ? task : joined;
+    return ttsStripInstructionWrapper(joined.isEmpty() ? task : joined);
+}
+
+//----------------------------------------------
+
+/** Итоговая строка для TTS: только речь, без мета-инструкций LLM. */
+static QString ttsSanitizeSpeakText(QString raw)
+{
+    raw = raw.trimmed();
+    if (raw.isEmpty())
+        return raw;
+    const QString quoted = ttsExtractQuotedSpeech(raw);
+    if (!quoted.isEmpty())
+        return quoted;
+    return ttsHeuristicPlainTask(raw);
 }
 
 //----------------------------------------------
@@ -165,9 +368,8 @@ QJsonObject buildTextToSpeechToolArgs(const QString &taskText, const QJsonObject
     QJsonObject out;
     QString speak = ttsSpeakTextFromObject(obj);
     if (speak.isEmpty() && !trimmedTask.isEmpty() && !taskDoc.isObject())
-        speak = ttsHeuristicPlainTask(trimmedTask);
-    else if (!speak.isEmpty() && speak.contains(QChar('\n')) && ttsMetaLine(speak.split(QChar('\n')).first()))
-        speak = ttsHeuristicPlainTask(speak);
+        speak = trimmedTask;
+    speak = ttsSanitizeSpeakText(speak);
 
     out.insert(QString::fromUtf8("text"), speak.trimmed());
 
@@ -183,6 +385,10 @@ QJsonObject buildTextToSpeechToolArgs(const QString &taskText, const QJsonObject
     const QString outputPath = obj.value(QString::fromUtf8("output_path")).toString().trimmed();
     if (!outputPath.isEmpty())
         out.insert(QString::fromUtf8("output_path"), outputPath);
+
+    const QString instructions = obj.value(QString::fromUtf8("instructions")).toString().trimmed();
+    if (!instructions.isEmpty())
+        out.insert(QString::fromUtf8("instructions"), instructions);
 
     return out;
 }
@@ -727,7 +933,8 @@ QString TextToSpeechTool::description() const
 {
     return QString::fromUtf8(
         "Synthesize speech (TTS) and save audio in the project. "
-        "Put ONLY the exact words to read aloud in `text`. "
+        "Put ONLY the exact spoken words in `text` (no 'synthesize…', no 'return audio…'). "
+        "If you wrap a quote in «…» or \"…\", only the quote is spoken. "
         "Voice id goes in `voice`; delivery/style notes in `instructions` (not spoken).");
 }
 
@@ -861,7 +1068,8 @@ QString TextToSpeechTool::invoke(QString argumentsJson, bool *ok)
         _owner->noteFileChanged(rel);
     if (ok)
         *ok = true;
-    return QString::fromUtf8("TTS audio saved: %1").arg(rel);
+    return QString::fromUtf8("TTS audio saved: %1\nSpoken text: %2")
+        .arg(rel, text);
 }
 
 //----------------------------------------------

@@ -213,6 +213,11 @@ private:
     void refreshActivity();
     QString userAuthorLabel() const;
     QString assistantAuthorLabel() const;
+    /** Заголовок пузыря по стабильному kind (для смены языка). */
+    QString titleForKind(const QString &kind) const;
+    /** Нормализовать kind старых записей ленты к стабильному коду. */
+    QString normalizeDisplayKind(const ChatDisplayItem &item) const;
+    void refreshDisplayTitles();
 
     Agent          *_agent;
     QLabel         *_contextLabel;

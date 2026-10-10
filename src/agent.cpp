@@ -176,6 +176,36 @@ void Agent::postNotice(QString text)
 
 //----------------------------------------------
 
+void Agent::recordLocalExchange(QString userText, QString assistantText, int ingress)
+{
+    const QString user = userText.trimmed();
+    const QString assistant = assistantText.trimmed();
+    if (user.isEmpty() && assistant.isEmpty())
+        return;
+    if (_history.isEmpty())
+        resetHistory();
+    _lastUserIngress = ingress;
+    if (!user.isEmpty())
+    {
+        LlmMessage msg;
+        msg.role = LlmRoleUser;
+        msg.content = user;
+        _history.append(msg);
+        emit userMessage(user);
+    }
+    if (!assistant.isEmpty())
+    {
+        LlmMessage msg;
+        msg.role = LlmRoleAssistant;
+        msg.content = assistant;
+        _history.append(msg);
+        emit assistantMessage(assistant);
+    }
+    emitContextUsage();
+}
+
+//----------------------------------------------
+
 void Agent::requestStopAfterTools()
 {
     _stopAfterTools = true;
@@ -193,6 +223,7 @@ void Agent::injectContext(QString text)
     LlmMessage note;
     note.role = LlmRoleUser;
     note.content = trimmed;
+    note.hideInUi = true;
     _history.append(note);
     emitContextUsage();
 }
