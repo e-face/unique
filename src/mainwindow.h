@@ -76,6 +76,7 @@ private slots:
     void sltResetStatistics();
     void sltResetGlobalStatistics();
     void sltUsageChanged();
+    void sltRefreshProjectMeters();
     void sltSaveSettings();
     void sltShowChat();
     void sltNewChat();
@@ -213,6 +214,7 @@ private:
     void updateSessionTabTitle(ChatSession *session);
     QIcon iconForSession(ChatSession *session) const;
     void applyAppStyle();
+    void styleStatusPills();
     void updateComposerState();
     void updateComposerAttachmentsUi();
     void addComposerAbsoluteFiles(const QStringList &absolutePaths);
@@ -290,6 +292,11 @@ private:
     QPlainTextEdit      *_composer;
     QStringList          _composerAttachments;
     QProgressBar        *_progressBar;
+    QLabel              *_workTimeLabel;
+    QLabel              *_changedFilesLabel;
+    QLabel              *_addedLinesLabel;
+    QLabel              *_removedLinesLabel;
+    QTimer              *_projectMeterTimer;
     QThread             *_chatSaveThread;
     QString              _pendingActiveId;
     QString              _progressTitle;

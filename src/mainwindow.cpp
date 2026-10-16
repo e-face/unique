@@ -345,6 +345,11 @@ MainWindow::MainWindow(QWidget *parent)
     , _graphThumb(0)
     , _composer(0)
     , _progressBar(0)
+    , _workTimeLabel(0)
+    , _changedFilesLabel(0)
+    , _addedLinesLabel(0)
+    , _removedLinesLabel(0)
+    , _projectMeterTimer(0)
     , _chatSaveThread(0)
     , _lastPumpMs(0)
     , _progressDepth(0)
@@ -379,6 +384,8 @@ MainWindow::MainWindow(QWidget *parent)
             this, SLOT(sltUsageChanged()));
     connect(FileChangeStore::instance(), SIGNAL(loadProgress(int,int,QString)),
             this, SLOT(sltFileChangeLoadProgress(int,int,QString)));
+    connect(FileChangeStore::instance(), SIGNAL(changed()),
+            this, SLOT(sltRefreshProjectMeters()));
     loadSettings();
     applyProjectDirectory();
 
@@ -1205,7 +1212,7 @@ void MainWindow::sltResetStatistics()
     if (!hasOpenProject())
         return;
     const int answer = askStyledQuestion(tr("Статистика"),
-                                         tr("Обнулить счётчики токенов и запросов этого проекта?\n"
+                                         tr("Обнулить счётчики токенов, запросов и времени работы этого проекта?\n"
                                             "Общая статистика приложения не изменится."),
                                          tr("Обнулить"), tr("Отмена"));
     if (answer != QMessageBox::Yes)
@@ -1218,7 +1225,7 @@ void MainWindow::sltResetStatistics()
 void MainWindow::sltResetGlobalStatistics()
 {
     const int answer = askStyledQuestion(tr("Статистика"),
-                                         tr("Обнулить общую статистику по всем проектам?\n"
+                                         tr("Обнулить общую статистику по всем проектам, включая время работы?\n"
                                             "Счётчики открытого проекта не изменятся."),
                                          tr("Обнулить"), tr("Отмена"));
     if (answer != QMessageBox::Yes)
@@ -1230,6 +1237,7 @@ void MainWindow::sltResetGlobalStatistics()
 
 void MainWindow::sltUsageChanged()
 {
+    sltRefreshProjectMeters();
     AppSettings *s = AppSettings::instance();
     if (hasOpenProject())
     {
@@ -2064,6 +2072,45 @@ void MainWindow::sltShowAbout()
 
 //----------------------------------------------
 
+static QString formatWorkClock(qint64 ms)
+{
+    if (ms < 0)
+        ms = 0;
+    const qint64 total = ms / 1000;
+    const qint64 hours = total / 3600;
+    const int minutes = int((total % 3600) / 60);
+    const int seconds = int(total % 60);
+    if (hours > 0)
+    {
+        return QString::fromUtf8("%1:%2:%3")
+            .arg(hours)
+            .arg(minutes, 2, 10, QChar('0'))
+            .arg(seconds, 2, 10, QChar('0'));
+    }
+    return QString::fromUtf8("%1:%2")
+        .arg(minutes, 2, 10, QChar('0'))
+        .arg(seconds, 2, 10, QChar('0'));
+}
+
+//----------------------------------------------
+
+static QString formatWorkLong(qint64 ms)
+{
+    if (ms < 0)
+        ms = 0;
+    const qint64 total = ms / 1000;
+    const qint64 hours = total / 3600;
+    const int minutes = int((total % 3600) / 60);
+    const int seconds = int(total % 60);
+    if (hours > 0)
+        return QString::fromUtf8("%1 ч %2 мин %3 с").arg(hours).arg(minutes).arg(seconds);
+    if (minutes > 0)
+        return QString::fromUtf8("%1 мин %2 с").arg(minutes).arg(seconds);
+    return QString::fromUtf8("%1 с").arg(seconds);
+}
+
+//----------------------------------------------
+
 void MainWindow::sltShowStatistics()
 {
     AppSettings *s = AppSettings::instance();
@@ -2075,6 +2122,9 @@ void MainWindow::sltShowStatistics()
     QVBoxLayout *globalLay = new QVBoxLayout(globalBox);
     UsageStatsWidget *globalView = new UsageStatsWidget(globalBox);
     globalView->setStats(s->globalUsage());
+    globalView->setExtraRows(
+        QStringList() << tr("Время работы"),
+        QStringList() << formatWorkLong(s->liveWorkMs(false)));
     globalLay->addWidget(globalView);
 
     QGroupBox *projectBox = new QGroupBox(tr("Текущий проект"), &dialog);
@@ -2084,12 +2134,22 @@ void MainWindow::sltShowStatistics()
         UsageStatsWidget *projectView = new UsageStatsWidget(projectBox);
         projectView->setStats(s->projectUsage());
         const int workers = _workers ? _workers->workers().size() : 0;
+        const FileLineDelta delta = FileChangeStore::instance()->totals();
+        const int changedFiles = FileChangeStore::instance()->changedFileCount();
         projectView->setExtraRows(
             QStringList()
+                << tr("Время работы")
+                << tr("Файлов изменено")
+                << tr("Строк добавлено")
+                << tr("Строк удалено")
                 << tr("Открытых чатов")
                 << tr("Воркеров")
                 << tr("Программ в «всегда»"),
             QStringList()
+                << formatWorkLong(s->liveWorkMs(true))
+                << QString::number(changedFiles)
+                << QString::fromUtf8("+%1").arg(delta.added)
+                << QString::fromUtf8("−%1").arg(delta.removed)
                 << QString::number(_sessions.size())
                 << QString::number(workers)
                 << QString::number(s->alwaysAllowedCommands(SettingsKindProject).size()));
@@ -3141,6 +3201,27 @@ void MainWindow::setupUi()
     _progressBar->setValue(0);
     _progressBar->hide();
     statusBar()->addPermanentWidget(_progressBar);
+
+    _workTimeLabel = new QLabel(statusBar());
+    _changedFilesLabel = new QLabel(statusBar());
+    _addedLinesLabel = new QLabel(statusBar());
+    _removedLinesLabel = new QLabel(statusBar());
+    _workTimeLabel->setAlignment(Qt::AlignCenter);
+    _changedFilesLabel->setAlignment(Qt::AlignCenter);
+    _addedLinesLabel->setAlignment(Qt::AlignCenter);
+    _removedLinesLabel->setAlignment(Qt::AlignCenter);
+    statusBar()->addPermanentWidget(_workTimeLabel);
+    statusBar()->addPermanentWidget(_changedFilesLabel);
+    statusBar()->addPermanentWidget(_addedLinesLabel);
+    statusBar()->addPermanentWidget(_removedLinesLabel);
+
+    _projectMeterTimer = new QTimer(this);
+    _projectMeterTimer->setInterval(1000);
+    connect(_projectMeterTimer, SIGNAL(timeout()),
+            this, SLOT(sltRefreshProjectMeters()));
+    _projectMeterTimer->start();
+    styleStatusPills();
+    sltRefreshProjectMeters();
 }
 
 //----------------------------------------------
@@ -3357,8 +3438,63 @@ void MainWindow::sltLocaleChanged(const QString &code)
 {
     Q_UNUSED(code);
     retranslateUi();
+    sltRefreshProjectMeters();
     if (_workers)
         _workers->refreshAllPrompts();
+}
+
+//----------------------------------------------
+
+void MainWindow::styleStatusPills()
+{
+    if (!_workTimeLabel || !_changedFilesLabel || !_addedLinesLabel || !_removedLinesLabel)
+        return;
+    AppSettings *s = AppSettings::instance();
+    const QString border = s->borderColor().name();
+    const QString text = s->textColor().name();
+    const QString bg = s->panelColor().name();
+    const QString frame = QString::fromUtf8(
+        "QLabel { color:%1; background:%2; border:1px solid %3;"
+        " border-radius:6px; padding:2px 8px; }");
+    _workTimeLabel->setStyleSheet(frame.arg(text, bg, border));
+    _changedFilesLabel->setStyleSheet(frame.arg(text, bg, border));
+    const QString added = s->isLightTheme()
+                          ? QString::fromUtf8("#15803d")
+                          : QString::fromUtf8("#6a9955");
+    const QString removed = s->isLightTheme()
+                            ? QString::fromUtf8("#b91c1c")
+                            : QString::fromUtf8("#e07a5f");
+    _addedLinesLabel->setStyleSheet(frame.arg(added, bg, border));
+    _removedLinesLabel->setStyleSheet(frame.arg(removed, bg, border));
+}
+
+//----------------------------------------------
+
+void MainWindow::sltRefreshProjectMeters()
+{
+    if (!_workTimeLabel || !_changedFilesLabel || !_addedLinesLabel || !_removedLinesLabel)
+        return;
+    const bool open = hasOpenProject();
+    _workTimeLabel->setVisible(open);
+    _changedFilesLabel->setVisible(open);
+    _addedLinesLabel->setVisible(open);
+    _removedLinesLabel->setVisible(open);
+    if (!open)
+        return;
+
+    const qint64 ms = AppSettings::instance()->liveWorkMs(true);
+    _workTimeLabel->setText(formatWorkClock(ms));
+    _workTimeLabel->setToolTip(
+        tr("Время работы проекта: запросы к модели и вызовы функций"));
+
+    const FileLineDelta delta = FileChangeStore::instance()->totals();
+    const int files = FileChangeStore::instance()->changedFileCount();
+    _changedFilesLabel->setText(QString::number(files));
+    _changedFilesLabel->setToolTip(tr("Изменённых файлов: %1").arg(files));
+    _addedLinesLabel->setText(QString::fromUtf8("+%1").arg(delta.added));
+    _addedLinesLabel->setToolTip(tr("Добавлено строк: %1").arg(delta.added));
+    _removedLinesLabel->setText(QString::fromUtf8("−%1").arg(delta.removed));
+    _removedLinesLabel->setToolTip(tr("Удалено строк: %1").arg(delta.removed));
 }
 
 //----------------------------------------------
@@ -4569,6 +4705,7 @@ void MainWindow::applyAppStyle()
         _graph->applyTheme();
     if (_journal)
         _journal->applyTheme();
+    styleStatusPills();
     updateGraphThumb();
 
     foreach (ChatSession *session, _sessions)

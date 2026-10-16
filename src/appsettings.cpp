@@ -2,6 +2,7 @@
 //----------------------------------------------
 #include "applocale.h"
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -79,6 +80,7 @@ AppSettings::AppSettings(QObject *parent)
     , _chatUserColor(QString::fromUtf8("#ffffff"))
     , _chatAssistantColor(QString::fromUtf8("#ffffff"))
     , _chatOtherColor(QString::fromUtf8("#f3f4f6"))
+    , _nextWorkId(0)
     , _statsTimer(0)
     , _persistTimer(0)
     , _limitsSignalTimer(0)
@@ -1339,6 +1341,7 @@ void UsageStats::clear()
     totalTokens = 0;
     cachedPromptTokens = 0;
     requestCount = 0;
+    workMs = 0;
     byRole.clear();
 }
 
@@ -1375,6 +1378,48 @@ void AppSettings::addUsage(int promptTokens, int completionTokens, int totalToke
     if (_projectOpen)
         _projectUsage.add(promptTokens, completionTokens, totalTokens, cachedPromptTokens, role);
     scheduleStatsSave();
+}
+
+//----------------------------------------------
+
+int AppSettings::beginWork()
+{
+    const int id = ++_nextWorkId;
+    if (id <= 0)
+        _nextWorkId = 1;
+    const int stored = _nextWorkId;
+    _openWork.insert(stored, QDateTime::currentMSecsSinceEpoch());
+    return stored;
+}
+
+//----------------------------------------------
+
+void AppSettings::endWork(int id)
+{
+    if (id <= 0 || !_openWork.contains(id))
+        return;
+    const qint64 started = _openWork.take(id);
+    const qint64 ms = QDateTime::currentMSecsSinceEpoch() - started;
+    if (ms <= 0)
+        return;
+    _globalUsage.workMs += ms;
+    if (_projectOpen)
+        _projectUsage.workMs += ms;
+    scheduleStatsSave();
+}
+
+//----------------------------------------------
+
+qint64 AppSettings::liveWorkMs(bool project) const
+{
+    if (project && !_projectOpen)
+        return 0;
+    qint64 total = project ? _projectUsage.workMs : _globalUsage.workMs;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (QMap<int, qint64>::const_iterator it = _openWork.constBegin();
+         it != _openWork.constEnd(); ++it)
+        total += qMax(qint64(0), now - it.value());
+    return total;
 }
 
 //----------------------------------------------
@@ -1447,6 +1492,7 @@ void AppSettings::loadUsage(QSettings *settings, UsageStats *stats)
     stats->totalTokens = settings->value(QString::fromUtf8("stats/totalTokens"), 0).toLongLong();
     stats->requestCount = settings->value(QString::fromUtf8("stats/requestCount"), 0).toLongLong();
     stats->cachedPromptTokens = settings->value(QString::fromUtf8("stats/cachedPromptTokens"), 0).toLongLong();
+    stats->workMs = settings->value(QString::fromUtf8("stats/workMs"), 0).toLongLong();
     settings->beginGroup(QString::fromUtf8("statsByRole"));
     foreach (const QString &role, settings->childGroups())
     {
@@ -1473,6 +1519,7 @@ void AppSettings::saveUsage(QSettings *settings, const UsageStats &stats) const
     settings->setValue(QString::fromUtf8("stats/totalTokens"), stats.totalTokens);
     settings->setValue(QString::fromUtf8("stats/requestCount"), stats.requestCount);
     settings->setValue(QString::fromUtf8("stats/cachedPromptTokens"), stats.cachedPromptTokens);
+    settings->setValue(QString::fromUtf8("stats/workMs"), stats.workMs);
     settings->remove(QString::fromUtf8("statsByRole"));
     saveRoleStats(settings, stats);
 }

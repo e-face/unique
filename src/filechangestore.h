@@ -47,6 +47,9 @@ public:
     void clear();
 
     FileLineDelta deltaFor(QString absPath) const;
+    /** Сумма по всем изменённым файлам проекта. */
+    FileLineDelta totals() const;
+    int changedFileCount() const;
     QString relativePath(QString absPath) const;
 
     static FileLineDelta countLineDiff(QString oldText, QString newText);

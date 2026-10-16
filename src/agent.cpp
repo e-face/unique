@@ -202,6 +202,7 @@ Agent::Agent(QObject *parent)
     , _toolIterations(0)
     , _contextCap(0)
     , _lastEstimated(0)
+    , _modelWorkId(0)
     , _busy(false)
     , _compactThenChat(false)
     , _overflowRetried(false)
@@ -235,6 +236,7 @@ Agent::Agent(QObject *parent)
 
 Agent::~Agent()
 {
+    endModelWork();
     // Клиент — соседний ребёнок ChatSession, созданный раньше агента, поэтому
     // при разрушении сессии он удаляется первым. disconnect() по мёртвому
     // указателю читал освобождённую память (падение в QObject::disconnect);
@@ -313,7 +315,12 @@ QString Agent::invokeTool(QString name, QString argumentsJson, bool *ok)
     }
     emit toolCallStarted(name, argumentsJson);
     bool localOk = false;
+    const bool nested = (name == QString::fromUtf8("delegate_task")
+                         || name == QString::fromUtf8("run_tool"));
+    const int span = nested ? 0 : AppSettings::instance()->beginWork();
     const QString result = tool->invoke(argumentsJson, &localOk);
+    if (span)
+        AppSettings::instance()->endWork(span);
     if (ok)
         *ok = localOk;
     emit toolCallFinished(name, result, localOk);
@@ -1003,6 +1010,7 @@ void Agent::abort()
     }
     _executingTools = false;
     flushPendingNotes();
+    endModelWork();
     if (_client)
         _client->abort();
     // Сжатие прервано: история осталась нетронутой, промежуточная сводка
@@ -1047,6 +1055,7 @@ void Agent::refreshContextUsage()
 
 void Agent::sltResponseReceived(const LlmResponse &response)
 {
+    endModelWork();
     if (!_busy)
         return;
 
@@ -1119,6 +1128,7 @@ void Agent::sltResponseReceived(const LlmResponse &response)
 
 void Agent::sltClientFailed(const QString &error)
 {
+    endModelWork();
     // Поздний callback после Stop (или отмена, когда агент уже Idle).
     if (!_busy && _phase == PhaseIdle)
         return;
@@ -1336,6 +1346,7 @@ void Agent::requestNextSummaryChunk()
         gateInspect(tr("Запрос сводки"), requestAsText(request));
     if (!_client)
         return;
+    beginModelWork();
     _client->send(request);
 }
 
@@ -1410,6 +1421,26 @@ void Agent::continueAfterCompact()
 
 //----------------------------------------------
 
+void Agent::beginModelWork()
+{
+    if (_modelWorkId != 0)
+        return;
+    _modelWorkId = AppSettings::instance()->beginWork();
+}
+
+//----------------------------------------------
+
+void Agent::endModelWork()
+{
+    if (_modelWorkId == 0)
+        return;
+    const int id = _modelWorkId;
+    _modelWorkId = 0;
+    AppSettings::instance()->endWork(id);
+}
+
+//----------------------------------------------
+
 void Agent::requestCompletion()
 {
     if (!_client)
@@ -1452,6 +1483,7 @@ void Agent::requestCompletion()
         gateInspect(tr("Запрос"), requestAsText(request));
     if (!_client)
         return;
+    beginModelWork();
     _client->send(request);
 }
 
@@ -1567,7 +1599,12 @@ void Agent::handleToolCalls(LlmMessage message)
         else
         {
             ++_toolCallDepth;
+            const bool nested = (call.name == QString::fromUtf8("delegate_task")
+                                 || call.name == QString::fromUtf8("run_tool"));
+            const int span = nested ? 0 : AppSettings::instance()->beginWork();
             result = tool->invoke(call.arguments, &ok);
+            if (span)
+                AppSettings::instance()->endWork(span);
             if (!self)
                 return;
             --_toolCallDepth;

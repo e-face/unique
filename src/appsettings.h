@@ -101,6 +101,7 @@ struct UsageStats
         , totalTokens(0)
         , cachedPromptTokens(0)
         , requestCount(0)
+        , workMs(0)
     {
     }
 
@@ -113,6 +114,8 @@ struct UsageStats
     qint64 totalTokens;
     qint64 cachedPromptTokens;
     qint64 requestCount;
+    /** Суммарное время запросов к модели и вызовов функций, миллисекунды. */
+    qint64 workMs;
     QMap<QString, RoleUsageStats> byRole;
 };
 
@@ -285,6 +288,17 @@ public:
      */
     void addUsage(int promptTokens, int completionTokens, int totalTokens,
                   int cachedPromptTokens = 0, QString role = QString());
+    /**
+     * @brief Начать отрезок работы (запрос к модели или вызов функции).
+     *        Время попадёт в статистику в endWork.
+     */
+    int beginWork();
+    void endWork(int id);
+    /**
+     * @brief Накопленное время плюс ещё идущие отрезки.
+     *        @p project — счётчик открытого проекта, иначе общий.
+     */
+    qint64 liveWorkMs(bool project) const;
     UsageStats globalUsage() const;
     UsageStats projectUsage() const;
     qint64 promptTokens() const;
@@ -453,6 +467,8 @@ private:
     QColor                 _chatOtherColor;
     UsageStats             _globalUsage;
     UsageStats             _projectUsage;
+    QMap<int, qint64>      _openWork;
+    int                    _nextWorkId;
     QTimer                *_statsTimer;
     QTimer                *_persistTimer;
     QTimer                *_limitsSignalTimer;

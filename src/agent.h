@@ -211,6 +211,8 @@ private:
     bool historyIsOnlySystem() const;
     QList<LlmTool> toolsForRequest() const;
     void gateInspect(QString title, QString text);
+    void beginModelWork();
+    void endModelWork();
     QString requestAsText(const LlmRequest &request) const;
     QString responseAsText(const LlmResponse &response) const;
 
@@ -235,6 +237,7 @@ private:
     int                _toolIterations;
     int                _contextCap;
     int                _lastEstimated;
+    int                _modelWorkId;
     bool               _busy;
     bool               _compactThenChat;
     bool               _overflowRetried;

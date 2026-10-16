@@ -360,6 +360,27 @@ void FileChangeStore::clear()
 
 //----------------------------------------------
 
+FileLineDelta FileChangeStore::totals() const
+{
+    FileLineDelta sum;
+    for (QHash<QString, FileLineDelta>::const_iterator it = _delta.constBegin();
+         it != _delta.constEnd(); ++it)
+    {
+        sum.added += it.value().added;
+        sum.removed += it.value().removed;
+    }
+    return sum;
+}
+
+//----------------------------------------------
+
+int FileChangeStore::changedFileCount() const
+{
+    return _delta.size();
+}
+
+//----------------------------------------------
+
 FileLineDelta FileChangeStore::deltaFor(QString absPath) const
 {
     const QString rel = relativePath(absPath);
