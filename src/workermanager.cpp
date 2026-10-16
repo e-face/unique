@@ -22,6 +22,7 @@
 #include <QRegExp>
 #include <QSet>
 #include <QTextStream>
+#include <QTimer>
 #include <QtGlobal>
 #include <QUuid>
 
@@ -44,6 +45,7 @@ WorkerManager::WorkerManager(ProjectWorkspace *workspace, QObject *parent)
     , _talkCounter(0)
     , _spawnCount(0)
     , _completeCount(0)
+    , _limitsApplyTimer(0)
 {
     connect(AppSettings::instance(), SIGNAL(workerLimitsChanged()),
             this, SLOT(sltLimitsChanged()));
@@ -291,6 +293,20 @@ void WorkerManager::sltPumpQueue()
 //----------------------------------------------
 
 void WorkerManager::sltLimitsChanged()
+{
+    if (!_limitsApplyTimer)
+    {
+        _limitsApplyTimer = new QTimer(this);
+        _limitsApplyTimer->setSingleShot(true);
+        connect(_limitsApplyTimer, SIGNAL(timeout()),
+                this, SLOT(sltApplyLimitsChanged()));
+    }
+    _limitsApplyTimer->start(350);
+}
+
+//----------------------------------------------
+
+void WorkerManager::sltApplyLimitsChanged()
 {
     foreach (Worker *worker, _workers)
     {

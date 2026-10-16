@@ -112,6 +112,7 @@ private slots:
     void sltAppearanceApplied();
     void sltProfilesChanged();
     void sltDefaultProfilesChanged();
+    void sltApplyClientsFromProfiles();
     void sltRemoveWorkersForProfile(const QString &profileId);
     void sltPrevConfirmation();
     void sltNextConfirmation();
@@ -249,6 +250,7 @@ private:
     QTimer              *_tabBlinkTimer;
     QTimer              *_saveChatsTimer;
     QTimer              *_uiRefreshTimer;
+    QTimer              *_profilesApplyTimer;
     bool                 _uiRefreshTree;
     bool                 _graphDirty;
     bool                 _tabBlinkOn;

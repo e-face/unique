@@ -25,6 +25,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QTimer>
 #include <QVBoxLayout>
 
 //----------------------------------------------
@@ -109,6 +110,7 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _chatOtherColorButton(0)
     , _updatingProfiles(false)
     , _updatingPresets(false)
+    , _presetsReloadTimer(0)
 {
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
@@ -160,8 +162,8 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
             this, &SettingsPage::loadControlFlags);
     connect(settings, SIGNAL(projectSettingsChanged()),
             this, SLOT(sltProjectSettingsChanged()));
-    connect(settings, SIGNAL(workerPresetsChanged()), this, SLOT(loadPresets()));
-    connect(settings, SIGNAL(profilesChanged()), this, SLOT(loadPresets()));
+    // profilesChanged не трогаем: правка URL/токена не должна пересобирать списки.
+    connect(settings, SIGNAL(workerPresetsChanged()), this, SLOT(scheduleLoadPresets()));
     connect(OpenAiCompatibleClient::catalogHub(), SIGNAL(contextWindowChanged()),
             this, SLOT(sltCatalogWindowsUpdated()));
     connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
@@ -1194,6 +1196,21 @@ void SettingsPage::fillPresetProfileCombo()
 
 //----------------------------------------------
 
+void SettingsPage::scheduleLoadPresets()
+{
+    if (_updatingPresets || _updatingProfiles)
+        return;
+    if (!_presetsReloadTimer)
+    {
+        _presetsReloadTimer = new QTimer(this);
+        _presetsReloadTimer->setSingleShot(true);
+        connect(_presetsReloadTimer, SIGNAL(timeout()), this, SLOT(loadPresets()));
+    }
+    _presetsReloadTimer->start(200);
+}
+
+//----------------------------------------------
+
 void SettingsPage::loadPresets()
 {
     if (!_presetList || _updatingPresets)
@@ -1330,10 +1347,19 @@ void SettingsPage::sltPresetFieldChanged()
         preset.profileId = _presetProfileCombo->currentData().toString();
 
     QString error;
+    _updatingPresets = true;
     AppSettings::instance()->updateWorkerPreset(_kind, preset, &error);
+    _updatingPresets = false;
     if (!error.isEmpty())
+    {
         QMessageBox::warning(this, tr("Пресеты воркеров"), error);
-    loadPresets();
+        loadPresets();
+        return;
+    }
+    // Обновить подпись текущего пункта без полной перестройки списков.
+    if (_presetList && _presetList->currentItem())
+        _presetList->currentItem()->setText(presetListLabel(preset));
+    fillRootPresetCombo();
 }
 
 //----------------------------------------------
@@ -1452,6 +1478,9 @@ void SettingsPage::sltProfileFieldChanged()
     LlmProfile profile = AppSettings::instance()->profileById(id);
     if (profile.id.isEmpty())
         return;
+    const QString oldName = profile.name;
+    const QString oldPurpose = profile.purpose;
+    const WorkerTaskKind oldModality = profile.modality;
     if (_profileNameEdit)
         profile.name = _profileNameEdit->text().trimmed();
     if (_profileUrlEdit)
@@ -1477,11 +1506,14 @@ void SettingsPage::sltProfileFieldChanged()
     AppSettings::instance()->updateProfile(profile);
     if (_profileList->currentItem())
         _profileList->currentItem()->setText(profile.name);
-    fillPresetProfileCombo();
+    if (oldName != profile.name || oldPurpose != profile.purpose)
+        fillPresetProfileCombo();
     updateProfileCapHint();
     _updatingProfiles = false;
-    loadPresets();
-    emit profilesChanged();
+    if (oldModality != profile.modality
+        || oldName != profile.name
+        || oldPurpose != profile.purpose)
+        scheduleLoadPresets();
 }
 
 //----------------------------------------------

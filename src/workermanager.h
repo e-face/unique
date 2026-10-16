@@ -13,6 +13,7 @@
 
 class ChatSession;
 class ProjectWorkspace;
+class QTimer;
 class Worker;
 
 //----------------------------------------------
@@ -266,6 +267,7 @@ private slots:
     void sltScheduleQueuePump();
     void sltPumpQueue();
     void sltLimitsChanged();
+    void sltApplyLimitsChanged();
     void sltToolStateChanged();
     void sltToolFinished();
     void sltPumpTools();
@@ -335,6 +337,7 @@ private:
     QHash<QString, QString>         _fileOwners;
     int                             _spawnCount;
     int                             _completeCount;
+    QTimer                         *_limitsApplyTimer;
 };
 
 #endif // WORKERMANAGER_H

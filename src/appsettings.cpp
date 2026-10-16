@@ -80,6 +80,12 @@ AppSettings::AppSettings(QObject *parent)
     , _chatAssistantColor(QString::fromUtf8("#ffffff"))
     , _chatOtherColor(QString::fromUtf8("#f3f4f6"))
     , _statsTimer(0)
+    , _persistTimer(0)
+    , _limitsSignalTimer(0)
+    , _profilesSignalTimer(0)
+    , _presetsSignalTimer(0)
+    , _persistDefaultsPending(false)
+    , _persistProjectPending(false)
     , _showForwardedContext(true)
     , _uiLanguage(QString::fromUtf8("ru"))
     , _mainWindowGeometry()
@@ -561,6 +567,7 @@ void AppSettings::saveDefaultsWorkspace() const
 
 void AppSettings::setProjectRoot(QString root)
 {
+    flushPersist();
     const QString clean = QDir::cleanPath(root.trimmed());
     if (_projectRoot == clean && _projectOpen == !clean.isEmpty())
     {
@@ -694,6 +701,7 @@ void AppSettings::load()
 
 void AppSettings::save() const
 {
+    const_cast<AppSettings *>(this)->flushPersist();
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
     settings.setValue(QString::fromUtf8("ui/fontPointSize"), _fontPointSize);
     settings.setValue(QString::fromUtf8("ui/appearanceVersion"), kAppearanceVersion);
@@ -799,7 +807,7 @@ void AppSettings::addAlwaysAllowedCommand(SettingsKind kind, QString programKey,
             {
                 bundle.permissionGrants[i].actionText = actionText.trimmed();
                 bundle.alwaysCommands.insert(key);
-                save(kind);
+                schedulePersist(kind);
                 emit alwaysCommandsChanged();
                 return;
             }
@@ -821,7 +829,7 @@ void AppSettings::addAlwaysAllowedCommand(SettingsKind kind, QString programKey,
         bundle.permissionGrants.append(grant);
     }
     bundle.alwaysCommands.insert(key);
-    save(kind);
+    schedulePersist(kind);
     emit alwaysCommandsChanged();
 }
 
@@ -852,7 +860,7 @@ void AppSettings::addAlwaysAllowedCommands(SettingsKind kind, const QStringList 
     }
     if (!changed)
         return;
-    save(kind);
+    schedulePersist(kind);
     emit alwaysCommandsChanged();
 }
 
@@ -879,7 +887,7 @@ void AppSettings::removeAlwaysAllowedCommand(SettingsKind kind, QString programK
     if (!bundle.alwaysCommands.contains(key))
         return;
     bundle.alwaysCommands.remove(key);
-    save(kind);
+    schedulePersist(kind);
     emit alwaysCommandsChanged();
 }
 
@@ -940,7 +948,7 @@ void AppSettings::setShellControlEnabled(SettingsKind kind, bool enabled)
     if (bundle.shellControl == enabled)
         return;
     bundle.shellControl = enabled;
-    save(kind);
+    schedulePersist(kind);
     emit controlFlagsChanged();
 }
 
@@ -973,7 +981,7 @@ void AppSettings::setOutsideFilesControlEnabled(SettingsKind kind, bool enabled)
     if (bundle.outsideFilesControl == enabled)
         return;
     bundle.outsideFilesControl = enabled;
-    save(kind);
+    schedulePersist(kind);
     emit controlFlagsChanged();
 }
 
@@ -1006,7 +1014,7 @@ void AppSettings::setSystemSettingsControlEnabled(SettingsKind kind, bool enable
     if (bundle.systemSettingsControl == enabled)
         return;
     bundle.systemSettingsControl = enabled;
-    save(kind);
+    schedulePersist(kind);
     emit controlFlagsChanged();
 }
 
@@ -1573,6 +1581,138 @@ void AppSettings::scheduleStatsSave()
 
 //----------------------------------------------
 
+void AppSettings::schedulePersist(SettingsKind kind)
+{
+    if (kind == SettingsKindProject)
+        _persistProjectPending = true;
+    else
+        _persistDefaultsPending = true;
+    if (!_persistTimer)
+    {
+        _persistTimer = new QTimer(this);
+        _persistTimer->setSingleShot(true);
+        connect(_persistTimer, SIGNAL(timeout()), this, SLOT(sltFlushPersist()));
+    }
+    _persistTimer->start(400);
+}
+
+//----------------------------------------------
+
+void AppSettings::flushPersist()
+{
+    if (_persistTimer)
+        _persistTimer->stop();
+    sltFlushPersist();
+}
+
+//----------------------------------------------
+
+void AppSettings::sltFlushPersist()
+{
+    if (_persistDefaultsPending)
+    {
+        _persistDefaultsPending = false;
+        saveDefaultsWorkspace();
+    }
+    if (_persistProjectPending)
+    {
+        _persistProjectPending = false;
+        saveProjectWorkspace();
+    }
+}
+
+//----------------------------------------------
+
+void AppSettings::scheduleWorkerLimitsSignal()
+{
+    if (!_limitsSignalTimer)
+    {
+        _limitsSignalTimer = new QTimer(this);
+        _limitsSignalTimer->setSingleShot(true);
+        connect(_limitsSignalTimer, SIGNAL(timeout()),
+                this, SLOT(sltEmitWorkerLimitsChanged()));
+    }
+    _limitsSignalTimer->start(300);
+}
+
+//----------------------------------------------
+
+void AppSettings::sltEmitWorkerLimitsChanged()
+{
+    emit workerLimitsChanged();
+}
+
+//----------------------------------------------
+
+void AppSettings::scheduleProfilesSignal()
+{
+    if (!_profilesSignalTimer)
+    {
+        _profilesSignalTimer = new QTimer(this);
+        _profilesSignalTimer->setSingleShot(true);
+        connect(_profilesSignalTimer, SIGNAL(timeout()),
+                this, SLOT(sltEmitProfilesChanged()));
+    }
+    _profilesSignalTimer->start(300);
+}
+
+//----------------------------------------------
+
+void AppSettings::sltEmitProfilesChanged()
+{
+    emit profilesChanged();
+}
+
+//----------------------------------------------
+
+void AppSettings::scheduleWorkerPresetsSignal()
+{
+    if (!_presetsSignalTimer)
+    {
+        _presetsSignalTimer = new QTimer(this);
+        _presetsSignalTimer->setSingleShot(true);
+        connect(_presetsSignalTimer, SIGNAL(timeout()),
+                this, SLOT(sltEmitWorkerPresetsChanged()));
+    }
+    _presetsSignalTimer->start(300);
+}
+
+//----------------------------------------------
+
+void AppSettings::sltEmitWorkerPresetsChanged()
+{
+    emit workerPresetsChanged();
+}
+
+//----------------------------------------------
+
+bool AppSettings::profilesEqual(const LlmProfile &a, const LlmProfile &b)
+{
+    return a.id == b.id
+           && a.name == b.name
+           && a.baseUrl == b.baseUrl
+           && a.model == b.model
+           && a.apiKey == b.apiKey
+           && a.modality == b.modality
+           && a.purpose == b.purpose
+           && a.balanceUrl == b.balanceUrl
+           && a.balanceJsonPath == b.balanceJsonPath
+           && a.maxToolIterations == b.maxToolIterations
+           && a.contextCap == b.contextCap;
+}
+
+//----------------------------------------------
+
+bool AppSettings::presetsEqual(const WorkerPreset &a, const WorkerPreset &b)
+{
+    return a.id == b.id
+           && a.type == b.type
+           && a.profileId == b.profileId
+           && a.taskKind == b.taskKind;
+}
+
+//----------------------------------------------
+
 void AppSettings::sltFlushStats()
 {
     saveStats();
@@ -1608,8 +1748,9 @@ void AppSettings::setMaxWorkerDepth(SettingsKind kind, int depth)
     if (bundle.maxWorkerDepth == value)
         return;
     bundle.maxWorkerDepth = value;
-    save(kind);
-    emit workerLimitsChanged();
+    schedulePersist(kind);
+    if (kind == activeKind())
+        scheduleWorkerLimitsSignal();
 }
 
 //----------------------------------------------
@@ -1642,8 +1783,9 @@ void AppSettings::setMaxConcurrentWorkers(SettingsKind kind, int count)
     if (bundle.maxConcurrentWorkers == value)
         return;
     bundle.maxConcurrentWorkers = value;
-    save(kind);
-    emit workerLimitsChanged();
+    schedulePersist(kind);
+    if (kind == activeKind())
+        scheduleWorkerLimitsSignal();
 }
 
 //----------------------------------------------
@@ -1676,8 +1818,9 @@ void AppSettings::setLlmTimeoutSec(SettingsKind kind, int seconds)
     if (bundle.llmTimeoutSec == value)
         return;
     bundle.llmTimeoutSec = value;
-    save(kind);
-    emit workerLimitsChanged();
+    schedulePersist(kind);
+    if (kind == activeKind())
+        scheduleWorkerLimitsSignal();
 }
 
 //----------------------------------------------
@@ -2176,32 +2319,43 @@ void AppSettings::updateProfile(const LlmProfile &profile)
     const int index = profileIndexById(profile.id);
     if (index < 0)
         return;
-    const WorkerTaskKind oldModality = _defaults.profiles.at(index).modality;
-    const QString oldStem = sanitizeProfileFileStem(_defaults.profiles.at(index).id);
-    _defaults.profiles[index] = profile;
-    _defaults.profiles[index].contextCap =
-        normalizeProfileContextCap(_defaults.profiles[index].contextCap);
-    _defaults.profiles[index].maxToolIterations =
-        qBound(kMinRoleToolIterations, _defaults.profiles[index].maxToolIterations,
-               kMaxRoleToolIterations);
-    if (_defaults.profiles[index].name.trimmed().isEmpty())
-        _defaults.profiles[index].name = QString::fromUtf8("Profile %1").arg(index + 1);
+    const LlmProfile old = _defaults.profiles.at(index);
+    LlmProfile next = profile;
+    next.contextCap = normalizeProfileContextCap(next.contextCap);
+    next.maxToolIterations =
+        qBound(kMinRoleToolIterations, next.maxToolIterations, kMaxRoleToolIterations);
+    if (next.name.trimmed().isEmpty())
+        next.name = QString::fromUtf8("Profile %1").arg(index + 1);
+    if (profilesEqual(old, next))
+        return;
+
+    const WorkerTaskKind oldModality = old.modality;
+    const QString oldStem = sanitizeProfileFileStem(old.id);
+    _defaults.profiles[index] = next;
     const QString newStem = sanitizeProfileFileStem(_defaults.profiles.at(index).id);
     if (oldStem != newStem)
         QFile::remove(aiProfilesDir() + QChar('/') + oldStem + QString::fromUtf8(".ini"));
-    if (oldModality != _defaults.profiles.at(index).modality)
+
+    // Только файл этого профиля — не переписываем весь config/ai и settings.ini.
+    writeProfileFile(_defaults.profiles.at(index));
+
+    const bool modalityChanged = (oldModality != next.modality);
+    const bool limitsChanged = (old.maxToolIterations != next.maxToolIterations
+                                || old.contextCap != next.contextCap);
+    if (modalityChanged)
     {
         syncBundlePresetTaskKinds(&_defaults);
+        schedulePersist(SettingsKindDefaults);
         if (_projectOpen)
+        {
             syncBundlePresetTaskKinds(&_project);
-        if (_projectOpen)
-            saveProjectWorkspace();
+            schedulePersist(SettingsKindProject);
+        }
+        scheduleWorkerPresetsSignal();
     }
-    saveDefaultsWorkspace();
-    emit profilesChanged();
-    emit workerLimitsChanged();
-    if (oldModality != _defaults.profiles.at(index).modality)
-        emit workerPresetsChanged();
+    scheduleProfilesSignal();
+    if (limitsChanged)
+        scheduleWorkerLimitsSignal();
 }
 
 //----------------------------------------------
@@ -2325,8 +2479,8 @@ void AppSettings::setWorkerProfileId(SettingsKind kind, WorkerType type, QString
         return;
     bundle.workerProfileId[row] = id;
     ensureWorkerProfileIds(&bundle);
-    save(kind);
-    emit profilesChanged();
+    schedulePersist(kind);
+    scheduleProfilesSignal();
 }
 
 //----------------------------------------------
@@ -2520,8 +2674,8 @@ QString AppSettings::addWorkerPreset(SettingsKind kind, WorkerPreset preset, QSt
         preset.id = QUuid::createUuid().toString().remove(QChar('{')).remove(QChar('}'));
     bundle.workerPresets.append(preset);
     ensureRootWorkerPresetId(&bundle);
-    save(kind);
-    emit workerPresetsChanged();
+    schedulePersist(kind);
+    scheduleWorkerPresetsSignal();
     return preset.id;
 }
 
@@ -2554,6 +2708,8 @@ void AppSettings::updateWorkerPreset(SettingsKind kind, const WorkerPreset &pres
     }
     WorkerPreset next = preset;
     syncPresetTaskKind(&next);
+    if (presetsEqual(bundle.workerPresets.at(index), next))
+        return;
     foreach (const WorkerPreset &existing, bundle.workerPresets)
     {
         if (existing.id == next.id)
@@ -2569,8 +2725,8 @@ void AppSettings::updateWorkerPreset(SettingsKind kind, const WorkerPreset &pres
     }
     bundle.workerPresets[index] = next;
     ensureRootWorkerPresetId(&bundle);
-    save(kind);
-    emit workerPresetsChanged();
+    schedulePersist(kind);
+    scheduleWorkerPresetsSignal();
 }
 
 //----------------------------------------------
@@ -2742,8 +2898,8 @@ void AppSettings::removeWorkerPreset(SettingsKind kind, QString id)
         {
             bundle.workerPresets.removeAt(i);
             ensureRootWorkerPresetId(&bundle);
-            save(kind);
-            emit workerPresetsChanged();
+            schedulePersist(kind);
+            scheduleWorkerPresetsSignal();
             return;
         }
     }
@@ -2791,8 +2947,8 @@ void AppSettings::setRootWorkerPresetId(SettingsKind kind, QString presetId)
         return;
     bundle.rootWorkerPresetId = id;
     ensureRootWorkerPresetId(&bundle);
-    save(kind);
-    emit workerPresetsChanged();
+    schedulePersist(kind);
+    scheduleWorkerPresetsSignal();
 }
 
 //----------------------------------------------

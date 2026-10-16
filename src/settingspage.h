@@ -16,6 +16,7 @@ class QListWidget;
 class QFormLayout;
 class QPushButton;
 class QSpinBox;
+class QTimer;
 class WorkerManager;
 
 //----------------------------------------------
@@ -80,6 +81,7 @@ private slots:
     void sltRemovePreset();
     void sltRootPresetChanged();
     void loadPresets();
+    void scheduleLoadPresets();
     void fillRootPresetCombo();
     void sltLanguageComboChanged(int index);
 
@@ -170,6 +172,7 @@ private:
     QPushButton *_chatOtherColorButton;
     bool         _updatingProfiles;
     bool         _updatingPresets;
+    QTimer      *_presetsReloadTimer;
 };
 
 #endif // SETTINGSPAGE_H

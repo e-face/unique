@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QMetaObject>
 #include <QPointer>
+#include <QRegExp>
 #include <QSet>
 
 //----------------------------------------------
@@ -31,6 +32,161 @@ static const QString kAnchorTaskPrefix = QString::fromUtf8(
     "ORIGINAL ASSIGNMENT (verbatim, preserved across context compaction):\n\n");
 static const QString kAnchorFollowUpPrefix = QString::fromUtf8(
     "CURRENT FOLLOW-UP ASSIGNMENT (verbatim, preserved across context compaction):\n\n");
+
+//----------------------------------------------
+
+struct LiveFileContext
+{
+    QString id;
+    QString meta;
+};
+
+static QList<LiveFileContext> liveFileContexts(const QList<LlmMessage> &history)
+{
+    QList<LiveFileContext> found;
+    QRegExp rx(QString::fromUtf8("\\[\\[filectx id=(fc\\d+) ([^\\]]*)\\]\\]"));
+    foreach (const LlmMessage &message, history)
+    {
+        int from = 0;
+        while (from < message.content.size())
+        {
+            const int at = rx.indexIn(message.content, from);
+            if (at < 0)
+                break;
+            LiveFileContext item;
+            item.id = rx.cap(1);
+            item.meta = rx.cap(2).trimmed();
+            from = at + rx.matchedLength();
+            if (item.meta.contains(QString::fromUtf8("dropped")))
+                continue;
+            bool seen = false;
+            foreach (const LiveFileContext &have, found)
+            {
+                if (have.id == item.id)
+                {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen)
+                found.append(item);
+        }
+    }
+    return found;
+}
+
+//----------------------------------------------
+
+static QString fileRetentionRequest(const QList<LiveFileContext> &files)
+{
+    QString text = QString::fromUtf8(
+        "FILE CONTEXT RETENTION (same reply as your real answer or tool calls; "
+        "this is not a new task).\n"
+        "Each block [[filectx id=...]] above is a file still stored in context.\n"
+        "For every id, decide if that body is still needed on the NEXT iterations.\n"
+        "Reply with these lines (omit a line if its list is empty):\n"
+        "FILE_KEEP: id, id\n"
+        "FILE_DROP: id, id\n"
+        "FILE_DROP removes those bodies from later requests. "
+        "Do not drop a file you still need to edit or quote. "
+        "Unlisted ids stay.\n"
+        "Cached files:");
+    foreach (const LiveFileContext &file, files)
+        text += QString::fromUtf8("\n- id=%1 %2").arg(file.id, file.meta);
+    return text;
+}
+
+//----------------------------------------------
+
+static QStringList parseDroppedFileIds(const QString &content)
+{
+    QStringList ids;
+    const QStringList lines = content.split(QChar('\n'));
+    QRegExp idRx(QString::fromUtf8("\\bfc\\d+\\b"));
+    foreach (const QString &line, lines)
+    {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.startsWith(QString::fromUtf8("FILE_DROP:")))
+            continue;
+        const QString rest = trimmed.mid(QString::fromUtf8("FILE_DROP:").size());
+        int from = 0;
+        while (from < rest.size())
+        {
+            const int at = idRx.indexIn(rest, from);
+            if (at < 0)
+                break;
+            const QString id = idRx.cap(0);
+            if (!ids.contains(id))
+                ids.append(id);
+            from = at + idRx.matchedLength();
+        }
+    }
+    return ids;
+}
+
+//----------------------------------------------
+
+static QString stripRetentionDirectives(QString content)
+{
+    QStringList kept;
+    const QStringList lines = content.split(QChar('\n'));
+    foreach (const QString &line, lines)
+    {
+        const QString trimmed = line.trimmed();
+        if (trimmed.startsWith(QString::fromUtf8("FILE_KEEP:"))
+            || trimmed.startsWith(QString::fromUtf8("FILE_DROP:")))
+            continue;
+        kept.append(line);
+    }
+    return kept.join(QChar('\n')).trimmed();
+}
+
+//----------------------------------------------
+
+static void dropFileContexts(QList<LlmMessage> *history, const QStringList &ids)
+{
+    if (!history || ids.isEmpty())
+        return;
+    for (int i = 0; i < history->size(); ++i)
+    {
+        QString content = history->at(i).content;
+        bool changed = false;
+        foreach (const QString &id, ids)
+        {
+            const QString open = QString::fromUtf8("[[filectx id=%1 ").arg(id);
+            int from = 0;
+            while (from < content.size())
+            {
+                const int at = content.indexOf(open, from);
+                if (at < 0)
+                    break;
+                const int tagEnd = content.indexOf(QString::fromUtf8("]]"), at);
+                if (tagEnd < 0)
+                    break;
+                const QString tag = content.mid(at, tagEnd - at);
+                if (tag.contains(QString::fromUtf8("dropped")))
+                {
+                    from = tagEnd + 2;
+                    continue;
+                }
+                const QString closeTag = QString::fromUtf8("[[/filectx]]");
+                int blockEnd = content.indexOf(closeTag, tagEnd);
+                if (blockEnd < 0)
+                    blockEnd = tagEnd + 2;
+                else
+                    blockEnd += closeTag.size();
+                const QString meta = tag.mid(open.size()).trimmed();
+                const QString stub = QString::fromUtf8("[[filectx id=%1 %2 dropped]]")
+                                         .arg(id, meta);
+                content.replace(at, blockEnd - at, stub);
+                changed = true;
+                from = at + stub.size();
+            }
+        }
+        if (changed)
+            (*history)[i].content = content;
+    }
+}
 
 //----------------------------------------------
 
@@ -931,14 +1087,22 @@ void Agent::sltResponseReceived(const LlmResponse &response)
         return;
     }
 
-    _history.append(response.message);
+    LlmMessage stored = response.message;
+    const QStringList droppedIds = parseDroppedFileIds(stored.content);
+    stored.content = stripRetentionDirectives(stored.content);
+    if (!droppedIds.isEmpty())
+    {
+        dropFileContexts(&_history, droppedIds);
+        emit notice(tr("Убрал из контекста файлы: %1").arg(droppedIds.join(QString::fromUtf8(", "))));
+    }
+    _history.append(stored);
     emitContextUsage();
 
-    if (!response.message.content.trimmed().isEmpty())
-        emit assistantMessage(response.message.content);
+    if (!stored.content.trimmed().isEmpty())
+        emit assistantMessage(stored.content);
 
     const bool wantsTools = (response.finishReason == QString::fromUtf8("tool_calls"))
-                            || !response.message.toolCalls.isEmpty();
+                            || !stored.toolCalls.isEmpty();
     if (wantsTools)
     {
         if (!_history.isEmpty())
@@ -1259,6 +1423,27 @@ void Agent::requestCompletion()
     LlmRequest request;
     _optimizer.repairToolTurns(&_history);
     request.messages = _history;
+    const QList<LiveFileContext> cachedFiles = liveFileContexts(_history);
+    if (!cachedFiles.isEmpty())
+    {
+        const QString askText = fileRetentionRequest(cachedFiles);
+        const bool canFold = !request.messages.isEmpty()
+                             && request.messages.last().role == LlmRoleUser
+                             && request.messages.last().toolCalls.isEmpty()
+                             && request.messages.last().contentParts.isEmpty();
+        if (canFold)
+        {
+            request.messages.last().content += QString::fromUtf8("\n\n") + askText;
+        }
+        else
+        {
+            LlmMessage ask;
+            ask.role = LlmRoleUser;
+            ask.content = askText;
+            ask.hideInUi = true;
+            request.messages.append(ask);
+        }
+    }
     request.tools = toolsForRequest();
     _lastEstimated = _optimizer.estimatePrompt(request.messages, request.tools);
     emitContextUsage();

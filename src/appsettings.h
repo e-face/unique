@@ -189,6 +189,8 @@ public:
     void load();
     void save() const;
     void save(SettingsKind kind) const;
+    /** Сбросить отложенную запись настроек на диск (перед сменой проекта и т.п.). */
+    void flushPersist();
     void setProjectRoot(QString root);
     QString projectRoot() const;
     bool hasProjectSettings() const;
@@ -375,11 +377,21 @@ signals:
 
 private slots:
     void sltFlushStats();
+    void sltFlushPersist();
+    void sltEmitWorkerLimitsChanged();
+    void sltEmitProfilesChanged();
+    void sltEmitWorkerPresetsChanged();
 
 private:
     explicit AppSettings(QObject *parent = 0);
     void saveStats() const;
     void scheduleStatsSave();
+    void schedulePersist(SettingsKind kind);
+    void scheduleWorkerLimitsSignal();
+    void scheduleProfilesSignal();
+    void scheduleWorkerPresetsSignal();
+    static bool profilesEqual(const LlmProfile &a, const LlmProfile &b);
+    static bool presetsEqual(const WorkerPreset &a, const WorkerPreset &b);
     void maybeSeedGlobalUsage();
     void loadUsage(QSettings *settings, UsageStats *stats);
     void saveUsage(QSettings *settings, const UsageStats &stats) const;
@@ -442,6 +454,12 @@ private:
     UsageStats             _globalUsage;
     UsageStats             _projectUsage;
     QTimer                *_statsTimer;
+    QTimer                *_persistTimer;
+    QTimer                *_limitsSignalTimer;
+    QTimer                *_profilesSignalTimer;
+    QTimer                *_presetsSignalTimer;
+    bool                   _persistDefaultsPending;
+    bool                   _persistProjectPending;
     bool                   _showForwardedContext;
     QString                _uiLanguage;
     QByteArray             _mainWindowGeometry;

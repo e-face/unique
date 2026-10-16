@@ -16,6 +16,15 @@
 
 //----------------------------------------------
 
+static QString nextFileContextId()
+{
+    static int seq = 0;
+    ++seq;
+    return QString::fromUtf8("fc%1").arg(seq);
+}
+
+//----------------------------------------------
+
 static bool claimPathForOwner(Worker *owner, ProjectWorkspace *workspace, QString absolute,
                               QString *error)
 {
@@ -534,7 +543,9 @@ QString ReadFileAgentTool::description() const
     return QString::fromUtf8(
         "Read project text file(s) (~8 KB/file, ~12 KB/call). Prefer paths=[...] for several "
         "independent files. Single path= still works. Use offset (1-based line) and limit to "
-        "continue a long file — truncated replies include a ready continuation call.");
+        "continue a long file — truncated replies include a ready continuation call. "
+        "Each file body is tagged [[filectx id=fcN ...]] and stays in context until you "
+        "list that id in FILE_DROP.");
 }
 
 //----------------------------------------------
@@ -654,22 +665,31 @@ QString ReadFileAgentTool::readOne(QString relPath, int offset, int limit, bool 
         *ok = true;
 
     const QString digest = QString::number(qHash(body), 16);
+    const QString fileId = nextFileContextId();
+    const QString openTag = QString::fromUtf8("[[filectx id=%1 path=%2 lines=%3-%4]]\n")
+                                .arg(fileId, relPath)
+                                .arg(start + 1)
+                                .arg(end);
+    const QString closeTag = QString::fromUtf8("\n[[/filectx]]");
     if (start == 0 && end >= total)
     {
-        QString full = QString::fromUtf8("[path=%1 lines=1-%2 of %2 digest=%3]\n")
-                           .arg(relPath)
-                           .arg(total)
-                           .arg(digest);
+        QString full = openTag;
+        full += QString::fromUtf8("[path=%1 lines=1-%2 of %2 digest=%3]\n")
+                    .arg(relPath)
+                    .arg(total)
+                    .arg(digest);
         full += body;
+        full += closeTag;
         return full;
     }
 
-    QString result = QString::fromUtf8("[path=%1 lines=%2-%3 of %4 digest=%5]\n")
-                         .arg(relPath)
-                         .arg(start + 1)
-                         .arg(end)
-                         .arg(total)
-                         .arg(digest);
+    QString result = openTag;
+    result += QString::fromUtf8("[path=%1 lines=%2-%3 of %4 digest=%5]\n")
+                  .arg(relPath)
+                  .arg(start + 1)
+                  .arg(end)
+                  .arg(total)
+                  .arg(digest);
     result += body;
     if (end < total)
     {
@@ -681,6 +701,7 @@ QString ReadFileAgentTool::readOne(QString relPath, int offset, int limit, bool 
                       .arg(relPath)
                       .arg(end + 1);
     }
+    result += closeTag;
     return result;
 }
 

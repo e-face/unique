@@ -16,14 +16,33 @@ class QTimer;
 //----------------------------------------------
 
 /**
- * @brief Журнал: сводная лента чатов за время работы программы.
+ * @brief Запись постоянной ленты журнала (для сохранения в проект).
+ */
+struct JournalEntry
+{
+    JournalEntry()
+        : fromUser(false)
+    {
+    }
+
+    QString author;
+    QString text;
+    QString workerId;
+    bool    fromUser;
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Журнал: сводная лента чатов проекта.
  *
- * Сообщения пользователя и ассистента — с подписью автора, навсегда.
+ * Сообщения пользователя и ассистента — с подписью автора.
  * Вызовы функций в постоянную ленту не попадают; текущее действие
  * — одна строка фиксированной высоты после последнего сообщения
  * (смена текста + мерцание, без пересоздания виджета).
  * Заметки/ошибки — временные свёрнутые записи (новая замещает предыдущую).
- * Между запусками не сохраняется.
+ * Постоянные записи сохраняются в ___project___/journal.json
+ * (не больше последних 100).
  */
 class JournalWidget : public ConversationWidget
 {
@@ -35,6 +54,10 @@ public:
     void detachAgent(Agent *agent);
     void setAgentLabel(Agent *agent, QString label);
     void clearMessages();
+    /** Загрузить постоянную ленту из каталога текущего проекта. */
+    void loadPersisted();
+    /** Сразу записать отложенные изменения на диск. */
+    void flushPersist();
 
 signals:
     void workerChatRequested(const QString &workerId);
@@ -60,6 +83,7 @@ private slots:
     void sltLiveActionRotate();
     void sltLiveActionFade();
     void sltMessageLinkActivated(const QUrl &url);
+    void sltFlushPersist();
 
 private:
     QString labelFor(QObject *sender) const;
@@ -79,6 +103,13 @@ private:
     void refreshLiveActionText();
     void applyLiveActionFadeStyle();
     void bindTitleLink(QWidget *bubble, const QString &workerId);
+    void resetUi();
+    void rememberEntry(const QString &author, const QString &text, bool fromUser,
+                       const QString &workerId);
+    void rebuildFromEntries();
+    void schedulePersist();
+    static QString persistPath();
+    static bool canPersist();
 
     struct LiveAction
     {
@@ -90,13 +121,17 @@ private:
     QHash<QObject *, QString>  _workerIds;
     QHash<QObject *, QString>  _agentActions;
     QList<LiveAction>          _liveActions;
+    QList<JournalEntry>        _entries;
     QPointer<QWidget>          _transient;
     QPointer<ChatMessageFrame> _lastPermanent;
     QString                    _lastPermanentAuthor;
     bool                       _lastPermanentFromUser;
+    bool                       _loading;
+    bool                       _persistDirty;
     QLabel                    *_liveActionLine;
     QTimer                    *_liveRotateTimer;
     QTimer                    *_liveFadeTimer;
+    QTimer                    *_persistTimer;
     int                        _liveActionIndex;
     double                     _liveFadePhase;
 };

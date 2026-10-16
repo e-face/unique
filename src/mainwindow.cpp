@@ -306,6 +306,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _tabBlinkTimer(0)
     , _saveChatsTimer(0)
     , _uiRefreshTimer(0)
+    , _profilesApplyTimer(0)
     , _uiRefreshTree(false)
     , _graphDirty(true)
     , _tabBlinkOn(false)
@@ -652,6 +653,8 @@ void MainWindow::persistAndStopCurrentProject()
     }
     if (_projectStoreEnabled)
         saveOpenChats(true);
+    if (_journal)
+        _journal->flushPersist();
     AppSettings::instance()->save();
 }
 
@@ -743,6 +746,13 @@ void MainWindow::switchToProject(QString workspaceRoot, bool loadExisting)
         loadOpenChats();
     else
         sltNewChat();
+    if (_journal)
+    {
+        if (loadExisting)
+            _journal->loadPersisted();
+        else
+            _journal->clearMessages();
+    }
 
     updateStatusProgress(0, 0, tr("Дерево файлов"));
     if (_projectDock)
@@ -2128,15 +2138,27 @@ void MainWindow::sltAppearanceApplied()
 
 void MainWindow::sltProfilesChanged()
 {
-    applyClientToAllSessions();
+    if (!_profilesApplyTimer)
+    {
+        _profilesApplyTimer = new QTimer(this);
+        _profilesApplyTimer->setSingleShot(true);
+        connect(_profilesApplyTimer, SIGNAL(timeout()),
+                this, SLOT(sltApplyClientsFromProfiles()));
+    }
+    _profilesApplyTimer->start(350);
 }
 
 //----------------------------------------------
 
 void MainWindow::sltDefaultProfilesChanged()
 {
-    // Профили общие для всех проектов: правка в настройках программы
-    // должна сразу обновлять клиенты открытых сессий.
+    sltProfilesChanged();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltApplyClientsFromProfiles()
+{
     applyClientToAllSessions();
 }
 
@@ -2984,12 +3006,9 @@ void MainWindow::setupUi()
                 this, SLOT(sltInspectToggled(bool)));
     connect(_settingsPage, SIGNAL(appearanceApplied()),
             this, SLOT(sltAppearanceApplied()));
-    connect(_settingsPage, SIGNAL(profilesChanged()),
-            this, SLOT(sltDefaultProfilesChanged()));
     connect(_settingsPage, SIGNAL(removeWorkersForProfile(QString)),
             this, SLOT(sltRemoveWorkersForProfile(QString)));
-    connect(_projectSettingsPage, SIGNAL(profilesChanged()),
-            this, SLOT(sltProfilesChanged()));
+    // Один канал: AppSettings уже debounce'ит profilesChanged.
     connect(AppSettings::instance(), SIGNAL(profilesChanged()),
             this, SLOT(sltProfilesChanged()));
 
@@ -3612,6 +3631,8 @@ void MainWindow::saveOpenChats(bool wait)
     if (!_projectStoreEnabled)
         return;
     saveProjectUiState();
+    if (_journal)
+        _journal->flushPersist();
     if (wait)
         waitForChatSave();
     else if (_chatSaveThread && _chatSaveThread->isRunning())

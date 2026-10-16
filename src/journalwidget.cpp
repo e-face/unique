@@ -2,13 +2,18 @@
 //----------------------------------------------
 #include "agent.h"
 #include "appsettings.h"
+#include "chatsession.h"
 #include "markdownformatter.h"
 //----------------------------------------------
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QFontMetrics>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QSaveFile>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -17,21 +22,26 @@
 
 //----------------------------------------------
 
-static const int kJournalTextClip   = 16000;
-static const int kLiveActionHeight  = 24;
-static const int kLiveRotateMs      = 3000;
-static const int kLiveFadeMs        = 40;
+static const int kJournalTextClip       = 16000;
+static const int kMaxPersistedEntries   = 100;
+static const int kJournalPersistMs      = 500;
+static const int kLiveActionHeight      = 24;
+static const int kLiveRotateMs          = 3000;
+static const int kLiveFadeMs            = 40;
 /** Полный цикл яркости «чёткий → почти невидимый → чёткий», мс. */
-static const int kLiveFadeCycleMs   = 2200;
+static const int kLiveFadeCycleMs       = 2200;
 
 //----------------------------------------------
 
 JournalWidget::JournalWidget(QWidget *parent)
     : ConversationWidget(parent)
     , _lastPermanentFromUser(false)
+    , _loading(false)
+    , _persistDirty(false)
     , _liveActionLine(0)
     , _liveRotateTimer(0)
     , _liveFadeTimer(0)
+    , _persistTimer(0)
     , _liveActionIndex(0)
     , _liveFadePhase(0.0)
 {
@@ -67,7 +77,7 @@ JournalWidget::JournalWidget(QWidget *parent)
 
 //----------------------------------------------
 
-void JournalWidget::clearMessages()
+void JournalWidget::resetUi()
 {
     ConversationWidget::clearMessages();
     _transient = 0;
@@ -85,6 +95,165 @@ void JournalWidget::clearMessages()
         _liveActionLine->show();
         refreshLiveActionText();
     }
+}
+
+//----------------------------------------------
+
+void JournalWidget::clearMessages()
+{
+    _entries.clear();
+    resetUi();
+    schedulePersist();
+}
+
+//----------------------------------------------
+
+bool JournalWidget::canPersist()
+{
+    return AppSettings::instance()->hasProjectSettings()
+           && !ChatStore::storeDir().trimmed().isEmpty();
+}
+
+//----------------------------------------------
+
+QString JournalWidget::persistPath()
+{
+    return ChatStore::storeDir() + QString::fromUtf8("/journal.json");
+}
+
+//----------------------------------------------
+
+void JournalWidget::schedulePersist()
+{
+    if (_loading || !canPersist())
+        return;
+    _persistDirty = true;
+    if (!_persistTimer)
+    {
+        _persistTimer = new QTimer(this);
+        _persistTimer->setSingleShot(true);
+        connect(_persistTimer, SIGNAL(timeout()), this, SLOT(sltFlushPersist()));
+    }
+    _persistTimer->start(kJournalPersistMs);
+}
+
+//----------------------------------------------
+
+void JournalWidget::flushPersist()
+{
+    if (_persistTimer)
+        _persistTimer->stop();
+    sltFlushPersist();
+}
+
+//----------------------------------------------
+
+void JournalWidget::sltFlushPersist()
+{
+    if (!_persistDirty)
+        return;
+    _persistDirty = false;
+    if (!canPersist())
+        return;
+
+    QJsonArray items;
+    const int start = qMax(0, _entries.size() - kMaxPersistedEntries);
+    for (int i = start; i < _entries.size(); ++i)
+    {
+        const JournalEntry &entry = _entries.at(i);
+        QJsonObject object;
+        object.insert(QString::fromUtf8("author"), entry.author);
+        object.insert(QString::fromUtf8("text"), entry.text);
+        object.insert(QString::fromUtf8("fromUser"), entry.fromUser);
+        if (!entry.workerId.trimmed().isEmpty())
+            object.insert(QString::fromUtf8("workerId"), entry.workerId);
+        items.append(object);
+    }
+    QJsonObject root;
+    root.insert(QString::fromUtf8("entries"), items);
+
+    const QString path = persistPath();
+    const QString dir = QFileInfo(path).absolutePath();
+    if (!QDir().mkpath(dir))
+        return;
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+        return;
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    file.commit();
+}
+
+//----------------------------------------------
+
+void JournalWidget::loadPersisted()
+{
+    _entries.clear();
+    resetUi();
+    _persistDirty = false;
+    if (_persistTimer)
+        _persistTimer->stop();
+    if (!canPersist())
+        return;
+
+    QFile file(persistPath());
+    if (!file.exists() || !file.open(QIODevice::ReadOnly))
+        return;
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        return;
+    const QJsonArray items = document.object().value(QString::fromUtf8("entries")).toArray();
+    const int start = qMax(0, items.size() - kMaxPersistedEntries);
+    for (int i = start; i < items.size(); ++i)
+    {
+        const QJsonObject object = items.at(i).toObject();
+        JournalEntry entry;
+        entry.author = object.value(QString::fromUtf8("author")).toString();
+        entry.text = object.value(QString::fromUtf8("text")).toString();
+        entry.fromUser = object.value(QString::fromUtf8("fromUser")).toBool();
+        entry.workerId = object.value(QString::fromUtf8("workerId")).toString();
+        if (entry.text.trimmed().isEmpty() && entry.author.trimmed().isEmpty())
+            continue;
+        _entries.append(entry);
+    }
+    rebuildFromEntries();
+}
+
+//----------------------------------------------
+
+void JournalWidget::rememberEntry(const QString &author, const QString &text, bool fromUser,
+                                  const QString &workerId)
+{
+    if (_loading)
+        return;
+    JournalEntry entry;
+    entry.author = author;
+    entry.text = text;
+    entry.fromUser = fromUser;
+    entry.workerId = workerId.trimmed();
+    _entries.append(entry);
+    bool trimmed = false;
+    while (_entries.size() > kMaxPersistedEntries)
+    {
+        _entries.removeFirst();
+        trimmed = true;
+    }
+    if (trimmed)
+        rebuildFromEntries();
+    schedulePersist();
+}
+
+//----------------------------------------------
+
+void JournalWidget::rebuildFromEntries()
+{
+    const QList<JournalEntry> keep = _entries;
+    _loading = true;
+    resetUi();
+    foreach (const JournalEntry &entry, keep)
+        addPermanent(entry.author, entry.text, entry.fromUser, entry.workerId);
+    _entries = keep;
+    _loading = false;
 }
 
 //----------------------------------------------
@@ -570,6 +739,7 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
         ensureLiveActionAtEnd();
         if (!isRestoring() && pinBottom())
             scheduleScrollToBottom();
+        rememberEntry(who, text, fromUser, workerId);
         return;
     }
 
@@ -590,6 +760,7 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
     _lastPermanentAuthor = who;
     _lastPermanentFromUser = fromUser;
     ensureLiveActionAtEnd();
+    rememberEntry(who, text, fromUser, workerId);
 }
 
 //----------------------------------------------
