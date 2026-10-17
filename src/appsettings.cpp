@@ -1206,6 +1206,15 @@ bool AppSettings::isLightTheme() const
 
 //----------------------------------------------
 
+QColor AppSettings::chatBackgroundColor() const
+{
+    if (isLightTheme())
+        return _windowColor;
+    return QColor(_panelColor).darker(108);
+}
+
+//----------------------------------------------
+
 bool AppSettings::showForwardedContext() const
 {
     return _showForwardedContext;

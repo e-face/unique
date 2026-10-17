@@ -14,7 +14,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
-class QPlainTextEdit;
+class QTextEdit;
 class QFormLayout;
 class QPushButton;
 class QSpinBox;
@@ -42,6 +42,7 @@ public:
     void setWorkerManager(WorkerManager *manager);
 
     void loadAppearance();
+    void applyTheme();
     void refreshPermissionsList();
     void loadControlFlags();
     void loadProfiles();
@@ -110,8 +111,9 @@ private:
     void refreshPresetPreview();
     void updateProfileActionButtons();
     void updatePresetActionButtons();
-    QString profilePreviewText(const LlmProfile &profile) const;
-    QString presetPreviewText(const WorkerPreset &preset) const;
+    QString profilePreviewHtml(const LlmProfile &profile) const;
+    QString presetPreviewHtml(const WorkerPreset &preset) const;
+    void setPreviewHtml(QTextEdit *edit, const QString &html);
     QString modalityTitle(WorkerTaskKind kind) const;
     QString workerTypeTitle(WorkerType type) const;
     bool runProfileDialog(LlmProfile *profile, bool isNew);
@@ -158,7 +160,7 @@ private:
     QPushButton *_addProfileButton;
     QPushButton *_editProfileButton;
     QPushButton *_removeProfileButton;
-    QPlainTextEdit *_profilePreview;
+    QTextEdit   *_profilePreview;
     QListWidget *_presetList;
     QComboBox   *_presetTypeCombo;
     QComboBox   *_presetProfileCombo;
@@ -166,7 +168,7 @@ private:
     QPushButton *_addPresetButton;
     QPushButton *_editPresetButton;
     QPushButton *_removePresetButton;
-    QPlainTextEdit *_presetPreview;
+    QTextEdit   *_presetPreview;
     QSpinBox    *_maxDepthSpin;
     QSpinBox    *_maxConcurrentSpin;
     QSpinBox    *_llmTimeoutSpin;

@@ -1283,10 +1283,7 @@ void ConversationWidget::applyTheme()
 {
     AppSettings *s = AppSettings::instance();
     const QString text = s->textColor().name();
-    // Фон ленты = окно: без «ступеньки» яркости относительно вкладок/доков.
-    const QString chatBg = s->isLightTheme()
-                           ? s->windowColor().name()
-                           : s->panelColor().darker(108).name();
+    const QString chatBg = s->chatBackgroundColor().name();
     const QString bubble = s->isLightTheme()
                            ? QString::fromUtf8("#f3f4f6")
                            : s->panelColor().lighter(114).name();

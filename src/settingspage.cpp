@@ -23,7 +23,8 @@
 #include <QListWidgetItem>
 #include <QItemSelectionModel>
 #include <QMessageBox>
-#include <QPlainTextEdit>
+#include <QTextEdit>
+#include <QVariant>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -188,8 +189,11 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
 {
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
+    setObjectName(QString::fromUtf8("settingsPage"));
 
     QWidget *host = new QWidget(this);
+    host->setObjectName(QString::fromUtf8("settingsHost"));
+    host->setAttribute(Qt::WA_StyledBackground, true);
     QVBoxLayout *root = new QVBoxLayout(host);
     root->setContentsMargins(16, 16, 16, 16);
     root->setSpacing(12);
@@ -775,8 +779,9 @@ QWidget *SettingsPage::buildApiBox()
     _profileList->setMinimumWidth(180);
     _profileList->setMinimumHeight(180);
 
-    _profilePreview = new QPlainTextEdit(box);
+    _profilePreview = new QTextEdit(box);
     _profilePreview->setReadOnly(true);
+    _profilePreview->setAcceptRichText(true);
     _profilePreview->setMinimumWidth(280);
     _profilePreview->setMinimumHeight(180);
     _profilePreview->setToolTip(
@@ -828,8 +833,9 @@ QWidget *SettingsPage::buildWorkersBox()
     _presetList->setMinimumWidth(180);
     _presetList->setMinimumHeight(140);
 
-    _presetPreview = new QPlainTextEdit(box);
+    _presetPreview = new QTextEdit(box);
     _presetPreview->setReadOnly(true);
+    _presetPreview->setAcceptRichText(true);
     _presetPreview->setMinimumWidth(280);
     _presetPreview->setMinimumHeight(140);
     _presetPreview->setToolTip(
@@ -1469,7 +1475,17 @@ QString SettingsPage::modalityTitle(WorkerTaskKind kind) const
 
 //----------------------------------------------
 
-QString SettingsPage::profilePreviewText(const LlmProfile &profile) const
+static QString previewField(const QString &label, const QString &value, const QString &muted)
+{
+    return QString::fromUtf8(
+               "<p style=\"margin-top:2px; margin-bottom:8px;\">"
+               "<span style=\"color:%1;\">%2</span><br><b>%3</b></p>")
+        .arg(muted, label.toHtmlEscaped(), value.toHtmlEscaped());
+}
+
+//----------------------------------------------
+
+QString SettingsPage::profilePreviewHtml(const LlmProfile &profile) const
 {
     const QString dash = QString::fromUtf8("—");
     const QString name = profile.name.trimmed().isEmpty() ? dash : profile.name.trimmed();
@@ -1493,28 +1509,29 @@ QString SettingsPage::profilePreviewText(const LlmProfile &profile) const
     const bool fromApi = OpenAiCompatibleClient::hasApiContextWindow(
                              profile.baseUrl, profile.model);
     const QString windowLine = fromApi
-        ? tr("окно %1: %2 ток. (из API /models)").arg(shownModel).arg(window)
-        : tr("окно %1: %2 ток. (оценка: API не отдаёт размер окна)")
-              .arg(shownModel).arg(window);
+        ? tr("%1 ток. (из API /models)").arg(window)
+        : tr("%1 ток. (оценка: API не отдаёт размер окна)").arg(window);
 
-    QStringList lines;
-    lines << tr("Имя профиля: %1").arg(name);
-    lines << tr("Адрес API: %1").arg(url);
-    lines << tr("Модель: %1").arg(modelName);
-    lines << tr("Токен: %1").arg(token);
-    lines << tr("Класс задач API: %1").arg(modalityTitle(profile.modality));
-    lines << tr("Назначение модели: %1").arg(purpose);
-    lines << tr("URL баланса: %1").arg(balanceUrl);
-    lines << tr("JSON путь баланса: %1").arg(balancePath);
-    lines << tr("Лимит вызовов функций: %1").arg(profile.maxToolIterations);
-    lines << tr("Потолок контекста: %1").arg(cap);
-    lines << windowLine;
-    return lines.join(QString::fromUtf8("\n"));
+    const QString muted = AppSettings::instance()->mutedTextColor().name();
+    QString html;
+    html += previewField(tr("Имя профиля"), name, muted);
+    html += previewField(tr("Адрес API"), url, muted);
+    html += previewField(tr("Модель"), modelName, muted);
+    html += previewField(tr("Токен"), token, muted);
+    html += previewField(tr("Класс задач API"), modalityTitle(profile.modality), muted);
+    html += previewField(tr("Назначение модели"), purpose, muted);
+    html += previewField(tr("URL баланса"), balanceUrl, muted);
+    html += previewField(tr("JSON путь баланса"), balancePath, muted);
+    html += previewField(tr("Лимит вызовов функций"),
+                         QString::number(profile.maxToolIterations), muted);
+    html += previewField(tr("Потолок контекста"), cap, muted);
+    html += previewField(tr("Окно %1").arg(shownModel), windowLine, muted);
+    return html;
 }
 
 //----------------------------------------------
 
-QString SettingsPage::presetPreviewText(const WorkerPreset &preset) const
+QString SettingsPage::presetPreviewHtml(const WorkerPreset &preset) const
 {
     const LlmProfile profile = AppSettings::instance()->profileById(preset.profileId);
     QString profileTitle = profile.name.trimmed();
@@ -1532,11 +1549,39 @@ QString SettingsPage::presetPreviewText(const WorkerPreset &preset) const
     }
     const WorkerTaskKind modality = profile.id.isEmpty() ? preset.taskKind : profile.modality;
 
-    QStringList lines;
-    lines << tr("Тип воркера: %1").arg(workerTypeTitle(preset.type));
-    lines << tr("Профиль модели: %1").arg(profileTitle);
-    lines << tr("Класс задач API: %1").arg(modalityTitle(modality));
-    return lines.join(QString::fromUtf8("\n"));
+    const QString muted = AppSettings::instance()->mutedTextColor().name();
+    QString html;
+    html += previewField(tr("Тип воркера"), workerTypeTitle(preset.type), muted);
+    html += previewField(tr("Профиль модели"), profileTitle, muted);
+    html += previewField(tr("Класс задач API"), modalityTitle(modality), muted);
+    return html;
+}
+
+//----------------------------------------------
+
+void SettingsPage::setPreviewHtml(QTextEdit *edit, const QString &html)
+{
+    if (!edit)
+        return;
+    const QString wrapped = QString::fromUtf8(
+                                "<div style=\"color:%1;\">%2</div>")
+                                .arg(AppSettings::instance()->textColor().name(), html);
+    if (edit->property("previewHtml").toString() == wrapped)
+        return;
+    edit->setHtml(wrapped);
+    edit->setProperty("previewHtml", wrapped);
+}
+
+//----------------------------------------------
+
+void SettingsPage::applyTheme()
+{
+    if (_profilePreview)
+        _profilePreview->setProperty("previewHtml", QVariant());
+    if (_presetPreview)
+        _presetPreview->setProperty("previewHtml", QVariant());
+    refreshProfilePreview();
+    refreshPresetPreview();
 }
 
 //----------------------------------------------
@@ -1546,25 +1591,33 @@ void SettingsPage::refreshProfilePreview()
     if (!_profilePreview)
         return;
     const QStringList ids = selectedProfileIds();
-    QString text;
+    const QString muted = AppSettings::instance()->mutedTextColor().name();
+    QString html;
     if (ids.isEmpty())
     {
-        text = tr("Профили не выделены.");
+        html = QString::fromUtf8("<p style=\"color:%1;\"><i>%2</i></p>")
+                   .arg(muted, tr("Профили не выделены.").toHtmlEscaped());
     }
     else
     {
-        QStringList blocks;
+        int shown = 0;
         foreach (const QString &id, ids)
         {
             const LlmProfile profile = AppSettings::instance()->profileById(id);
-            if (!profile.id.isEmpty())
-                blocks << profilePreviewText(profile);
+            if (profile.id.isEmpty())
+                continue;
+            if (shown > 0)
+                html += QString::fromUtf8("<hr>");
+            html += profilePreviewHtml(profile);
+            ++shown;
         }
-        text = blocks.isEmpty() ? tr("Профили не выделены.")
-                                : blocks.join(QString::fromUtf8("\n\n"));
+        if (shown == 0)
+        {
+            html = QString::fromUtf8("<p style=\"color:%1;\"><i>%2</i></p>")
+                       .arg(muted, tr("Профили не выделены.").toHtmlEscaped());
+        }
     }
-    if (_profilePreview->toPlainText() != text)
-        _profilePreview->setPlainText(text);
+    setPreviewHtml(_profilePreview, html);
 }
 
 //----------------------------------------------
@@ -1574,25 +1627,33 @@ void SettingsPage::refreshPresetPreview()
     if (!_presetPreview)
         return;
     const QStringList ids = selectedPresetIds();
-    QString text;
+    const QString muted = AppSettings::instance()->mutedTextColor().name();
+    QString html;
     if (ids.isEmpty())
     {
-        text = tr("Воркеры не выделены.");
+        html = QString::fromUtf8("<p style=\"color:%1;\"><i>%2</i></p>")
+                   .arg(muted, tr("Воркеры не выделены.").toHtmlEscaped());
     }
     else
     {
-        QStringList blocks;
+        int shown = 0;
         foreach (const QString &id, ids)
         {
             const WorkerPreset preset = AppSettings::instance()->workerPresetById(_kind, id);
-            if (!preset.id.isEmpty())
-                blocks << presetPreviewText(preset);
+            if (preset.id.isEmpty())
+                continue;
+            if (shown > 0)
+                html += QString::fromUtf8("<hr>");
+            html += presetPreviewHtml(preset);
+            ++shown;
         }
-        text = blocks.isEmpty() ? tr("Воркеры не выделены.")
-                                : blocks.join(QString::fromUtf8("\n\n"));
+        if (shown == 0)
+        {
+            html = QString::fromUtf8("<p style=\"color:%1;\"><i>%2</i></p>")
+                       .arg(muted, tr("Воркеры не выделены.").toHtmlEscaped());
+        }
     }
-    if (_presetPreview->toPlainText() != text)
-        _presetPreview->setPlainText(text);
+    setPreviewHtml(_presetPreview, html);
 }
 
 //----------------------------------------------

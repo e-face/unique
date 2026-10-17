@@ -252,6 +252,8 @@ public:
     QColor  selectionColor() const;
     QColor  scrollbarColor() const;
     bool    isLightTheme() const;
+    /** Фон ленты чата воркера: окно в светлой теме, панель чуть темнее в тёмной. */
+    QColor  chatBackgroundColor() const;
 
     /**
      * @brief Показывать пересылаемый между воркерами контекст в чатах и журнале.

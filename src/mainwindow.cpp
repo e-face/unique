@@ -62,6 +62,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPalette>
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QKeyEvent>
@@ -2211,6 +2212,8 @@ void MainWindow::sltShowStatistics()
     dialog.resize(640, 720);
 
     QWidget *content = new QWidget(&dialog);
+    content->setObjectName(QString::fromUtf8("statsHost"));
+    content->setAttribute(Qt::WA_StyledBackground, true);
     QVBoxLayout *contentLay = new QVBoxLayout(content);
     contentLay->setContentsMargins(0, 0, 0, 0);
 
@@ -2264,10 +2267,20 @@ void MainWindow::sltShowStatistics()
     contentLay->addStretch(1);
 
     QScrollArea *scroll = new QScrollArea(&dialog);
+    scroll->setObjectName(QString::fromUtf8("statsScroll"));
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setWidget(content);
+    if (QWidget *vp = scroll->viewport())
+    {
+        const QColor chatColor = s->chatBackgroundColor();
+        vp->setAutoFillBackground(true);
+        QPalette pal = vp->palette();
+        pal.setColor(QPalette::Window, chatColor);
+        pal.setColor(QPalette::Base, chatColor);
+        vp->setPalette(pal);
+    }
 
     QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
     QPushButton *resetProject = buttons->addButton(tr("Обнулить проект"),
@@ -3362,6 +3375,11 @@ void MainWindow::setupMenus()
 
     _fileMenu->addSeparator();
 
+    _windowSettingsAction = _fileMenu->addAction(L("menu.window.settings"));
+    connect(_windowSettingsAction, SIGNAL(triggered()), this, SLOT(sltShowSettings()));
+
+    _fileMenu->addSeparator();
+
     _quitAction = _fileMenu->addAction(L("menu.file.quit"));
     _quitAction->setShortcut(QKeySequence::Quit);
     connect(_quitAction, SIGNAL(triggered()), this, SLOT(close()));
@@ -3376,9 +3394,6 @@ void MainWindow::setupMenus()
 
     _windowJournalAction = _windowMenu->addAction(L("menu.window.journal"));
     connect(_windowJournalAction, SIGNAL(triggered()), this, SLOT(sltShowJournal()));
-
-    _windowSettingsAction = _windowMenu->addAction(L("menu.window.settings"));
-    connect(_windowSettingsAction, SIGNAL(triggered()), this, SLOT(sltShowSettings()));
 
     _projectMenu = menuBar()->addMenu(L("menu.project"));
 
@@ -4611,8 +4626,16 @@ void MainWindow::updateProjectActions()
         _fileClearAction->setEnabled(hasProject && !_resetting);
     if (_showChatAction)
         _showChatAction->setEnabled(hasProject);
-    if (_projectSettingsAction)
-        _projectSettingsAction->setEnabled(hasProject);
+    if (_projectMenu)
+    {
+        const QList<QAction *> projectActions = _projectMenu->actions();
+        for (int i = 0; i < projectActions.size(); ++i)
+        {
+            QAction *action = projectActions.at(i);
+            if (action && !action->isSeparator())
+                action->setEnabled(hasProject);
+        }
+    }
 }
 
 //----------------------------------------------
@@ -4708,6 +4731,7 @@ void MainWindow::applyAppStyle()
     const QString hover = s->isLightTheme()
                           ? QColor(s->windowColor()).darker(104).name()
                           : QColor(s->toolbarColor()).lighter(118).name();
+    const QString chatBg = s->chatBackgroundColor().name();
 
     setStyleSheet(QString::fromUtf8(
         "QMainWindow { background:%1; color:%2; }"
@@ -4720,6 +4744,7 @@ void MainWindow::applyAppStyle()
         "  padding:6px; }"
         "QMenu::item { padding:7px 28px 7px 12px; border-radius:6px; }"
         "QMenu::item:selected { background:%7; }"
+        "QMenu::item:disabled { color:%MUTED%; background:transparent; }"
         "QMenu::separator { height:1px; background:%6; margin:6px 8px; }"
         "QStatusBar { background:%1; color:%MUTED%; border:none;"
         "  border-top:1px solid %6; }"
@@ -4782,6 +4807,12 @@ void MainWindow::applyAppStyle()
         "QScrollBar::handle:horizontal { background:%SCROLL%; min-width:24px;"
         "  border-radius:5px; }"
         "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width:0; }"
+        "QScrollArea#settingsPage { background:%CHAT%; border:none; }"
+        "QScrollArea#settingsPage > QWidget { background:%CHAT%; }"
+        "QWidget#settingsHost { background:%CHAT%; }"
+        "QScrollArea#statsScroll { background:%CHAT%; border:none; }"
+        "QScrollArea#statsScroll > QWidget { background:%CHAT%; }"
+        "QWidget#statsHost { background:%CHAT%; }"
         "QDialog, QMessageBox { background:%3; color:%2; }"
         "QMessageBox QLabel { color:%2; }"
         "QProgressBar { background:%5; color:%2; border:1px solid %6;"
@@ -4796,7 +4827,8 @@ void MainWindow::applyAppStyle()
                       .arg(select)
                       .replace(QString::fromUtf8("%MUTED%"), muted)
                       .replace(QString::fromUtf8("%SCROLL%"), scroll)
-                      .replace(QString::fromUtf8("%HOVER%"), hover));
+                      .replace(QString::fromUtf8("%HOVER%"), hover)
+                      .replace(QString::fromUtf8("%CHAT%"), chatBg));
 
     if (_projectDock)
         _projectDock->applyTheme();
@@ -4827,6 +4859,24 @@ void MainWindow::applyAppStyle()
     {
         if (session && session->widget())
             session->widget()->applyTheme();
+    }
+
+    const QColor chatColor = s->chatBackgroundColor();
+    SettingsPage *settingsPages[2] = { _settingsPage, _projectSettingsPage };
+    for (int i = 0; i < 2; ++i)
+    {
+        SettingsPage *page = settingsPages[i];
+        if (!page)
+            continue;
+        page->applyTheme();
+        if (QWidget *vp = page->viewport())
+        {
+            vp->setAutoFillBackground(true);
+            QPalette pal = vp->palette();
+            pal.setColor(QPalette::Window, chatColor);
+            pal.setColor(QPalette::Base, chatColor);
+            vp->setPalette(pal);
+        }
     }
 }
 
