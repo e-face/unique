@@ -93,10 +93,8 @@ private slots:
 
 private:
     void updateColorButton(QPushButton *button, const QColor &color);
-    QWidget *buildHintBox();
     QWidget *buildLanguageBox();
     QWidget *buildApiBox();
-    QWidget *buildProfilesRefBox();
     QWidget *buildWorkersBox();
     QWidget *buildProjectBox();
     QWidget *buildSecurityBox();
@@ -129,18 +127,12 @@ private:
     WorkerManager *_workers;
     QGroupBox   *_viewBox;
     QGroupBox   *_apiBox;
-    QGroupBox   *_profilesRefBox;
     QGroupBox   *_workersBox;
     QGroupBox   *_projectBox;
     QGroupBox   *_securityBox;
     QGroupBox   *_appearanceBox;
     QGroupBox   *_languageGroup;
     QComboBox   *_languageCombo;
-    QLabel      *_hintLabel;
-    QLabel      *_presetHint;
-    QLabel      *_limitsHint;
-    QLabel      *_rootHint;
-    QLabel      *_profilesRefHint;
     QLabel      *_permissionsHeadingLabel;
     QFormLayout *_profileForm;
     QFormLayout *_presetForm;

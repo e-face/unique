@@ -123,18 +123,12 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _workers(0)
     , _viewBox(0)
     , _apiBox(0)
-    , _profilesRefBox(0)
     , _workersBox(0)
     , _projectBox(0)
     , _securityBox(0)
     , _appearanceBox(0)
     , _languageGroup(0)
     , _languageCombo(0)
-    , _hintLabel(0)
-    , _presetHint(0)
-    , _limitsHint(0)
-    , _rootHint(0)
-    , _profilesRefHint(0)
     , _permissionsHeadingLabel(0)
     , _profileForm(0)
     , _presetForm(0)
@@ -199,13 +193,10 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     QVBoxLayout *root = new QVBoxLayout(host);
     root->setContentsMargins(16, 16, 16, 16);
     root->setSpacing(12);
-    root->addWidget(buildHintBox());
     if (_kind == SettingsKindDefaults)
         root->addWidget(buildLanguageBox());
     if (_kind == SettingsKindDefaults)
         root->addWidget(buildApiBox());
-    else
-        root->addWidget(buildProfilesRefBox());
     root->addWidget(buildWorkersBox());
     if (_kind == SettingsKindProject)
         root->addWidget(buildProjectBox());
@@ -276,15 +267,6 @@ void SettingsPage::reloadAll()
         if (box->objectName() != QString::fromUtf8("projectBox"))
             box->setEnabled(ready);
     }
-    if (_hintLabel)
-    {
-        if (_kind == SettingsKindDefaults)
-            _hintLabel->setText(L("settings.hint.defaults"));
-        else if (ready)
-            _hintLabel->setText(L("settings.hint.project"));
-        else
-            _hintLabel->setText(L("settings.hint.noProject"));
-    }
     loadAppearance();
     loadControlFlags();
     refreshPermissionsList();
@@ -305,20 +287,6 @@ void SettingsPage::sltProjectSettingsChanged()
         return;
     setProjectPath(AppSettings::instance()->projectRoot());
     reloadAll();
-}
-
-//----------------------------------------------
-
-QWidget *SettingsPage::buildHintBox()
-{
-    QFrame *frame = new QFrame(this);
-    frame->setFrameShape(QFrame::StyledPanel);
-    _hintLabel = new QLabel(frame);
-    _hintLabel->setWordWrap(true);
-    QVBoxLayout *layout = new QVBoxLayout(frame);
-    layout->setContentsMargins(10, 8, 10, 8);
-    layout->addWidget(_hintLabel);
-    return frame;
 }
 
 //----------------------------------------------
@@ -478,15 +446,8 @@ void SettingsPage::retranslateUi()
         }
     }
 
-    if (_profilesRefBox)
-        _profilesRefBox->setTitle(tr("Профили моделей"));
-    if (_profilesRefHint)
-        _profilesRefHint->setText(L("settings.hint.profilesRef"));
-
     if (_workersBox)
         _workersBox->setTitle(tr("Воркеры"));
-    if (_presetHint)
-        _presetHint->setText(L("settings.hint.presets"));
     if (_addPresetButton)
         _addPresetButton->setText(tr("Добавить"));
     if (_editPresetButton)
@@ -530,13 +491,9 @@ void SettingsPage::retranslateUi()
             tr("Пресет главного менеджера при создании проекта и очистке сеанса. "
                "Можно выбрать только пресет с ролью «Менеджер»."));
     }
-    if (_rootHint)
-        _rootHint->setText(L("settings.hint.root"));
     if (_rootForm && _rootPresetCombo)
         setFormLabelText(_rootForm, _rootPresetCombo, tr("Пресет главного менеджера:"));
 
-    if (_limitsHint)
-        _limitsHint->setText(L("settings.hint.limits"));
     if (_maxDepthSpin)
         _maxDepthSpin->setToolTip(tr("Главный чат — уровень 0. Менеджер на уровне N-1 "
                                        "может создавать только исполнителей и тестировщиков."));
@@ -860,28 +817,11 @@ QWidget *SettingsPage::buildApiBox()
 
 //----------------------------------------------
 
-QWidget *SettingsPage::buildProfilesRefBox()
-{
-    _profilesRefBox = new QGroupBox(tr("Профили моделей"), this);
-    QGroupBox *box = _profilesRefBox;
-    _profilesRefHint = new QLabel(L("settings.hint.profilesRef"), box);
-    _profilesRefHint->setWordWrap(true);
-    QVBoxLayout *layout = new QVBoxLayout(box);
-    layout->addWidget(_profilesRefHint);
-    return box;
-}
-
-//----------------------------------------------
-
 QWidget *SettingsPage::buildWorkersBox()
 {
     _workersBox = new QGroupBox(tr("Воркеры"), this);
     QGroupBox *box = _workersBox;
     QVBoxLayout *layout = new QVBoxLayout(box);
-
-    _presetHint = new QLabel(L("settings.hint.presets"), box);
-    _presetHint->setWordWrap(true);
-    layout->addWidget(_presetHint);
 
     _presetList = new QListWidget(box);
     _presetList->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -933,9 +873,6 @@ QWidget *SettingsPage::buildWorkersBox()
                "Можно выбрать только пресет с ролью «Менеджер»."));
         connect(_rootPresetCombo, SIGNAL(currentIndexChanged(int)),
                 this, SLOT(sltRootPresetChanged()));
-        _rootHint = new QLabel(L("settings.hint.root"), box);
-        _rootHint->setWordWrap(true);
-        layout->addWidget(_rootHint);
         _rootForm = new QFormLayout();
         _rootForm->addRow(tr("Пресет главного менеджера:"), _rootPresetCombo);
         layout->addLayout(_rootForm);
@@ -945,10 +882,6 @@ QWidget *SettingsPage::buildWorkersBox()
     line->setFrameShape(QFrame::HLine);
     line->setFrameShadow(QFrame::Sunken);
     layout->addWidget(line);
-
-    _limitsHint = new QLabel(L("settings.hint.limits"), box);
-    _limitsHint->setWordWrap(true);
-    layout->addWidget(_limitsHint);
 
     _maxDepthSpin = new QSpinBox(box);
     _maxDepthSpin->setRange(1, 8);
