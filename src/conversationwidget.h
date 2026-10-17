@@ -148,6 +148,8 @@ public:
      *        (ожидание детей, разрешения, очередь). Пусто — снять.
      */
     void setExternalActivity(QString text);
+    /** Подтянуть строку активности и кнопки, если работа началась до открытия чата. */
+    void syncRunningState();
     /** Скрыть строку активности чата (в журнале своя строка). */
     void setChatLiveActionVisible(bool visible);
 

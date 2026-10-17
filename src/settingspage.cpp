@@ -21,7 +21,9 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QItemSelectionModel>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -37,6 +39,80 @@ static void setFormLabelText(QFormLayout *form, QWidget *field, const QString &t
     QWidget *w = form->labelForField(field);
     if (QLabel *lab = qobject_cast<QLabel *>(w))
         lab->setText(text);
+}
+
+//----------------------------------------------
+
+static void fillProfileCombo(QComboBox *combo, const QString &selectId)
+{
+    if (!combo)
+        return;
+    const QSignalBlocker blocker(combo);
+    combo->clear();
+    foreach (const LlmProfile &profile, AppSettings::instance()->profiles())
+    {
+        QString title = profile.name.trimmed();
+        if (title.isEmpty())
+            title = profile.id;
+        const QString purpose = profile.purpose.trimmed().simplified();
+        if (!purpose.isEmpty())
+        {
+            QString shortPurpose = purpose;
+            if (shortPurpose.size() > 48)
+                shortPurpose = shortPurpose.left(45) + QString::fromUtf8("...");
+            title += QString::fromUtf8(" — ") + shortPurpose;
+        }
+        combo->addItem(title, profile.id);
+    }
+    int index = combo->findData(selectId);
+    if (index < 0)
+        index = 0;
+    if (combo->count() > 0)
+        combo->setCurrentIndex(index);
+}
+
+//----------------------------------------------
+
+static void restoreListSelection(QListWidget *list, const QStringList &ids)
+{
+    if (!list)
+        return;
+    QListWidgetItem *first = 0;
+    for (int i = 0; i < list->count(); ++i)
+    {
+        QListWidgetItem *item = list->item(i);
+        const bool on = ids.contains(item->data(Qt::UserRole).toString());
+        item->setSelected(on);
+        if (on && !first)
+            first = item;
+    }
+    if (first)
+        list->setCurrentItem(first, QItemSelectionModel::NoUpdate);
+    else if (list->count() > 0)
+    {
+        list->item(0)->setSelected(true);
+        list->setCurrentItem(list->item(0), QItemSelectionModel::NoUpdate);
+    }
+}
+
+//----------------------------------------------
+
+static void selectOnlyId(QListWidget *list, const QString &id)
+{
+    if (!list)
+        return;
+    const QSignalBlocker blocker(list);
+    list->clearSelection();
+    for (int i = 0; i < list->count(); ++i)
+    {
+        QListWidgetItem *item = list->item(i);
+        if (item->data(Qt::UserRole).toString() != id)
+            continue;
+        item->setSelected(true);
+        list->setCurrentItem(item, QItemSelectionModel::NoUpdate);
+        list->scrollToItem(item);
+        break;
+    }
 }
 
 //----------------------------------------------
@@ -82,13 +158,17 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _profileCapHint(0)
     , _profileCapModelButton(0)
     , _addProfileButton(0)
+    , _editProfileButton(0)
     , _removeProfileButton(0)
+    , _profilePreview(0)
     , _presetList(0)
     , _presetTypeCombo(0)
     , _presetProfileCombo(0)
     , _rootPresetCombo(0)
     , _addPresetButton(0)
+    , _editPresetButton(0)
     , _removePresetButton(0)
+    , _presetPreview(0)
     , _maxDepthSpin(0)
     , _maxConcurrentSpin(0)
     , _llmTimeoutSpin(0)
@@ -341,6 +421,8 @@ void SettingsPage::retranslateUi()
             tr("опц. путь JSON: data.credits или balance_infos.0.total_balance"));
     if (_addProfileButton)
         _addProfileButton->setText(tr("Добавить"));
+    if (_editProfileButton)
+        _editProfileButton->setText(tr("Редактировать"));
     if (_removeProfileButton)
         _removeProfileButton->setText(tr("Удалить"));
     if (_profileForm)
@@ -407,6 +489,8 @@ void SettingsPage::retranslateUi()
         _presetHint->setText(L("settings.hint.presets"));
     if (_addPresetButton)
         _addPresetButton->setText(tr("Добавить"));
+    if (_editPresetButton)
+        _editPresetButton->setText(tr("Редактировать"));
     if (_removePresetButton)
         _removePresetButton->setText(tr("Удалить"));
     if (_presetForm)
@@ -585,48 +669,7 @@ void SettingsPage::sltWorkerLimitsChanged()
 
 void SettingsPage::updateProfileCapHint()
 {
-    if (_kind != SettingsKindDefaults || !_profileCapHint)
-        return;
-    const LlmProfile profile = AppSettings::instance()->profileById(currentProfileId());
-    if (profile.id.isEmpty())
-    {
-        _profileCapHint->clear();
-        return;
-    }
-    const int window = OpenAiCompatibleClient::resolvedContextWindow(
-                           profile.baseUrl, profile.model);
-    QString model = profile.model.trimmed();
-    if (model.isEmpty())
-        model = tr("модель не задана");
-    const bool fromApi = OpenAiCompatibleClient::hasApiContextWindow(
-                             profile.baseUrl, profile.model);
-    if (fromApi)
-    {
-        _profileCapHint->setText(tr("окно %1: %2 ток. (из API /models)")
-                                 .arg(model)
-                                 .arg(window));
-    }
-    else
-    {
-        _profileCapHint->setText(tr("окно %1: %2 ток. (оценка: API не отдаёт размер окна)")
-                                 .arg(model)
-                                 .arg(window));
-    }
-    if (_profileCapSpin)
-    {
-        _profileCapSpin->setToolTip(
-            tr("0 — полное окно модели (%1 ток.). "
-               "Можно указать точное число, в том числе равное окну. "
-               "Иначе история сжимается раньше, по этому потолку.")
-                .arg(window));
-    }
-    if (_profileCapModelButton)
-    {
-        _profileCapModelButton->setToolTip(
-            tr("Запросить GET /models и подставить окно %1 (%2 ток.).")
-                .arg(model)
-                .arg(window));
-    }
+    refreshProfilePreview();
     requestContextCatalogs();
 }
 
@@ -634,23 +677,6 @@ void SettingsPage::updateProfileCapHint()
 
 void SettingsPage::sltUseModelContext()
 {
-    if (_kind != SettingsKindDefaults || sender() != _profileCapModelButton || !_profileCapSpin)
-        return;
-    commitCurrentProfile();
-    const LlmProfile profile = AppSettings::instance()->profileById(currentProfileId());
-    if (profile.id.isEmpty())
-        return;
-    _pendingProfileCapWindow = true;
-    OpenAiCompatibleClient::fetchContextCatalog(profile.baseUrl, profile.apiKey,
-                                                profile.model);
-    const int window = OpenAiCompatibleClient::resolvedContextWindow(
-                           profile.baseUrl, profile.model);
-    if (window > 0)
-        _profileCapSpin->setValue(window);
-    else
-        _profileCapSpin->setValue(0);
-    sltProfileFieldChanged();
-    updateProfileCapHint();
 }
 
 //----------------------------------------------
@@ -674,16 +700,7 @@ void SettingsPage::sltCatalogWindowsUpdated()
     if (busy)
         return;
     busy = true;
-    if (_pendingProfileCapWindow && _profileCapSpin)
-    {
-        const LlmProfile profile = AppSettings::instance()->profileById(currentProfileId());
-        const int window = OpenAiCompatibleClient::resolvedContextWindow(
-                               profile.baseUrl, profile.model);
-        if (window > 0)
-            _profileCapSpin->setValue(window);
-        _pendingProfileCapWindow = false;
-        sltProfileFieldChanged();
-    }
+    _pendingProfileCapWindow = false;
     updateProfileCapHint();
     busy = false;
 }
@@ -754,47 +771,8 @@ QString SettingsPage::currentProfileId() const
 
 void SettingsPage::loadCurrentProfileFields()
 {
-    if (!_profileList)
-        return;
-    const LlmProfile profile = AppSettings::instance()->profileById(currentProfileId());
-    const QSignalBlocker b1(_profileNameEdit);
-    const QSignalBlocker b2(_profileUrlEdit);
-    const QSignalBlocker b3(_profileModelEdit);
-    const QSignalBlocker b4(_profileTokenEdit);
-    const QSignalBlocker bMod(_profileModalityCombo);
-    const QSignalBlocker bPurpose(_profilePurposeEdit);
-    const QSignalBlocker b5(_profileBalanceUrlEdit);
-    const QSignalBlocker b6(_profileBalancePathEdit);
-    const QSignalBlocker b7(_profileToolIterSpin);
-    const QSignalBlocker b8(_profileCapSpin);
-    if (_profileNameEdit)
-        _profileNameEdit->setText(profile.name);
-    if (_profileUrlEdit)
-        _profileUrlEdit->setText(profile.baseUrl);
-    if (_profileModelEdit)
-        _profileModelEdit->setText(profile.model);
-    if (_profileTokenEdit)
-        _profileTokenEdit->setText(profile.apiKey);
-    if (_profileModalityCombo)
-    {
-        int index = _profileModalityCombo->findData(int(profile.modality));
-        if (index < 0)
-            index = 0;
-        _profileModalityCombo->setCurrentIndex(index);
-    }
-    if (_profilePurposeEdit)
-        _profilePurposeEdit->setText(profile.purpose);
-    if (_profileBalanceUrlEdit)
-        _profileBalanceUrlEdit->setText(profile.balanceUrl);
-    if (_profileBalancePathEdit)
-        _profileBalancePathEdit->setText(profile.balanceJsonPath);
-    if (_profileToolIterSpin)
-        _profileToolIterSpin->setValue(profile.maxToolIterations);
-    if (_profileCapSpin)
-        _profileCapSpin->setValue(profile.contextCap);
-    if (_removeProfileButton)
-        _removeProfileButton->setEnabled(AppSettings::instance()->profiles().size() > 1);
     updateProfileCapHint();
+    updateProfileActionButtons();
 }
 
 //----------------------------------------------
@@ -802,7 +780,7 @@ void SettingsPage::loadCurrentProfileFields()
 void SettingsPage::loadProfiles()
 {
     _updatingProfiles = true;
-    const QString keepId = currentProfileId();
+    const QStringList keepIds = selectedProfileIds();
     if (_profileList)
     {
         const QSignalBlocker blocker(_profileList);
@@ -815,21 +793,10 @@ void SettingsPage::loadProfiles()
             QListWidgetItem *item = new QListWidgetItem(title, _profileList);
             item->setData(Qt::UserRole, profile.id);
         }
-        int row = 0;
-        for (int i = 0; i < _profileList->count(); ++i)
-        {
-            if (_profileList->item(i)->data(Qt::UserRole).toString() == keepId)
-            {
-                row = i;
-                break;
-            }
-        }
-        if (_profileList->count() > 0)
-            _profileList->setCurrentRow(row);
+        restoreListSelection(_profileList, keepIds);
     }
     loadCurrentProfileFields();
     fillPresetProfileCombo();
-    updateProfileCapHint();
     _updatingProfiles = false;
     loadPresets();
 }
@@ -838,7 +805,6 @@ void SettingsPage::loadProfiles()
 
 void SettingsPage::commitCurrentProfile()
 {
-    sltProfileFieldChanged();
 }
 
 //----------------------------------------------
@@ -848,115 +814,44 @@ QWidget *SettingsPage::buildApiBox()
     _apiBox = new QGroupBox(tr("Профили моделей"), this);
     QGroupBox *box = _apiBox;
     _profileList = new QListWidget(box);
+    _profileList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _profileList->setMinimumWidth(180);
-    _profileList->setMinimumHeight(140);
+    _profileList->setMinimumHeight(180);
 
-    _profileNameEdit = new QLineEdit(box);
-    _profileNameEdit->setPlaceholderText(tr("имя профиля"));
-    _profileUrlEdit = new QLineEdit(box);
-    _profileUrlEdit->setPlaceholderText(
-        QString::fromUtf8("https://api.example.com/v1"));
-    _profileModelEdit = new QLineEdit(box);
-    _profileModelEdit->setPlaceholderText(tr("идентификатор модели"));
-    _profileTokenEdit = new QLineEdit(box);
-    _profileTokenEdit->setEchoMode(QLineEdit::Password);
-    _profileTokenEdit->setPlaceholderText(tr("токен API"));
-    _profileModalityCombo = new QComboBox(box);
-    _profileModalityCombo->addItem(tr("LLM (текст / агент)"), int(WorkerTaskKindLlm));
-    _profileModalityCombo->addItem(tr("Генерация изображений"),
-                                   int(WorkerTaskKindImageGeneration));
-    _profileModalityCombo->addItem(tr("Речь (TTS/STT)"), int(WorkerTaskKindSpeech));
-    _profileModalityCombo->addItem(tr("Генерация аудио"), int(WorkerTaskKindAudioGeneration));
-    _profileModalityCombo->addItem(tr("Генерация видео"), int(WorkerTaskKindVideoGeneration));
-    _profileModalityCombo->addItem(tr("Эмбеддинги"), int(WorkerTaskKindEmbedding));
-    _profileModalityCombo->addItem(tr("Decisions (решения)"), int(WorkerTaskKindDecisions));
-    _profileModalityCombo->addItem(tr("Другое"), int(WorkerTaskKindOther));
-    _profilePurposeEdit = new QLineEdit(box);
-    _profilePurposeEdit->setPlaceholderText(
-        tr("кратко: для какой задачи эта модель, напр. генерация картинок / сегментация"));
-    _profileBalanceUrlEdit = new QLineEdit(box);
-    _profileBalanceUrlEdit->setPlaceholderText(
-        tr("пусто = авто; DeepSeek /user/balance, Qwen /api/v1/quotas"));
-    _profileBalancePathEdit = new QLineEdit(box);
-    _profileBalancePathEdit->setPlaceholderText(
-        tr("опц. путь JSON: data.credits или balance_infos.0.total_balance"));
-
-    _profileToolIterSpin = new QSpinBox(box);
-    _profileToolIterSpin->setMinimum(2);
-    _profileToolIterSpin->setMaximum(10000);
-    _profileToolIterSpin->setSingleStep(10);
-    _profileToolIterSpin->setMinimumWidth(80);
-
-    _profileCapSpin = new QSpinBox(box);
-    _profileCapSpin->setRange(0, 4000000);
-    _profileCapSpin->setSingleStep(1024);
-    _profileCapSpin->setSpecialValueText(tr("окно модели"));
-    _profileCapSpin->setMinimumWidth(110);
-
-    _profileCapModelButton = new QPushButton(tr("окно модели"), box);
-    _profileCapHint = new QLabel(box);
-    _profileCapHint->setWordWrap(true);
+    _profilePreview = new QPlainTextEdit(box);
+    _profilePreview->setReadOnly(true);
+    _profilePreview->setMinimumWidth(280);
+    _profilePreview->setMinimumHeight(180);
+    _profilePreview->setToolTip(
+        tr("Только просмотр. Изменение — двойной щелчок или «Редактировать»."));
 
     _addProfileButton = new QPushButton(tr("Добавить"), box);
+    _editProfileButton = new QPushButton(tr("Редактировать"), box);
     _removeProfileButton = new QPushButton(tr("Удалить"), box);
+    _editProfileButton->setEnabled(false);
+    _removeProfileButton->setEnabled(false);
 
-    connect(_profileList, SIGNAL(currentItemChanged(QListWidgetItem*,QListWidgetItem*)),
+    connect(_profileList, SIGNAL(itemSelectionChanged()),
             this, SLOT(sltProfileSelected()));
-    connect(_profileNameEdit, SIGNAL(editingFinished()), this, SLOT(sltProfileFieldChanged()));
-    connect(_profileUrlEdit, SIGNAL(editingFinished()), this, SLOT(sltProfileFieldChanged()));
-    connect(_profileModelEdit, SIGNAL(editingFinished()), this, SLOT(sltProfileFieldChanged()));
-    connect(_profileTokenEdit, SIGNAL(editingFinished()), this, SLOT(sltProfileFieldChanged()));
-    connect(_profileModalityCombo, SIGNAL(currentIndexChanged(int)),
-            this, SLOT(sltProfileFieldChanged()));
-    connect(_profilePurposeEdit, SIGNAL(editingFinished()),
-            this, SLOT(sltProfileFieldChanged()));
-    connect(_profileBalanceUrlEdit, SIGNAL(editingFinished()),
-            this, SLOT(sltProfileFieldChanged()));
-    connect(_profileBalancePathEdit, SIGNAL(editingFinished()),
-            this, SLOT(sltProfileFieldChanged()));
-    connect(_profileToolIterSpin, SIGNAL(valueChanged(int)),
-            this, SLOT(sltProfileFieldChanged()));
-    connect(_profileCapSpin, SIGNAL(valueChanged(int)),
-            this, SLOT(sltProfileFieldChanged()));
-    connect(_profileCapModelButton, SIGNAL(clicked()),
-            this, SLOT(sltUseModelContext()));
+    connect(_profileList, &QListWidget::itemDoubleClicked,
+            this, &SettingsPage::sltEditProfileItem);
     connect(_addProfileButton, SIGNAL(clicked()), this, SLOT(sltAddProfile()));
+    connect(_editProfileButton, SIGNAL(clicked()), this, SLOT(sltEditProfile()));
     connect(_removeProfileButton, SIGNAL(clicked()), this, SLOT(sltRemoveProfile()));
-
-    _profileForm = new QFormLayout();
-    _profileForm->addRow(tr("Имя профиля:"), _profileNameEdit);
-    _profileForm->addRow(tr("Адрес API:"), _profileUrlEdit);
-    _profileForm->addRow(tr("Модель:"), _profileModelEdit);
-    _profileForm->addRow(tr("Токен:"), _profileTokenEdit);
-    _profileForm->addRow(tr("Класс задач API:"), _profileModalityCombo);
-    _profileForm->addRow(tr("Назначение модели:"), _profilePurposeEdit);
-    _profileForm->addRow(tr("URL баланса:"), _profileBalanceUrlEdit);
-    _profileForm->addRow(tr("JSON путь баланса:"), _profileBalancePathEdit);
-    _profileForm->addRow(tr("Лимит вызовов функций:"), _profileToolIterSpin);
-
-    QHBoxLayout *capRow = new QHBoxLayout();
-    capRow->addWidget(_profileCapSpin);
-    capRow->addWidget(_profileCapModelButton);
-    QVBoxLayout *capCell = new QVBoxLayout();
-    capCell->setContentsMargins(0, 0, 0, 0);
-    capCell->setSpacing(2);
-    capCell->addLayout(capRow);
-    capCell->addWidget(_profileCapHint);
-    _profileForm->addRow(tr("Потолок контекста:"), capCell);
 
     QHBoxLayout *buttons = new QHBoxLayout();
     buttons->addWidget(_addProfileButton);
+    buttons->addWidget(_editProfileButton);
     buttons->addWidget(_removeProfileButton);
     buttons->addStretch();
 
-    QVBoxLayout *right = new QVBoxLayout();
-    right->addLayout(_profileForm);
-    right->addLayout(buttons);
-    right->addStretch();
+    QVBoxLayout *left = new QVBoxLayout();
+    left->addWidget(_profileList, 1);
+    left->addLayout(buttons);
 
     QHBoxLayout *row = new QHBoxLayout();
-    row->addWidget(_profileList, 1);
-    row->addLayout(right, 2);
+    row->addLayout(left, 1);
+    row->addWidget(_profilePreview, 2);
 
     QVBoxLayout *layout = new QVBoxLayout(box);
     layout->addLayout(row);
@@ -989,47 +884,44 @@ QWidget *SettingsPage::buildWorkersBox()
     layout->addWidget(_presetHint);
 
     _presetList = new QListWidget(box);
+    _presetList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _presetList->setMinimumWidth(180);
-    _presetList->setMinimumHeight(120);
+    _presetList->setMinimumHeight(140);
 
-    _presetTypeCombo = new QComboBox(box);
-    _presetTypeCombo->addItem(tr("Менеджер"), int(WorkerTypeManager));
-    _presetTypeCombo->addItem(tr("Исполнитель"), int(WorkerTypeExecutor));
-    _presetTypeCombo->addItem(tr("Тестировщик"), int(WorkerTypeTester));
-    _presetTypeCombo->addItem(tr("Инструмент"), int(WorkerTypeTool));
-
-    _presetProfileCombo = new QComboBox(box);
-    _presetProfileCombo->setMinimumWidth(220);
+    _presetPreview = new QPlainTextEdit(box);
+    _presetPreview->setReadOnly(true);
+    _presetPreview->setMinimumWidth(280);
+    _presetPreview->setMinimumHeight(140);
+    _presetPreview->setToolTip(
+        tr("Только просмотр. Изменение — двойной щелчок или «Редактировать»."));
 
     _addPresetButton = new QPushButton(tr("Добавить"), box);
+    _editPresetButton = new QPushButton(tr("Редактировать"), box);
     _removePresetButton = new QPushButton(tr("Удалить"), box);
+    _editPresetButton->setEnabled(false);
+    _removePresetButton->setEnabled(false);
 
-    connect(_presetList, SIGNAL(currentItemChanged(QListWidgetItem*,QListWidgetItem*)),
+    connect(_presetList, SIGNAL(itemSelectionChanged()),
             this, SLOT(sltPresetSelected()));
-    connect(_presetTypeCombo, SIGNAL(currentIndexChanged(int)),
-            this, SLOT(sltPresetFieldChanged()));
-    connect(_presetProfileCombo, SIGNAL(currentIndexChanged(int)),
-            this, SLOT(sltPresetFieldChanged()));
+    connect(_presetList, &QListWidget::itemDoubleClicked,
+            this, &SettingsPage::sltEditPresetItem);
     connect(_addPresetButton, SIGNAL(clicked()), this, SLOT(sltAddPreset()));
+    connect(_editPresetButton, SIGNAL(clicked()), this, SLOT(sltEditPreset()));
     connect(_removePresetButton, SIGNAL(clicked()), this, SLOT(sltRemovePreset()));
-
-    _presetForm = new QFormLayout();
-    _presetForm->addRow(tr("Тип воркера:"), _presetTypeCombo);
-    _presetForm->addRow(tr("Профиль модели:"), _presetProfileCombo);
 
     QHBoxLayout *presetButtons = new QHBoxLayout();
     presetButtons->addWidget(_addPresetButton);
+    presetButtons->addWidget(_editPresetButton);
     presetButtons->addWidget(_removePresetButton);
     presetButtons->addStretch();
 
-    QVBoxLayout *presetRight = new QVBoxLayout();
-    presetRight->addLayout(_presetForm);
-    presetRight->addLayout(presetButtons);
-    presetRight->addStretch();
+    QVBoxLayout *presetLeft = new QVBoxLayout();
+    presetLeft->addWidget(_presetList, 1);
+    presetLeft->addLayout(presetButtons);
 
     QHBoxLayout *presetRow = new QHBoxLayout();
-    presetRow->addWidget(_presetList, 1);
-    presetRow->addLayout(presetRight, 2);
+    presetRow->addLayout(presetLeft, 1);
+    presetRow->addWidget(_presetPreview, 2);
     layout->addLayout(presetRow);
 
     if (_kind == SettingsKindDefaults)
@@ -1169,29 +1061,7 @@ void SettingsPage::fillPresetProfileCombo()
 {
     if (!_presetProfileCombo)
         return;
-    const QString current = _presetProfileCombo->currentData().toString();
-    const QSignalBlocker blocker(_presetProfileCombo);
-    _presetProfileCombo->clear();
-    foreach (const LlmProfile &profile, AppSettings::instance()->profiles())
-    {
-        QString title = profile.name.trimmed();
-        if (title.isEmpty())
-            title = profile.id;
-        const QString purpose = profile.purpose.trimmed().simplified();
-        if (!purpose.isEmpty())
-        {
-            QString shortPurpose = purpose;
-            if (shortPurpose.size() > 48)
-                shortPurpose = shortPurpose.left(45) + QString::fromUtf8("...");
-            title += QString::fromUtf8(" — ") + shortPurpose;
-        }
-        _presetProfileCombo->addItem(title, profile.id);
-    }
-    int index = _presetProfileCombo->findData(current);
-    if (index < 0)
-        index = 0;
-    if (_presetProfileCombo->count() > 0)
-        _presetProfileCombo->setCurrentIndex(index);
+    fillProfileCombo(_presetProfileCombo, _presetProfileCombo->currentData().toString());
 }
 
 //----------------------------------------------
@@ -1217,7 +1087,7 @@ void SettingsPage::loadPresets()
         return;
 
     _updatingPresets = true;
-    const QString keepId = currentPresetId();
+    const QStringList keepIds = selectedPresetIds();
     {
         const QSignalBlocker blocker(_presetList);
         _presetList->clear();
@@ -1226,41 +1096,13 @@ void SettingsPage::loadPresets()
             QListWidgetItem *item = new QListWidgetItem(presetListLabel(preset), _presetList);
             item->setData(Qt::UserRole, preset.id);
         }
-        int row = 0;
-        for (int i = 0; i < _presetList->count(); ++i)
-        {
-            if (_presetList->item(i)->data(Qt::UserRole).toString() == keepId)
-            {
-                row = i;
-                break;
-            }
-        }
-        if (_presetList->count() > 0)
-            _presetList->setCurrentRow(row);
+        restoreListSelection(_presetList, keepIds);
     }
 
-    const QString id = currentPresetId();
-    const WorkerPreset current = AppSettings::instance()->workerPresetById(_kind, id);
-    if (_presetTypeCombo && !id.isEmpty())
-    {
-        const QSignalBlocker blocker(_presetTypeCombo);
-        int index = _presetTypeCombo->findData(int(current.type));
-        if (index < 0)
-            index = 0;
-        _presetTypeCombo->setCurrentIndex(index);
-    }
-    if (_presetProfileCombo && !id.isEmpty())
-    {
-        const QSignalBlocker blocker(_presetProfileCombo);
-        const int index = _presetProfileCombo->findData(current.profileId);
-        if (index >= 0)
-            _presetProfileCombo->setCurrentIndex(index);
-    }
-    if (_removePresetButton)
-        _removePresetButton->setEnabled(!id.isEmpty());
+    refreshPresetPreview();
+    updatePresetActionButtons();
     fillRootPresetCombo();
     _updatingPresets = false;
-    updateProfileCapHint();
 }
 
 //----------------------------------------------
@@ -1303,156 +1145,71 @@ void SettingsPage::sltPresetSelected()
 {
     if (_updatingPresets)
         return;
-    const QString id = currentPresetId();
-    if (id.isEmpty())
-        return;
-    const WorkerPreset preset = AppSettings::instance()->workerPresetById(_kind, id);
-
-    _updatingPresets = true;
-    if (_presetTypeCombo)
-    {
-        const QSignalBlocker blocker(_presetTypeCombo);
-        int index = _presetTypeCombo->findData(int(preset.type));
-        if (index < 0)
-            index = 0;
-        _presetTypeCombo->setCurrentIndex(index);
-    }
-    if (_presetProfileCombo)
-    {
-        const QSignalBlocker blocker(_presetProfileCombo);
-        const int index = _presetProfileCombo->findData(preset.profileId);
-        if (index >= 0)
-            _presetProfileCombo->setCurrentIndex(index);
-    }
-    if (_removePresetButton)
-        _removePresetButton->setEnabled(true);
-    _updatingPresets = false;
+    refreshPresetPreview();
+    updatePresetActionButtons();
 }
 
 //----------------------------------------------
 
 void SettingsPage::sltPresetFieldChanged()
 {
-    if (_updatingPresets)
-        return;
-    const QString id = currentPresetId();
-    if (id.isEmpty())
-        return;
-    WorkerPreset preset = AppSettings::instance()->workerPresetById(_kind, id);
-    if (preset.id.isEmpty())
-        return;
-    if (_presetTypeCombo)
-        preset.type = WorkerType(_presetTypeCombo->currentData().toInt());
-    if (_presetProfileCombo)
-        preset.profileId = _presetProfileCombo->currentData().toString();
-
-    QString error;
-    _updatingPresets = true;
-    AppSettings::instance()->updateWorkerPreset(_kind, preset, &error);
-    _updatingPresets = false;
-    if (!error.isEmpty())
-    {
-        QMessageBox::warning(this, tr("Пресеты воркеров"), error);
-        loadPresets();
-        return;
-    }
-    // Обновить подпись текущего пункта без полной перестройки списков.
-    if (_presetList && _presetList->currentItem())
-        _presetList->currentItem()->setText(presetListLabel(preset));
-    fillRootPresetCombo();
 }
 
 //----------------------------------------------
 
 void SettingsPage::sltAddPreset()
 {
-    AppSettings *s = AppSettings::instance();
-    const QList<LlmProfile> profiles = s->profiles();
+    const QList<LlmProfile> profiles = AppSettings::instance()->profiles();
     if (profiles.isEmpty())
     {
         QMessageBox::warning(
-            this, tr("Пресеты воркеров"),
+            this, tr("Воркеры"),
             tr("Сначала добавьте хотя бы один профиль модели в настройках программы."));
         return;
     }
 
-    static const WorkerType kTypes[] = {
-        WorkerTypeManager, WorkerTypeExecutor, WorkerTypeTester, WorkerTypeTool
-    };
-    WorkerType preferType = _presetTypeCombo
-                            ? WorkerType(_presetTypeCombo->currentData().toInt())
-                            : WorkerTypeManager;
-    QString preferProfile;
-    if (_presetProfileCombo)
-        preferProfile = _presetProfileCombo->currentData().toString();
-
-    QList<WorkerType> typeOrder;
-    typeOrder.append(preferType);
-    for (int i = 0; i < 4; ++i)
-    {
-        if (kTypes[i] != preferType)
-            typeOrder.append(kTypes[i]);
-    }
-
-    QStringList profileOrder;
-    if (!preferProfile.isEmpty())
-        profileOrder.append(preferProfile);
-    foreach (const LlmProfile &profile, profiles)
-    {
-        if (profile.id != preferProfile)
-            profileOrder.append(profile.id);
-    }
-
     WorkerPreset preset;
-    QString error;
-    QString id;
-    foreach (WorkerType type, typeOrder)
-    {
-        foreach (const QString &profileId, profileOrder)
-        {
-            if (profileId.isEmpty())
-                continue;
-            preset = WorkerPreset();
-            preset.type = type;
-            preset.profileId = profileId;
-            error.clear();
-            id = s->addWorkerPreset(_kind, preset, &error);
-            if (!id.isEmpty())
-                break;
-        }
-        if (!id.isEmpty())
-            break;
-    }
-
-    if (id.isEmpty())
-    {
-        QMessageBox::warning(
-            this, tr("Пресеты воркеров"),
-            tr("Все комбинации тип+профиль уже заняты.\n"
-               "Добавьте новый профиль модели или измените существующий пресет."));
+    preset.type = WorkerTypeManager;
+    preset.profileId = profiles.first().id;
+    if (!runPresetDialog(&preset, true))
         return;
-    }
     loadPresets();
-    if (!_presetList)
-        return;
-    for (int i = 0; i < _presetList->count(); ++i)
-    {
-        if (_presetList->item(i)->data(Qt::UserRole).toString() == id)
-        {
-            _presetList->setCurrentRow(i);
-            break;
-        }
-    }
+    selectOnlyId(_presetList, preset.id);
+    refreshPresetPreview();
+    updatePresetActionButtons();
 }
 
 //----------------------------------------------
 
 void SettingsPage::sltRemovePreset()
 {
-    const QString id = currentPresetId();
-    if (id.isEmpty())
+    const QStringList ids = selectedPresetIds();
+    if (ids.isEmpty())
         return;
-    AppSettings::instance()->removeWorkerPreset(_kind, id);
+
+    QStringList labels;
+    foreach (const QString &id, ids)
+    {
+        const WorkerPreset preset = AppSettings::instance()->workerPresetById(_kind, id);
+        if (preset.id.isEmpty())
+            continue;
+        labels << presetListLabel(preset);
+    }
+    QString text;
+    if (ids.size() == 1)
+        text = tr("Удалить воркер «%1»?").arg(labels.isEmpty() ? ids.first() : labels.first());
+    else
+        text = tr("Удалить выбранные воркеры (%1)?\n\n%2")
+                   .arg(ids.size())
+                   .arg(labels.join(QString::fromUtf8("\n")));
+    const int answer = QMessageBox::question(
+        this, tr("Удаление воркеров"), text,
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+
+    foreach (const QString &id, ids)
+        AppSettings::instance()->removeWorkerPreset(_kind, id);
     loadPresets();
 }
 
@@ -1469,51 +1226,6 @@ void SettingsPage::sltProfileSelected()
 
 void SettingsPage::sltProfileFieldChanged()
 {
-    if (_updatingProfiles || _kind != SettingsKindDefaults || !_profileList)
-        return;
-    const QString id = currentProfileId();
-    if (id.isEmpty())
-        return;
-
-    LlmProfile profile = AppSettings::instance()->profileById(id);
-    if (profile.id.isEmpty())
-        return;
-    const QString oldName = profile.name;
-    const QString oldPurpose = profile.purpose;
-    const WorkerTaskKind oldModality = profile.modality;
-    if (_profileNameEdit)
-        profile.name = _profileNameEdit->text().trimmed();
-    if (_profileUrlEdit)
-        profile.baseUrl = _profileUrlEdit->text().trimmed();
-    if (_profileModelEdit)
-        profile.model = _profileModelEdit->text().trimmed();
-    if (_profileTokenEdit)
-        profile.apiKey = _profileTokenEdit->text().trimmed();
-    if (_profileModalityCombo)
-        profile.modality = WorkerTaskKind(_profileModalityCombo->currentData().toInt());
-    if (_profilePurposeEdit)
-        profile.purpose = _profilePurposeEdit->text().trimmed();
-    if (_profileBalanceUrlEdit)
-        profile.balanceUrl = _profileBalanceUrlEdit->text().trimmed();
-    if (_profileBalancePathEdit)
-        profile.balanceJsonPath = _profileBalancePathEdit->text().trimmed();
-    if (_profileToolIterSpin)
-        profile.maxToolIterations = _profileToolIterSpin->value();
-    if (_profileCapSpin)
-        profile.contextCap = AppSettings::normalizeProfileContextCap(_profileCapSpin->value());
-
-    _updatingProfiles = true;
-    AppSettings::instance()->updateProfile(profile);
-    if (_profileList->currentItem())
-        _profileList->currentItem()->setText(profile.name);
-    if (oldName != profile.name || oldPurpose != profile.purpose)
-        fillPresetProfileCombo();
-    updateProfileCapHint();
-    _updatingProfiles = false;
-    if (oldModality != profile.modality
-        || oldName != profile.name
-        || oldPurpose != profile.purpose)
-        scheduleLoadPresets();
 }
 
 //----------------------------------------------
@@ -1523,25 +1235,16 @@ void SettingsPage::sltAddProfile()
     if (_kind != SettingsKindDefaults)
         return;
     LlmProfile profile;
-    if (!pickModelProfilePreset(&profile))
+    profile.name = tr("Новый профиль");
+    if (!runProfileDialog(&profile, true))
         return;
     if (profile.name.trimmed().isEmpty())
         profile.name = tr("Новый профиль");
     const QString id = AppSettings::instance()->addProfile(profile);
     loadProfiles();
-    if (_profileList)
-    {
-        for (int i = 0; i < _profileList->count(); ++i)
-        {
-            if (_profileList->item(i)->data(Qt::UserRole).toString() == id)
-            {
-                _profileList->setCurrentRow(i);
-                break;
-            }
-        }
-    }
-    if (_profileTokenEdit)
-        _profileTokenEdit->setFocus();
+    selectOnlyId(_profileList, id);
+    refreshProfilePreview();
+    updateProfileActionButtons();
     emit profilesChanged();
 }
 
@@ -1692,65 +1395,636 @@ void SettingsPage::sltRemoveProfile()
 {
     if (_kind != SettingsKindDefaults)
         return;
-    const QString id = currentProfileId();
-    if (id.isEmpty())
+    const QStringList ids = selectedProfileIds();
+    if (ids.isEmpty())
         return;
 
     AppSettings *s = AppSettings::instance();
-    const LlmProfile profile = s->profileById(id);
-    QString profileName = profile.name.trimmed();
-    if (profileName.isEmpty())
-        profileName = id;
-
-    const QList<WorkerPreset> used = s->presetsUsingProfile(id);
-    const int liveCount = _workers ? _workers->countWorkersUsingProfile(id) : 0;
-    if (!used.isEmpty() || liveCount > 0)
+    QStringList names;
+    QStringList depLines;
+    int liveTotal = 0;
+    foreach (const QString &id, ids)
     {
-        QStringList lines;
-        foreach (const WorkerPreset &preset, used)
-            lines << presetListLabel(preset);
-        QString text;
-        if (!lines.isEmpty() && liveCount > 0)
+        const LlmProfile profile = s->profileById(id);
+        QString profileName = profile.name.trimmed();
+        if (profileName.isEmpty())
+            profileName = id;
+        names << profileName;
+        foreach (const WorkerPreset &preset, s->presetsUsingProfile(id))
+            depLines << presetListLabel(preset);
+        if (_workers)
+            liveTotal += _workers->countWorkersUsingProfile(id);
+    }
+
+    QString text;
+    if (ids.size() == 1)
+        text = tr("Удалить профиль «%1»?").arg(names.first());
+    else
+        text = tr("Удалить выбранные профили (%1)?\n\n%2")
+                   .arg(ids.size())
+                   .arg(names.join(QString::fromUtf8("\n")));
+    if (!depLines.isEmpty() || liveTotal > 0)
+    {
+        text += tr("\n\nВместе с ними будут удалены пресеты воркеров, "
+                   "которые ссылаются на эти профили, и живые воркеры "
+                   "текущего проекта с этими моделями.");
+        if (!depLines.isEmpty())
+            text += QString::fromUtf8("\n\n") + depLines.join(QString::fromUtf8("\n"));
+        if (liveTotal > 0)
+            text += tr("\n\nЖивых воркеров: %1.").arg(liveTotal);
+    }
+    if (ids.size() >= s->profiles().size())
+        text += tr("\n\nПоследний профиль удалить нельзя.");
+
+    const int answer = QMessageBox::question(
+        this, tr("Удаление профиля модели"), text,
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+
+    foreach (const QString &id, ids)
+    {
+        if (s->profiles().size() <= 1)
+            break;
+        const QList<WorkerPreset> used = s->presetsUsingProfile(id);
+        const int liveCount = _workers ? _workers->countWorkersUsingProfile(id) : 0;
+        if (!used.isEmpty())
+            s->removePresetsUsingProfile(id);
+        if (!used.isEmpty() || liveCount > 0)
+            emit removeWorkersForProfile(id);
+        s->removeProfile(id);
+    }
+    loadProfiles();
+    emit profilesChanged();
+}
+
+//----------------------------------------------
+
+QStringList SettingsPage::selectedProfileIds() const
+{
+    QStringList ids;
+    if (!_profileList)
+        return ids;
+    for (int i = 0; i < _profileList->count(); ++i)
+    {
+        QListWidgetItem *item = _profileList->item(i);
+        if (item && item->isSelected())
+            ids.append(item->data(Qt::UserRole).toString());
+    }
+    return ids;
+}
+
+//----------------------------------------------
+
+QStringList SettingsPage::selectedPresetIds() const
+{
+    QStringList ids;
+    if (!_presetList)
+        return ids;
+    for (int i = 0; i < _presetList->count(); ++i)
+    {
+        QListWidgetItem *item = _presetList->item(i);
+        if (item && item->isSelected())
+            ids.append(item->data(Qt::UserRole).toString());
+    }
+    return ids;
+}
+
+//----------------------------------------------
+
+QString SettingsPage::workerTypeTitle(WorkerType type) const
+{
+    switch (type)
+    {
+    case WorkerTypeExecutor:
+        return tr("Исполнитель");
+    case WorkerTypeTester:
+        return tr("Тестировщик");
+    case WorkerTypeTool:
+        return tr("Инструмент");
+    case WorkerTypeManager:
+    default:
+        return tr("Менеджер");
+    }
+}
+
+//----------------------------------------------
+
+QString SettingsPage::modalityTitle(WorkerTaskKind kind) const
+{
+    switch (kind)
+    {
+    case WorkerTaskKindImageGeneration:
+        return tr("Генерация изображений");
+    case WorkerTaskKindSpeech:
+        return tr("Речь (TTS/STT)");
+    case WorkerTaskKindAudioGeneration:
+        return tr("Генерация аудио");
+    case WorkerTaskKindVideoGeneration:
+        return tr("Генерация видео");
+    case WorkerTaskKindEmbedding:
+        return tr("Эмбеддинги");
+    case WorkerTaskKindDecisions:
+        return tr("Decisions (решения)");
+    case WorkerTaskKindOther:
+        return tr("Другое");
+    case WorkerTaskKindLlm:
+    default:
+        return tr("LLM (текст / агент)");
+    }
+}
+
+//----------------------------------------------
+
+QString SettingsPage::profilePreviewText(const LlmProfile &profile) const
+{
+    const QString dash = QString::fromUtf8("—");
+    const QString name = profile.name.trimmed().isEmpty() ? dash : profile.name.trimmed();
+    const QString url = profile.baseUrl.trimmed().isEmpty() ? dash : profile.baseUrl.trimmed();
+    const QString modelName = profile.model.trimmed().isEmpty() ? dash : profile.model.trimmed();
+    const QString purpose = profile.purpose.trimmed().isEmpty() ? dash : profile.purpose.trimmed();
+    const QString balanceUrl = profile.balanceUrl.trimmed().isEmpty()
+                               ? dash : profile.balanceUrl.trimmed();
+    const QString balancePath = profile.balanceJsonPath.trimmed().isEmpty()
+                                ? dash : profile.balanceJsonPath.trimmed();
+    const QString token = profile.apiKey.trimmed().isEmpty() ? tr("пусто") : tr("задан");
+    const QString cap = profile.contextCap > 0
+                        ? QString::number(profile.contextCap)
+                        : tr("окно модели");
+
+    QString shownModel = profile.model.trimmed();
+    if (shownModel.isEmpty())
+        shownModel = tr("модель не задана");
+    const int window = OpenAiCompatibleClient::resolvedContextWindow(
+                           profile.baseUrl, profile.model);
+    const bool fromApi = OpenAiCompatibleClient::hasApiContextWindow(
+                             profile.baseUrl, profile.model);
+    const QString windowLine = fromApi
+        ? tr("окно %1: %2 ток. (из API /models)").arg(shownModel).arg(window)
+        : tr("окно %1: %2 ток. (оценка: API не отдаёт размер окна)")
+              .arg(shownModel).arg(window);
+
+    QStringList lines;
+    lines << tr("Имя профиля: %1").arg(name);
+    lines << tr("Адрес API: %1").arg(url);
+    lines << tr("Модель: %1").arg(modelName);
+    lines << tr("Токен: %1").arg(token);
+    lines << tr("Класс задач API: %1").arg(modalityTitle(profile.modality));
+    lines << tr("Назначение модели: %1").arg(purpose);
+    lines << tr("URL баланса: %1").arg(balanceUrl);
+    lines << tr("JSON путь баланса: %1").arg(balancePath);
+    lines << tr("Лимит вызовов функций: %1").arg(profile.maxToolIterations);
+    lines << tr("Потолок контекста: %1").arg(cap);
+    lines << windowLine;
+    return lines.join(QString::fromUtf8("\n"));
+}
+
+//----------------------------------------------
+
+QString SettingsPage::presetPreviewText(const WorkerPreset &preset) const
+{
+    const LlmProfile profile = AppSettings::instance()->profileById(preset.profileId);
+    QString profileTitle = profile.name.trimmed();
+    if (profileTitle.isEmpty())
+        profileTitle = preset.profileId.trimmed();
+    if (profileTitle.isEmpty())
+        profileTitle = tr("профиль не выбран");
+    const QString purpose = profile.purpose.trimmed().simplified();
+    if (!purpose.isEmpty())
+    {
+        QString shortPurpose = purpose;
+        if (shortPurpose.size() > 80)
+            shortPurpose = shortPurpose.left(77) + QString::fromUtf8("...");
+        profileTitle += QString::fromUtf8(" — ") + shortPurpose;
+    }
+    const WorkerTaskKind modality = profile.id.isEmpty() ? preset.taskKind : profile.modality;
+
+    QStringList lines;
+    lines << tr("Тип воркера: %1").arg(workerTypeTitle(preset.type));
+    lines << tr("Профиль модели: %1").arg(profileTitle);
+    lines << tr("Класс задач API: %1").arg(modalityTitle(modality));
+    return lines.join(QString::fromUtf8("\n"));
+}
+
+//----------------------------------------------
+
+void SettingsPage::refreshProfilePreview()
+{
+    if (!_profilePreview)
+        return;
+    const QStringList ids = selectedProfileIds();
+    QString text;
+    if (ids.isEmpty())
+    {
+        text = tr("Профили не выделены.");
+    }
+    else
+    {
+        QStringList blocks;
+        foreach (const QString &id, ids)
         {
-            text = tr(
-                "Профиль «%1» используется пресетами воркеров в настройках "
-                "программы и/или открытого проекта:\n\n%2\n\n"
-                "Также в текущем проекте есть воркеры с этой моделью: %3.\n\n"
-                "Удалить эти пресеты из настроек проекта и программы "
-                "и воркеров, использовавших эту модель?")
-                       .arg(profileName, lines.join(QChar('\n')))
-                       .arg(liveCount);
+            const LlmProfile profile = AppSettings::instance()->profileById(id);
+            if (!profile.id.isEmpty())
+                blocks << profilePreviewText(profile);
         }
-        else if (!lines.isEmpty())
+        text = blocks.isEmpty() ? tr("Профили не выделены.")
+                                : blocks.join(QString::fromUtf8("\n\n"));
+    }
+    if (_profilePreview->toPlainText() != text)
+        _profilePreview->setPlainText(text);
+}
+
+//----------------------------------------------
+
+void SettingsPage::refreshPresetPreview()
+{
+    if (!_presetPreview)
+        return;
+    const QStringList ids = selectedPresetIds();
+    QString text;
+    if (ids.isEmpty())
+    {
+        text = tr("Воркеры не выделены.");
+    }
+    else
+    {
+        QStringList blocks;
+        foreach (const QString &id, ids)
         {
-            text = tr(
-                "Профиль «%1» используется пресетами воркеров в настройках "
-                "программы и/или открытого проекта:\n\n%2\n\n"
-                "Удалить эти пресеты из настроек проекта и программы?")
-                       .arg(profileName, lines.join(QChar('\n')));
+            const WorkerPreset preset = AppSettings::instance()->workerPresetById(_kind, id);
+            if (!preset.id.isEmpty())
+                blocks << presetPreviewText(preset);
+        }
+        text = blocks.isEmpty() ? tr("Воркеры не выделены.")
+                                : blocks.join(QString::fromUtf8("\n\n"));
+    }
+    if (_presetPreview->toPlainText() != text)
+        _presetPreview->setPlainText(text);
+}
+
+//----------------------------------------------
+
+void SettingsPage::updateProfileActionButtons()
+{
+    const int count = selectedProfileIds().size();
+    if (_addProfileButton)
+        _addProfileButton->setEnabled(true);
+    if (_editProfileButton)
+        _editProfileButton->setEnabled(count == 1);
+    if (_removeProfileButton)
+        _removeProfileButton->setEnabled(count >= 1);
+}
+
+//----------------------------------------------
+
+void SettingsPage::updatePresetActionButtons()
+{
+    const int count = selectedPresetIds().size();
+    if (_addPresetButton)
+        _addPresetButton->setEnabled(true);
+    if (_editPresetButton)
+        _editPresetButton->setEnabled(count == 1);
+    if (_removePresetButton)
+        _removePresetButton->setEnabled(count >= 1);
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltEditProfile()
+{
+    const QStringList ids = selectedProfileIds();
+    if (ids.size() != 1)
+        return;
+    editProfileById(ids.first());
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltEditProfileItem(QListWidgetItem *item)
+{
+    if (!item)
+        return;
+    editProfileById(item->data(Qt::UserRole).toString());
+}
+
+//----------------------------------------------
+
+void SettingsPage::editProfileById(const QString &id)
+{
+    if (_kind != SettingsKindDefaults || id.isEmpty())
+        return;
+    LlmProfile profile = AppSettings::instance()->profileById(id);
+    if (profile.id.isEmpty())
+        return;
+    if (!runProfileDialog(&profile, false))
+        return;
+    AppSettings::instance()->updateProfile(profile);
+    loadProfiles();
+    selectOnlyId(_profileList, profile.id);
+    refreshProfilePreview();
+    updateProfileActionButtons();
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltEditPreset()
+{
+    const QStringList ids = selectedPresetIds();
+    if (ids.size() != 1)
+        return;
+    editPresetById(ids.first());
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltEditPresetItem(QListWidgetItem *item)
+{
+    if (!item)
+        return;
+    editPresetById(item->data(Qt::UserRole).toString());
+}
+
+//----------------------------------------------
+
+void SettingsPage::editPresetById(const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    WorkerPreset preset = AppSettings::instance()->workerPresetById(_kind, id);
+    if (preset.id.isEmpty())
+        return;
+    if (!runPresetDialog(&preset, false))
+        return;
+    loadPresets();
+    selectOnlyId(_presetList, preset.id);
+    refreshPresetPreview();
+    updatePresetActionButtons();
+}
+
+//----------------------------------------------
+
+bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
+{
+    if (!profile)
+        return false;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(isNew ? tr("Новый профиль") : tr("Профиль модели"));
+    dialog.resize(560, 520);
+
+    QLineEdit *nameEdit = new QLineEdit(&dialog);
+    nameEdit->setPlaceholderText(tr("имя профиля"));
+    QLineEdit *urlEdit = new QLineEdit(&dialog);
+    urlEdit->setPlaceholderText(QString::fromUtf8("https://api.example.com/v1"));
+    QLineEdit *modelEdit = new QLineEdit(&dialog);
+    modelEdit->setPlaceholderText(tr("идентификатор модели"));
+    QLineEdit *tokenEdit = new QLineEdit(&dialog);
+    tokenEdit->setEchoMode(QLineEdit::Password);
+    tokenEdit->setPlaceholderText(tr("токен API"));
+
+    QComboBox *modalityCombo = new QComboBox(&dialog);
+    modalityCombo->addItem(tr("LLM (текст / агент)"), int(WorkerTaskKindLlm));
+    modalityCombo->addItem(tr("Генерация изображений"), int(WorkerTaskKindImageGeneration));
+    modalityCombo->addItem(tr("Речь (TTS/STT)"), int(WorkerTaskKindSpeech));
+    modalityCombo->addItem(tr("Генерация аудио"), int(WorkerTaskKindAudioGeneration));
+    modalityCombo->addItem(tr("Генерация видео"), int(WorkerTaskKindVideoGeneration));
+    modalityCombo->addItem(tr("Эмбеддинги"), int(WorkerTaskKindEmbedding));
+    modalityCombo->addItem(tr("Decisions (решения)"), int(WorkerTaskKindDecisions));
+    modalityCombo->addItem(tr("Другое"), int(WorkerTaskKindOther));
+
+    QLineEdit *purposeEdit = new QLineEdit(&dialog);
+    purposeEdit->setPlaceholderText(
+        tr("кратко: для какой задачи эта модель, напр. генерация картинок / сегментация"));
+    QLineEdit *balanceUrlEdit = new QLineEdit(&dialog);
+    balanceUrlEdit->setPlaceholderText(
+        tr("пусто = авто; DeepSeek /user/balance, Qwen /api/v1/quotas"));
+    QLineEdit *balancePathEdit = new QLineEdit(&dialog);
+    balancePathEdit->setPlaceholderText(
+        tr("опц. путь JSON: data.credits или balance_infos.0.total_balance"));
+
+    QSpinBox *toolSpin = new QSpinBox(&dialog);
+    toolSpin->setMinimum(2);
+    toolSpin->setMaximum(10000);
+    toolSpin->setSingleStep(10);
+    toolSpin->setMinimumWidth(80);
+
+    QSpinBox *capSpin = new QSpinBox(&dialog);
+    capSpin->setRange(0, 4000000);
+    capSpin->setSingleStep(1024);
+    capSpin->setSpecialValueText(tr("окно модели"));
+    capSpin->setMinimumWidth(110);
+    capSpin->setToolTip(
+        tr("0 — полное окно модели. Можно указать точное число, в том числе равное окну. "
+           "Иначе история сжимается раньше, по этому потолку."));
+
+    QPushButton *capButton = new QPushButton(tr("окно модели"), &dialog);
+    capButton->setToolTip(tr("Запросить GET /models и подставить размер окна."));
+    QLabel *capHint = new QLabel(&dialog);
+    capHint->setWordWrap(true);
+
+    auto updateCapHint = [&]() {
+        const QString baseUrl = urlEdit->text().trimmed();
+        const QString modelName = modelEdit->text().trimmed();
+        QString model = modelName;
+        if (model.isEmpty())
+            model = tr("модель не задана");
+        const int window = OpenAiCompatibleClient::resolvedContextWindow(baseUrl, modelName);
+        const bool fromApi = OpenAiCompatibleClient::hasApiContextWindow(baseUrl, modelName);
+        if (fromApi)
+        {
+            capHint->setText(tr("окно %1: %2 ток. (из API /models)")
+                             .arg(model)
+                             .arg(window));
         }
         else
         {
-            text = tr(
-                "В текущем проекте есть воркеры, использующие модель «%1»: %2.\n\n"
-                "Удалить этих воркеров (корням сбросить профиль) вместе с профилем?")
-                       .arg(profileName)
-                       .arg(liveCount);
+            capHint->setText(tr("окно %1: %2 ток. (оценка: API не отдаёт размер окна)")
+                             .arg(model)
+                             .arg(window));
         }
-        const int answer = QMessageBox::question(
-            this, tr("Удаление профиля модели"), text,
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer != QMessageBox::Yes)
+    };
+
+    auto applyProfile = [&](const LlmProfile &source) {
+        nameEdit->setText(source.name);
+        urlEdit->setText(source.baseUrl);
+        modelEdit->setText(source.model);
+        tokenEdit->setText(source.apiKey);
+        int index = modalityCombo->findData(int(source.modality));
+        if (index < 0)
+            index = 0;
+        modalityCombo->setCurrentIndex(index);
+        purposeEdit->setText(source.purpose);
+        balanceUrlEdit->setText(source.balanceUrl);
+        balancePathEdit->setText(source.balanceJsonPath);
+        toolSpin->setValue(qMax(2, source.maxToolIterations));
+        capSpin->setValue(source.contextCap);
+        updateCapHint();
+    };
+
+    bool pendingWindow = false;
+    connect(capButton, &QPushButton::clicked, &dialog, [&]() {
+        const QString baseUrl = urlEdit->text().trimmed();
+        const QString modelName = modelEdit->text().trimmed();
+        pendingWindow = true;
+        OpenAiCompatibleClient::fetchContextCatalog(baseUrl, tokenEdit->text().trimmed(),
+                                                    modelName);
+        const int window = OpenAiCompatibleClient::resolvedContextWindow(baseUrl, modelName);
+        capSpin->setValue(window > 0 ? window : 0);
+        updateCapHint();
+    });
+    connect(OpenAiCompatibleClient::catalogHub(), &LlmClient::contextWindowChanged,
+            &dialog, [&]() {
+        if (!pendingWindow)
             return;
-        if (!used.isEmpty())
-            s->removePresetsUsingProfile(id);
-        emit removeWorkersForProfile(id);
+        pendingWindow = false;
+        const int window = OpenAiCompatibleClient::resolvedContextWindow(
+                               urlEdit->text().trimmed(), modelEdit->text().trimmed());
+        if (window > 0)
+            capSpin->setValue(window);
+        updateCapHint();
+    });
+    connect(urlEdit, &QLineEdit::editingFinished, &dialog, [&]() { updateCapHint(); });
+    connect(modelEdit, &QLineEdit::editingFinished, &dialog, [&]() { updateCapHint(); });
+
+    QPushButton *fromPreset = new QPushButton(tr("Из пресета…"), &dialog);
+    connect(fromPreset, &QPushButton::clicked, &dialog, [&]() {
+        LlmProfile picked;
+        picked.id = profile->id;
+        picked.apiKey = tokenEdit->text();
+        picked.maxToolIterations = toolSpin->value();
+        picked.contextCap = capSpin->value();
+        if (!pickModelProfilePreset(&picked))
+            return;
+        picked.id = profile->id;
+        if (picked.apiKey.trimmed().isEmpty())
+            picked.apiKey = tokenEdit->text();
+        picked.maxToolIterations = toolSpin->value();
+        picked.contextCap = capSpin->value();
+        applyProfile(picked);
+    });
+
+    QFormLayout *form = new QFormLayout();
+    form->addRow(tr("Имя профиля:"), nameEdit);
+    form->addRow(tr("Адрес API:"), urlEdit);
+    form->addRow(tr("Модель:"), modelEdit);
+    form->addRow(tr("Токен:"), tokenEdit);
+    form->addRow(tr("Класс задач API:"), modalityCombo);
+    form->addRow(tr("Назначение модели:"), purposeEdit);
+    form->addRow(tr("URL баланса:"), balanceUrlEdit);
+    form->addRow(tr("JSON путь баланса:"), balancePathEdit);
+    form->addRow(tr("Лимит вызовов функций:"), toolSpin);
+
+    QHBoxLayout *capRow = new QHBoxLayout();
+    capRow->addWidget(capSpin);
+    capRow->addWidget(capButton);
+    capRow->addStretch();
+    QVBoxLayout *capCell = new QVBoxLayout();
+    capCell->setContentsMargins(0, 0, 0, 0);
+    capCell->setSpacing(2);
+    capCell->addLayout(capRow);
+    capCell->addWidget(capHint);
+    form->addRow(tr("Потолок контекста:"), capCell);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        profile->name = nameEdit->text().trimmed();
+        profile->baseUrl = urlEdit->text().trimmed();
+        profile->model = modelEdit->text().trimmed();
+        profile->apiKey = tokenEdit->text().trimmed();
+        profile->modality = WorkerTaskKind(modalityCombo->currentData().toInt());
+        profile->purpose = purposeEdit->text().trimmed();
+        profile->balanceUrl = balanceUrlEdit->text().trimmed();
+        profile->balanceJsonPath = balancePathEdit->text().trimmed();
+        profile->maxToolIterations = toolSpin->value();
+        profile->contextCap = AppSettings::normalizeProfileContextCap(capSpin->value());
+        dialog.accept();
+    });
+
+    QHBoxLayout *bottom = new QHBoxLayout();
+    bottom->addWidget(fromPreset);
+    bottom->addStretch();
+    bottom->addWidget(buttons);
+
+    QVBoxLayout *root = new QVBoxLayout(&dialog);
+    root->addLayout(form);
+    root->addLayout(bottom);
+    applyProfile(*profile);
+    nameEdit->setFocus();
+    return dialog.exec() == QDialog::Accepted;
+}
+
+//----------------------------------------------
+
+bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
+{
+    if (!preset)
+        return false;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(isNew ? tr("Новый воркер") : tr("Воркер"));
+    dialog.resize(480, 160);
+
+    QComboBox *typeCombo = new QComboBox(&dialog);
+    typeCombo->addItem(tr("Менеджер"), int(WorkerTypeManager));
+    typeCombo->addItem(tr("Исполнитель"), int(WorkerTypeExecutor));
+    typeCombo->addItem(tr("Тестировщик"), int(WorkerTypeTester));
+    typeCombo->addItem(tr("Инструмент"), int(WorkerTypeTool));
+    int typeIndex = typeCombo->findData(int(preset->type));
+    if (typeIndex < 0)
+        typeIndex = 0;
+    typeCombo->setCurrentIndex(typeIndex);
+
+    QComboBox *profileCombo = new QComboBox(&dialog);
+    profileCombo->setMinimumWidth(280);
+    fillProfileCombo(profileCombo, preset->profileId);
+    if (!preset->profileId.isEmpty()
+        && profileCombo->findData(preset->profileId) < 0)
+    {
+        profileCombo->insertItem(0, tr("профиль не найден"), preset->profileId);
+        profileCombo->setCurrentIndex(0);
     }
 
-    s->removeProfile(id);
-    loadProfiles();
-    loadPresets();
-    emit profilesChanged();
+    QFormLayout *form = new QFormLayout();
+    form->addRow(tr("Тип воркера:"), typeCombo);
+    form->addRow(tr("Профиль модели:"), profileCombo);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        WorkerPreset trial = *preset;
+        trial.type = WorkerType(typeCombo->currentData().toInt());
+        trial.profileId = profileCombo->currentData().toString();
+        QString error;
+        if (isNew)
+        {
+            const QString id = AppSettings::instance()->addWorkerPreset(_kind, trial, &error);
+            if (id.isEmpty())
+            {
+                QMessageBox::warning(&dialog, tr("Воркеры"), error);
+                return;
+            }
+            trial.id = id;
+        }
+        else
+        {
+            AppSettings::instance()->updateWorkerPreset(_kind, trial, &error);
+            if (!error.isEmpty())
+            {
+                QMessageBox::warning(&dialog, tr("Воркеры"), error);
+                return;
+            }
+        }
+        *preset = trial;
+        dialog.accept();
+    });
+
+    QVBoxLayout *root = new QVBoxLayout(&dialog);
+    root->addLayout(form);
+    root->addWidget(buttons);
+    return dialog.exec() == QDialog::Accepted;
 }
 
 //----------------------------------------------

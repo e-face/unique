@@ -89,19 +89,38 @@ void UsageStatsWidget::setExtraRows(const QStringList &labels, const QStringList
 
 //----------------------------------------------
 
+static int statsPaintHeight(int roles, int extras)
+{
+    // Совпадает с вертикальными шагами paintEvent, плюс нижний отступ.
+    const int pad = 8;
+    int y = pad;
+    y += 62 + 14;
+    y += 22;
+    y += 18 + 6;
+    y += 24;
+    y += 22;
+    if (roles <= 0)
+        y += 24;
+    else
+        y += 28 * roles;
+    if (extras > 0)
+        y += 4 + 22 * extras;
+    return y + pad;
+}
+
+//----------------------------------------------
+
 QSize UsageStatsWidget::sizeHint() const
 {
-    const int roles = qMax(1, _stats.byRole.size());
     const int extras = qMin(_extraLabels.size(), _extraValues.size());
-    const int h = 168 + roles * 28 + extras * 22;
-    return QSize(520, h);
+    return QSize(520, statsPaintHeight(_stats.byRole.size(), extras));
 }
 
 //----------------------------------------------
 
 QSize UsageStatsWidget::minimumSizeHint() const
 {
-    return QSize(360, 200);
+    return QSize(360, statsPaintHeight(0, 0));
 }
 
 //----------------------------------------------

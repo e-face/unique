@@ -44,6 +44,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QFont>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -278,6 +279,57 @@ private:
 
 //----------------------------------------------
 
+class PillStatusBar : public QStatusBar
+{
+public:
+    explicit PillStatusBar(QWidget *parent = 0)
+        : QStatusBar(parent)
+    {
+    }
+
+protected:
+    virtual void paintEvent(QPaintEvent *event)
+    {
+        QStatusBar::paintEvent(event);
+        const QString msg = currentMessage();
+        if (msg.isEmpty())
+            return;
+
+        int right = width() - 8;
+        const QObjectList kids = children();
+        for (int i = 0; i < kids.size(); ++i)
+        {
+            QWidget *w = qobject_cast<QWidget *>(kids.at(i));
+            if (!w || !w->isVisible() || w->x() <= 2)
+                continue;
+            right = qMin(right, w->x() - 4);
+        }
+        const int maxW = right - 12;
+        if (maxW < 32)
+            return;
+
+        AppSettings *s = AppSettings::instance();
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.fillRect(QRect(0, 1, right, height() - 1), s->windowColor());
+
+        const QFontMetrics fm(font());
+        const int padX = 8;
+        const int pillW = qMin(maxW, qMax(32, fm.width(msg) + padX * 2));
+        const int pillH = qMin(height() - 6, fm.height() + 6);
+        const QRect pill(8, qMax(2, (height() - pillH) / 2), pillW, pillH);
+        p.setPen(QPen(s->borderColor(), 1));
+        p.setBrush(s->panelColor());
+        p.drawRoundedRect(pill, 6, 6);
+        p.setPen(s->textColor());
+        const QString shown = fm.elidedText(msg, Qt::ElideRight, pill.width() - padX * 2);
+        p.drawText(pill.adjusted(padX, 0, -padX, 0),
+                   Qt::AlignVCenter | Qt::AlignLeft, shown);
+    }
+};
+
+//----------------------------------------------
+
 class SessionTabWidget : public QTabWidget
 {
 public:
@@ -371,6 +423,7 @@ MainWindow::MainWindow(QWidget *parent)
                             QString::fromUtf8(UNIQUE_APP_VERSION)));
     setWindowIcon(AppIcons::appIcon());
     resize(960, 720);
+    setStatusBar(new PillStatusBar(this));
 
     setupUi();
     setupMenus();
@@ -1353,7 +1406,12 @@ void MainWindow::sltCurrentTabChanged(int index)
     }
     ChatSession *session = sessionByTabWidget(page);
     if (session)
+    {
         restoreSessionContent(session);
+        if (session->widget())
+            session->widget()->syncRunningState();
+    }
+    refreshBusyTabs();
     updateComposerState();
     scheduleSaveOpenChats();
 }
@@ -4592,6 +4650,9 @@ void MainWindow::ensureSessionVisible(ChatSession *session)
     ensureTabVisible(session->widget(), title, iconForSession(session));
     if (session->worker())
         applyWorkerUi(session->worker());
+    if (session->widget())
+        session->widget()->syncRunningState();
+    refreshBusyTabs();
 }
 
 //----------------------------------------------
@@ -4685,8 +4746,12 @@ void MainWindow::applyAppStyle()
         "QListWidget::item { padding:4px 6px; border-radius:6px; }"
         "QListWidget::item:selected { background:%7; color:%2; }"
         "QGroupBox { color:%2; border:1px solid %6; border-radius:8px;"
-        "  margin-top:14px; padding-top:10px; background:%3; }"
-        "QGroupBox::title { subcontrol-origin: margin; left:12px; padding:0 6px; }"
+        "  margin-top:12px; padding:16px 12px 12px 12px; background:%3;"
+        "  font-weight:bold; }"
+        "QGroupBox * { font-weight:normal; }"
+        "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left;"
+        "  left:12px; padding:2px 8px; background-color:%3; color:%2;"
+        "  border:1px solid %6; border-radius:6px; font-weight:bold; }"
         "QLabel { color:%2; }"
         "QLineEdit, QComboBox, QPlainTextEdit, QSpinBox, QTextEdit {"
         "  background:%5; color:%2; border:1px solid %6;"

@@ -1102,7 +1102,8 @@ void Agent::sltResponseReceived(const LlmResponse &response)
     if (!droppedIds.isEmpty())
     {
         dropFileContexts(&_history, droppedIds);
-        emit notice(tr("Убрал из контекста файлы: %1").arg(droppedIds.join(QString::fromUtf8(", "))));
+        emit serviceNotice(tr("Убрал из контекста файлы: %1")
+                           .arg(droppedIds.join(QString::fromUtf8(", "))));
     }
     _history.append(stored);
     emitContextUsage();

@@ -650,6 +650,8 @@ void ConversationWidget::setAgent(Agent *agent)
             this, SLOT(sltToolCallFinished(QString,QString,bool)));
     connect(_agent, SIGNAL(notice(QString)),
             this, SLOT(sltNotice(QString)));
+    connect(_agent, SIGNAL(serviceNotice(QString)),
+            this, SLOT(sltNotice(QString)));
     connect(_agent, SIGNAL(forwardedContext(QString)),
             this, SLOT(sltForwardedContext(QString)));
     connect(_agent, SIGNAL(failed(QString)),
@@ -665,6 +667,7 @@ void ConversationWidget::setAgent(Agent *agent)
     _agent->refreshContextUsage();
     if (_agent->isWaitingToolBudget())
         showToolBudgetRequest(_agent->toolBudgetChunk());
+    syncRunningState();
 }
 
 //----------------------------------------------
@@ -1356,6 +1359,15 @@ void ConversationWidget::applyTheme()
                 frame->applyTheme();
         }
     }
+}
+
+//----------------------------------------------
+
+void ConversationWidget::syncRunningState()
+{
+    if (!_agent)
+        return;
+    sltBusyChanged(_agent->isBusy());
 }
 
 //----------------------------------------------

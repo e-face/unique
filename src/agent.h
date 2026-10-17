@@ -146,6 +146,8 @@ signals:
     void toolCallStarted(const QString &name, const QString &arguments);
     void toolCallFinished(const QString &name, const QString &result, bool ok);
     void notice(const QString &text);
+    /** Служебная заметка: только лента чата, без журнала. */
+    void serviceNotice(const QString &text);
     /** Пересланный между воркерами контекст (отчёты детей и т.п.). */
     void forwardedContext(const QString &text);
     void failed(const QString &error);

@@ -37,6 +37,7 @@ ChatSession::ChatSession(QObject *parent)
 {
     connect(_agent, SIGNAL(historyChanged()), this, SLOT(sltMarkDirty()));
     connect(_agent, SIGNAL(notice(QString)), this, SLOT(sltMarkDirty()));
+    connect(_agent, SIGNAL(serviceNotice(QString)), this, SLOT(sltMarkDirty()));
 }
 
 //----------------------------------------------
