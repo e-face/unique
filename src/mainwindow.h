@@ -97,6 +97,8 @@ private slots:
     void sltWorkerProfileChangeRequested(const QString &workerId, const QString &profileId);
     void sltPermissionRequested(const QString &action);
     void sltPermissionAnswered(bool approved, bool always, const QString &comment);
+    void sltConsoleInputRequested(const QString &transcript);
+    void sltConsoleInputAnswered(const QString &line, bool sent);
     void sltSubtreeBudgetRequested(const QString &text);
     void sltSubtreeBudgetAnswered(bool granted);
     void sltToolBudgetExhausted(int chunk);

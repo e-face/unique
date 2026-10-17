@@ -44,6 +44,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QFont>
+#include <QFrame>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -67,6 +68,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegExp>
+#include <QScrollArea>
 #include <QSettings>
 #include <QShowEvent>
 #include <QSize>
@@ -1597,6 +1599,8 @@ void MainWindow::sltWorkerCreated(Worker *worker)
             this, SLOT(sltWorkerTreeChanged()));
     connect(worker, SIGNAL(permissionRequested(QString)),
             this, SLOT(sltPermissionRequested(QString)));
+    connect(worker, SIGNAL(consoleInputRequested(QString)),
+            this, SLOT(sltConsoleInputRequested(QString)));
     connect(worker, SIGNAL(subtreeBudgetRequested(QString)),
             this, SLOT(sltSubtreeBudgetRequested(QString)));
     connect(worker, SIGNAL(continuationRequested(QString)),
@@ -1937,6 +1941,36 @@ void MainWindow::sltPermissionAnswered(bool approved, bool always, const QString
 
 //----------------------------------------------
 
+void MainWindow::sltConsoleInputRequested(const QString &transcript)
+{
+    Worker *worker = qobject_cast<Worker *>(sender());
+    if (!worker || !worker->session())
+        return;
+    focusWorkerSession(worker);
+    if (worker->session()->widget())
+        worker->session()->widget()->showConsoleInput(transcript);
+    QString journalText = transcript;
+    if (journalText.size() > 500)
+        journalText = journalText.right(500);
+    if (_journal)
+        _journal->addTransient(workerWindowTitle(worker), tr("Команда ждёт ввод"),
+                               journalText, QString::fromUtf8("noticeMsg"), worker->id());
+}
+
+//----------------------------------------------
+
+void MainWindow::sltConsoleInputAnswered(const QString &line, bool sent)
+{
+    ConversationWidget *widget = qobject_cast<ConversationWidget *>(sender());
+    ChatSession *session = sessionByWidget(widget);
+    if (!session || !session->worker())
+        return;
+    session->worker()->resolveConsoleInput(sent, line);
+    updatePermissionHighlights();
+}
+
+//----------------------------------------------
+
 void MainWindow::sltSubtreeBudgetRequested(const QString &text)
 {
     Worker *worker = qobject_cast<Worker *>(sender());
@@ -2118,16 +2152,22 @@ void MainWindow::sltShowStatistics()
     dialog.setWindowTitle(tr("Статистика"));
     dialog.resize(640, 720);
 
-    QGroupBox *globalBox = new QGroupBox(tr("Всего"), &dialog);
+    QWidget *content = new QWidget(&dialog);
+    QVBoxLayout *contentLay = new QVBoxLayout(content);
+    contentLay->setContentsMargins(0, 0, 0, 0);
+
+    QGroupBox *globalBox = new QGroupBox(tr("Всего"), content);
     QVBoxLayout *globalLay = new QVBoxLayout(globalBox);
     UsageStatsWidget *globalView = new UsageStatsWidget(globalBox);
     globalView->setStats(s->globalUsage());
     globalView->setExtraRows(
         QStringList() << tr("Время работы"),
         QStringList() << formatWorkLong(s->liveWorkMs(false)));
+    globalView->setMinimumHeight(globalView->sizeHint().height());
     globalLay->addWidget(globalView);
+    contentLay->addWidget(globalBox);
 
-    QGroupBox *projectBox = new QGroupBox(tr("Текущий проект"), &dialog);
+    QGroupBox *projectBox = new QGroupBox(tr("Текущий проект"), content);
     QVBoxLayout *projectLay = new QVBoxLayout(projectBox);
     if (hasOpenProject())
     {
@@ -2153,6 +2193,7 @@ void MainWindow::sltShowStatistics()
                 << QString::number(_sessions.size())
                 << QString::number(workers)
                 << QString::number(s->alwaysAllowedCommands(SettingsKindProject).size()));
+        projectView->setMinimumHeight(projectView->sizeHint().height());
         projectLay->addWidget(projectView);
     }
     else
@@ -2161,6 +2202,14 @@ void MainWindow::sltShowStatistics()
         empty->setWordWrap(true);
         projectLay->addWidget(empty);
     }
+    contentLay->addWidget(projectBox);
+    contentLay->addStretch(1);
+
+    QScrollArea *scroll = new QScrollArea(&dialog);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(content);
 
     QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
     QPushButton *resetProject = buttons->addButton(tr("Обнулить проект"),
@@ -2175,8 +2224,7 @@ void MainWindow::sltShowStatistics()
     connect(resetGlobal, SIGNAL(clicked()), &dialog, SLOT(reject()));
 
     QVBoxLayout *root = new QVBoxLayout(&dialog);
-    root->addWidget(globalBox);
-    root->addWidget(projectBox);
+    root->addWidget(scroll, 1);
     root->addWidget(buttons);
     dialog.exec();
 }
@@ -3548,6 +3596,8 @@ void MainWindow::attachSessionUi(ChatSession *session)
             this, SLOT(sltInspectRequested(QString,QString)), Qt::UniqueConnection);
     connect(chat, SIGNAL(permissionAnswered(bool,bool,QString)),
             this, SLOT(sltPermissionAnswered(bool,bool,QString)));
+    connect(chat, SIGNAL(consoleInputAnswered(QString,bool)),
+            this, SLOT(sltConsoleInputAnswered(QString,bool)));
     connect(chat, SIGNAL(continuationAnswered(bool)),
             this, SLOT(sltContinuationAnswered(bool)));
     connect(chat, SIGNAL(subtreeBudgetAnswered(bool)),
@@ -4746,7 +4796,9 @@ void MainWindow::restoreSessionContent(ChatSession *session)
     Worker *worker = session->worker();
     if (!worker)
         return;
-    if (worker->isWaitingSubtreeBudget())
+    if (worker->isWaitingConsoleInput())
+        widget->showConsoleInput(worker->consoleInputTranscript());
+    else if (worker->isWaitingSubtreeBudget())
         widget->showSubtreeBudgetRequest(worker->subtreeBudgetPromptText());
     else if (worker->state() == WorkerStateWaitingApproval)
         widget->showPermissionRequest(worker->permissionAction(),

@@ -10,6 +10,7 @@
 //----------------------------------------------
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -541,11 +542,12 @@ QString PlanWorkTool::name() const
 QString PlanWorkTool::description() const
 {
     return QString::fromUtf8(
-        "Required before the first delegate_task (skip if you finish a small task yourself). "
-        "simple/cannot_split -> executor; complex needs expected_parts>=3 or stay "
-        "in YOUR plan as simple items. Do not give the whole job to one executor. "
-        "When planning, note which preset_id (model) fits each subtask for later "
-        "delegate_task — match modality and purpose, minimize cost, maximize fit.");
+        "Required before the first delegate_task. You plan; you do not implement or test. "
+        "simple/cannot_split -> executor; complex needs expected_parts>=3, otherwise keep "
+        "the pieces in YOUR plan as simple items. Shape subtasks so each child is reusable "
+        "for follow-ups of the same kind — not a new worker per tiny edit. Do not assign "
+        "testers in the plan. Repeated same-shaped steps are create_tool/run_tool, not extra "
+        "executors. Note which preset_id fits each subtask (modality and purpose).");
 }
 
 //----------------------------------------------
@@ -717,14 +719,13 @@ QString DelegateTaskTool::name() const
 QString DelegateTaskTool::description() const
 {
     return QString::fromUtf8(
-        "Give work to a direct child. plan_work first (not needed if you do a small task yourself). "
-        "simple -> executor, complex -> manager (depth limits are in your first message). "
-        "Pass preset_id from available worker presets to bind the child's model "
-        "(match modality AND purpose: e.g. text-to-image vs object segmentation; "
-        "cheapest adequate for routine work; stronger models for hard reasoning). "
-        "Reuse an existing child via worker_id — including COMPLETED children, which can "
-        "be restarted many times with new instructions. Several calls run in parallel; "
-        "you continue after ALL children of the batch answer. type: manager/executor/tester.");
+        "Give work to a direct child. plan_work first. simple -> executor, complex -> manager "
+        "(depth limits are in your first message). Prefer worker_id of a child you already "
+        "have, including COMPLETED children, whenever the new work is the same kind. Create "
+        "a new worker only for a new role. type=tester only if the user required testing or "
+        "a report recommended it; do not add a tester by default. Routine repeated work is "
+        "run_tool, not another executor. Pass preset_id to match modality AND purpose. "
+        "Several calls run in parallel; you continue after ALL children of the batch answer.");
 }
 
 //----------------------------------------------
@@ -1042,11 +1043,12 @@ QString CompleteTaskTool::name() const
 QString CompleteTaskTool::description() const
 {
     return QString::fromUtf8(
-        "Finish and send YOUR report to the parent. Evidence-over-claims / fail-closed: "
-        "executors who changed files and ALL testers must pass verified plus structured "
-        "evidence {command, output, artifact?, digest?}. Managers cannot accept work that "
-        "changed files until a tester child completed with verified=true. "
-        "lessons format: lines CMD:/ERR:/FIX:/PATH:/TAGS:.");
+        "Finish and send YOUR report to the parent. Testers must pass verified plus structured "
+        "evidence {command, output, artifact?, digest?} and must not have edited the project. "
+        "Executors may omit verification; a smoke check is optional. If tests are worth doing, "
+        "say so in result as a recommendation (whether to test, and what to watch) — do not "
+        "block on a tester. If the task was too large, ask the parent to replace you with a "
+        "manager. lessons format: lines CMD:/ERR:/FIX:/PATH:/TAGS:.");
 }
 
 //----------------------------------------------
@@ -1069,8 +1071,8 @@ QJsonObject CompleteTaskTool::parametersSchema() const
     verified.insert(QString::fromUtf8("type"), QString::fromUtf8("boolean"));
     verified.insert(QString::fromUtf8("description"),
                     QString::fromUtf8(
-                        "true if build/checks passed; false if they failed. Required for "
-                        "testers and for executors who changed files."));
+                        "true if the checks you ran passed; false if they failed. Required "
+                        "for testers. Optional for executors."));
     QJsonObject command;
     command.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     command.insert(QString::fromUtf8("description"),
@@ -1099,8 +1101,8 @@ QJsonObject CompleteTaskTool::parametersSchema() const
     evidence.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
     evidence.insert(QString::fromUtf8("description"),
                     QString::fromUtf8(
-                        "Structured proof. Required with verified for testers and for "
-                        "executors who changed files."));
+                        "Structured proof. Required with verified for testers. Optional "
+                        "for an executor smoke check."));
     evidence.insert(QString::fromUtf8("properties"), evidenceProps);
     evidence.insert(QString::fromUtf8("required"), evidenceRequired);
 
@@ -1162,7 +1164,6 @@ QString CompleteTaskTool::invoke(QString argumentsJson, bool *ok)
     const bool hasVerified = args.contains(QString::fromUtf8("verified"));
     const bool verified = args.value(QString::fromUtf8("verified")).toBool();
     const WorkerType type = _owner->type();
-    const bool changedFiles = !_owner->changedFiles().isEmpty();
 
     QString evCommand;
     QString evOutput;
@@ -1198,44 +1199,8 @@ QString CompleteTaskTool::invoke(QString argumentsJson, bool *ok)
                 "evidence {command, output} (output >= 20 chars). Optional artifact/digest.");
         }
     }
-    else if (type == WorkerTypeExecutor && changedFiles)
-    {
-        if (!hasVerified || !evidenceOk)
-        {
-            if (ok)
-                *ok = false;
-            return QString::fromUtf8(
-                "REFUSED (verification gate): after changing files, executor must pass "
-                "verified and evidence {command, output} for build/compile/syntax. "
-                "Test suites are tester-only.");
-        }
-    }
-    else if (type == WorkerTypeManager)
-    {
-        bool needsTester = false;
-        bool havePassingTester = false;
-        foreach (Worker *child, _owner->children())
-        {
-            if (!child || !child->hasAnswered())
-                continue;
-            if (child->type() == WorkerTypeExecutor && !child->changedFiles().isEmpty())
-                needsTester = true;
-            if (child->type() == WorkerTypeTester && child->verificationPassed())
-                havePassingTester = true;
-        }
-        if (needsTester && !havePassingTester)
-        {
-            if (ok)
-                *ok = false;
-            return QString::fromUtf8(
-                "REFUSED (acceptance gate): executors changed files but no tester child "
-                "completed with verified=true + evidence. Spawn/await an independent tester "
-                "reproduction before complete_task.");
-        }
-    }
-
     bool success = true;
-    if (type == WorkerTypeTester || (type == WorkerTypeExecutor && changedFiles))
+    if (type == WorkerTypeTester || (type == WorkerTypeExecutor && hasVerified))
         success = verified;
 
     if (hasVerified || evidenceOk)
@@ -1531,10 +1496,12 @@ QString CreateToolTool::name() const
 QString CreateToolTool::description() const
 {
     return QString::fromUtf8(
-        "Create a shared reusable TOOL for one narrow job. Pass preset_id to bind the "
-        "model: match modality AND purpose from the presets list (e.g. text-to-image vs "
-        "object segmentation). Without preset_id the default Tool LLM profile is used "
-        "(cannot generate images). Call list_tools first. Only the user can delete tools.");
+        "Create a shared reusable TOOL for one narrow, repeated job. Prefer this over a new "
+        "executor when the same kind of step will run again (build, lint, generate, convert, "
+        "batch edits). Pass preset_id to bind the model: match modality AND purpose from the "
+        "presets list (e.g. text-to-image vs object segmentation). Without preset_id the "
+        "default Tool LLM profile is used (cannot generate images). Call list_tools first. "
+        "Only the user can delete tools.");
 }
 
 //----------------------------------------------
@@ -1914,8 +1881,10 @@ QString RunCommandAgentTool::description() const
         "in one call (or multiple run_command tool_calls in the same turn). Single command= "
         "still works. User approves the program (or every time if it touches paths outside "
         "the project). working_directory is relative to the project; timeout_sec default 120, "
-        "max 300. NON-INTERACTIVE: stdin is empty - pass /y, -y, --yes, /q. For GUI/servers "
-        "set background=true. Scratch output in ___project___/tmp, not project-root tmp/.");
+        "max 300. If the program waits for a line (Y/N, pause, set /p), the last lines "
+        "are shown to the user and their answer is written to stdin. Do not pipe through "
+        "more. For GUI/servers set background=true. Scratch output in ___project___/tmp, "
+        "not project-root tmp/.");
 }
 
 //----------------------------------------------
@@ -1994,6 +1963,9 @@ QString RunCommandAgentTool::invoke(QString argumentsJson, bool *ok)
             commandList.append(single);
     }
 
+    // Стоп прошлого вызова не должен отменять эту команду, не запустив её.
+    _interrupted = false;
+
     if (commandList.isEmpty())
     {
         if (ok)
@@ -2044,6 +2016,46 @@ QString RunCommandAgentTool::invoke(QString argumentsJson, bool *ok)
     if (ok)
         *ok = (okCount == commandList.size());
     return report;
+}
+
+//----------------------------------------------
+
+static bool looksLikeConsolePrompt(const QString &output)
+{
+    if (output.isEmpty())
+        return false;
+    // Вопрос почти всегда без завершающего перевода строки.
+    // «file.cpp:» в конце полной строки — обычный вывод компилятора.
+    const bool incomplete = !output.endsWith(QChar('\n'))
+                            && !output.endsWith(QChar('\r'));
+    QString trimmed = output;
+    while (trimmed.endsWith(QChar('\n')) || trimmed.endsWith(QChar('\r')))
+        trimmed.chop(1);
+    trimmed = trimmed.trimmed();
+    if (trimmed.isEmpty())
+        return false;
+    const int nl = trimmed.lastIndexOf(QChar('\n'));
+    const QString last = (nl >= 0 ? trimmed.mid(nl + 1) : trimmed).trimmed();
+    if (last.size() < 1 || last.size() > 240)
+        return false;
+    const QString low = last.toLower();
+    if (low.contains(QString::fromUtf8("y/n"))
+        || low.contains(QString::fromUtf8("yes/no"))
+        || low.contains(QString::fromUtf8("press any key"))
+        || low.contains(QString::fromUtf8("нажмите"))
+        || low.contains(QString::fromUtf8("overwrite"))
+        || low.contains(QString::fromUtf8("перезапис"))
+        || low.contains(QString::fromUtf8("введите"))
+        || low.contains(QString::fromUtf8("password"))
+        || low.contains(QString::fromUtf8("парол")))
+        return true;
+    const QChar tail = last.at(last.size() - 1);
+    if (tail == QChar('?') || tail == QChar('>'))
+        return true;
+    if (incomplete && (tail == QChar(':')
+                       || low.contains(QString::fromUtf8("enter"))))
+        return true;
+    return false;
 }
 
 //----------------------------------------------
@@ -2125,9 +2137,10 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
     QProcess process;
     process.setWorkingDirectory(workDir);
     process.setProcessChannelMode(QProcess::MergedChannels);
-    // Пустой stdin: иначе любой вопрос «Overwrite? (Yes/No)», pause, set /p,
-    // запрос пароля и т.п. молча ждут ввода до самого таймаута.
-    process.setStandardInputFile(QProcess::nullDevice());
+    // Фоновый запуск не читает ввод. У обычной команды stdin — канал:
+    // вопрос в консоли показывается пользователю, ответ пишется сюда.
+    if (background)
+        process.setStandardInputFile(QProcess::nullDevice());
     _runningProcess = &process;
     // Фоновый запуск: cmd отдаёт программу системе через start и сразу выходит,
     // а мы возвращаемся к модели, не дожидаясь завершения GUI/сервера.
@@ -2182,15 +2195,59 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
     QEventLoop loop;
     QTimer timeout;
     timeout.setSingleShot(true);
+    QTimer poll;
+    poll.setInterval(400);
     QObject::connect(&process, SIGNAL(finished(int,QProcess::ExitStatus)),
                      &loop, SLOT(quit()));
     QObject::connect(&process, SIGNAL(error(QProcess::ProcessError)),
                      &loop, SLOT(quit()));
     QObject::connect(&timeout, SIGNAL(timeout()), &loop, SLOT(quit()));
+    QObject::connect(&poll, SIGNAL(timeout()), &loop, SLOT(quit()));
     timeout.start(timeoutSec * 1000);
+    poll.start();
     _runningLoop = &loop;
-    if (process.state() != QProcess::NotRunning && !_interrupted)
+
+    QByteArray bytes;
+    QElapsedTimer idleClock;
+    idleClock.start();
+    bool promptArmed = true;
+    while (process.state() != QProcess::NotRunning && !_interrupted)
+    {
         loop.exec();
+        if (_interrupted)
+            break;
+        const QByteArray chunk = process.readAll();
+        if (!chunk.isEmpty())
+        {
+            bytes += chunk;
+            idleClock.restart();
+            promptArmed = true;
+        }
+        if (!timeout.isActive())
+            break;
+        if (background || !promptArmed || idleClock.elapsed() < 1200)
+            continue;
+        if (!_owner)
+            continue;
+        const QString soFar = ProjectWorkspace::decodeConsoleOutput(bytes);
+        if (!looksLikeConsolePrompt(soFar))
+            continue;
+        promptArmed = false;
+        timeout.stop();
+        QString line;
+        const bool sent = _owner->askConsoleInput(soFar, &line);
+        if (_interrupted)
+            break;
+        if (sent && process.state() != QProcess::NotRunning)
+        {
+            QByteArray encoded = line.toLocal8Bit();
+            encoded.append("\r\n");
+            process.write(encoded);
+            idleClock.restart();
+        }
+        timeout.start(timeoutSec * 1000);
+    }
+    poll.stop();
     _runningLoop = 0;
     _runningProcess = 0;
     if (_interrupted)
@@ -2213,7 +2270,7 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
             killLoop.exec();
     }
 
-    QByteArray bytes = process.readAll();
+    bytes += process.readAll();
     QString output = ProjectWorkspace::decodeConsoleOutput(bytes);
 
     // Полный лог — в ___project___/tmp; в ответ модели — exit + file:line и ссылка.

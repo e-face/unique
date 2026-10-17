@@ -179,6 +179,14 @@ public:
     QString askPermission(QString action, bool offerAlways = false,
                           QString alwaysKey = QString());
     void resolvePermission(bool approved, bool always, QString comment);
+    /**
+     * @brief Показать хвост вывода команды и дождаться строки для stdin.
+     * @return false, если пользователь пропустил вопрос или воркер остановлен.
+     */
+    bool askConsoleInput(QString transcript, QString *line);
+    void resolveConsoleInput(bool sent, QString line);
+    bool isWaitingConsoleInput() const;
+    QString consoleInputTranscript() const;
     void resolveContinuation(bool retry);
     bool permissionOfferAlways() const;
     QStringList alwaysAllowedCommands() const;
@@ -199,6 +207,8 @@ signals:
     void finished();
     void permissionRequested(const QString &action);
     void permissionResolved();
+    void consoleInputRequested(const QString &transcript);
+    void consoleInputResolved();
     void continuationRequested(const QString &error);
     void continuationResolved();
     void subtreeBudgetRequested(const QString &text);
@@ -250,6 +260,10 @@ private:
     bool          _parentReportNudged;
     bool          _continueRetry;
     bool          _permissionLoopActive;
+    bool          _consoleInputLoopActive;
+    bool          _consoleInputSent;
+    QString       _consoleInputLine;
+    QString       _consoleInputTranscript;
     bool          _resumeContinueChat;
     bool          _userStopped;
     int           _unusedParentTurns;

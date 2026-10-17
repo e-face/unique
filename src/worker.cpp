@@ -38,6 +38,8 @@ Worker::Worker(QObject *parent)
     , _parentReportNudged(false)
     , _continueRetry(false)
     , _permissionLoopActive(false)
+    , _consoleInputLoopActive(false)
+    , _consoleInputSent(false)
     , _resumeContinueChat(false)
     , _userStopped(false)
     , _unusedParentTurns(0)
@@ -1246,7 +1248,11 @@ void Worker::quitBlockingLoops()
     _completed = true;
     _skipIdleComplete = true;
     _permissionLoopActive = false;
+    _consoleInputSent = false;
+    _consoleInputLoopActive = false;
+    _consoleInputTranscript.clear();
     emit permissionResolved();
+    emit consoleInputResolved();
     emit continuationResolved();
     emit subtreeBudgetResolved();
     emit finished();
@@ -1264,7 +1270,11 @@ void Worker::beginUserStop()
     if (_session && _session->agent())
         _session->agent()->abort();
     _permissionLoopActive = false;
+    _consoleInputSent = false;
+    _consoleInputLoopActive = false;
+    _consoleInputTranscript.clear();
     emit permissionResolved();
+    emit consoleInputResolved();
     emit continuationResolved();
     emit subtreeBudgetResolved();
 }
@@ -1679,6 +1689,50 @@ QString Worker::askPermission(QString action, bool offerAlways, QString alwaysKe
     if (_state == WorkerStateWaitingApproval)
         setState(WorkerStateRunning);
     return _permissionResult;
+}
+
+//----------------------------------------------
+
+bool Worker::askConsoleInput(QString transcript, QString *line)
+{
+    _consoleInputLine.clear();
+    _consoleInputSent = false;
+    _consoleInputTranscript = transcript;
+    _consoleInputLoopActive = true;
+    emit consoleInputRequested(transcript);
+
+    QEventLoop loop;
+    connect(this, SIGNAL(consoleInputResolved()), &loop, SLOT(quit()));
+    loop.exec();
+    _consoleInputLoopActive = false;
+    if (line)
+        *line = _consoleInputLine;
+    return _consoleInputSent;
+}
+
+//----------------------------------------------
+
+void Worker::resolveConsoleInput(bool sent, QString line)
+{
+    _consoleInputSent = sent;
+    _consoleInputLine = line;
+    _consoleInputLoopActive = false;
+    _consoleInputTranscript.clear();
+    emit consoleInputResolved();
+}
+
+//----------------------------------------------
+
+bool Worker::isWaitingConsoleInput() const
+{
+    return _consoleInputLoopActive;
+}
+
+//----------------------------------------------
+
+QString Worker::consoleInputTranscript() const
+{
+    return _consoleInputTranscript;
 }
 
 //----------------------------------------------

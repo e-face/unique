@@ -172,8 +172,9 @@ QString WorkerManager::limitsSummaryFor(Worker *worker) const
         {
             text += QString::fromUtf8(
                 "You are at the LAST manager level: type=manager is forbidden here. "
-                "Give every subtask, including complex ones, to type=executor "
-                "(split it yourself into executor-sized pieces) and verify with type=tester. ");
+                "Split the work yourself into executor-sized pieces and give each to "
+                "type=executor. Do not create a tester unless the user required tests "
+                "or a worker recommended them. ");
         }
         else
         {
@@ -2912,8 +2913,22 @@ void WorkerManager::installTools(Worker *worker)
     }
     else
     {
-        // LLM / other — полный набор coding + роль.
-        addFileAndShellTools(agent, _workspace, worker);
+        // Менеджер только читает (планирует). Тестировщик читает и запускает
+        // проверки, но не правит файлы. Пишет код исполнитель и инструмент.
+        if (worker->type() == WorkerTypeTester)
+        {
+            addReadOnlyFileTools(agent, _workspace);
+            agent->addTool(new RunCommandAgentTool(_workspace, worker, agent));
+            agent->addTool(new RequestPermissionTool(worker, agent));
+        }
+        else if (worker->type() == WorkerTypeManager)
+        {
+            addReadOnlyFileTools(agent, _workspace);
+        }
+        else
+        {
+            addFileAndShellTools(agent, _workspace, worker);
+        }
         addLlmRoleTools(this, agent, worker);
     }
 
@@ -3071,11 +3086,12 @@ QString WorkerManager::promptFor(Worker *worker) const
     const QString verificationDepth = locale->model(
         QString::fromUtf8("verification_depth"),
         QString::fromUtf8(
-            "\nVERIFICATION DEPTH: Deep / exhaustive testing and formal verification ONLY when "
-            "the user (or an explicit parent assignment quoting the user) asks for it. "
-            "By default prefer fast, lightweight, and if needed indirect checks "
-            "(build/compile, smoke run, spot-check one path). Do not expand into full test "
-            "suites, long regressions, fuzzing, or broad manual QA on your own."));
+            "\nTESTING POLICY: A tester is not part of the default loop. Create one only when "
+            "the user explicitly required testing, or a worker's report recommends tests and "
+            "says what to check. A manager may spawn a tester on their own only in an extreme "
+            "case, and never runs tests themselves. Executors do no testing or one smoke check, "
+            "and may only recommend tests to the parent. Testers only run checks and never edit "
+            "the project."));
     QString base;
     if (worker->isGroupInterlocutor())
     {
@@ -3090,7 +3106,25 @@ QString WorkerManager::promptFor(Worker *worker) const
     {
     case WorkerTypeExecutor:
         base = locale->model(QString::fromUtf8("executor"),
-                             QString::fromUtf8("You are an EXECUTOR worker."));
+                             QString::fromUtf8(
+                                 "You are an EXECUTOR. Do the concrete task you were given and "
+                                 "do not widen it.\n"
+                                 "DEFAULT OPERATING MODEL (follow this unless the user, the "
+                                 "workspace card, or your parent assignment already defined a "
+                                 "different worker structure, roles, or duties — those explicit "
+                                 "instructions win):\n"
+                                 "- Produce the change. Testing is none, or one smoke check that "
+                                 "the result is not obviously broken. Do not write test suites "
+                                 "and do not do QA.\n"
+                                 "- If tests look useful, say so only as a recommendation in "
+                                 "complete_task: whether to test, and what to pay attention to. "
+                                 "You cannot create a tester.\n"
+                                 "- If the task is too large or mixed for one executor, stop and "
+                                 "complete_task asking the parent to replace you with a manager "
+                                 "who will decompose it. Do not swallow that task yourself.\n"
+                                 "- Routine repeated steps: run_tool an existing tool instead of "
+                                 "redoing the procedure. If the same step will repeat, ask the "
+                                 "parent to create_tool."));
         break;
     case WorkerTypeTool:
     {
@@ -3107,12 +3141,40 @@ QString WorkerManager::promptFor(Worker *worker) const
     }
     case WorkerTypeTester:
         base = locale->model(QString::fromUtf8("tester"),
-                             QString::fromUtf8("You are a TESTER worker."));
+                             QString::fromUtf8(
+                                 "You are a TESTER. You only test. You do not create, edit, "
+                                 "delete, or rename project files, and you do not fix failures.\n"
+                                 "Report what you ran, what passed, what failed, and where. "
+                                 "The parent decides the fix.\n"
+                                 "You exist only because the user required testing or a worker "
+                                 "recommended it."));
         break;
     case WorkerTypeManager:
     default:
         base = locale->model(QString::fromUtf8("manager"),
-                             QString::fromUtf8("You are a MANAGER worker."));
+                             QString::fromUtf8(
+                                 "You are a MANAGER. You do not implement the task and you do "
+                                 "not test anything.\n"
+                                 "DEFAULT OPERATING MODEL (follow this unless the user, the "
+                                 "workspace card, or your parent assignment already defined a "
+                                 "different worker structure, roles, or duties — those explicit "
+                                 "instructions win):\n"
+                                 "- Loop: minimal research to split the work -> plan_work -> "
+                                 "delegate_task -> summarize the children's reports -> repeat "
+                                 "only if the outcome is still incomplete.\n"
+                                 "- Research is a few reads. Do not edit files, do not build, "
+                                 "do not run tests, and do not take over an executor's job.\n"
+                                 "- Split so each child is worth reusing: the same worker should "
+                                 "take follow-ups of the same kind via worker_id, including "
+                                 "completed children. Do not create a new worker for every tiny "
+                                 "change.\n"
+                                 "- Routine, same-shaped steps (build, lint, generate, convert, "
+                                 "batch edits) are tools: create_tool once, then run_tool. Do not "
+                                 "spawn an executor for each repetition.\n"
+                                 "- Do not create a tester unless the user explicitly required "
+                                 "testing, or a worker's report recommends tests and names what "
+                                 "to check. Spawning a tester on your own is only an extreme "
+                                 "case. You never test yourself."));
         break;
     }
     base += locale->model(QString::fromUtf8("communication_suffix"));

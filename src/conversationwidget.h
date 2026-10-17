@@ -13,6 +13,7 @@
 
 class Agent;
 class QLabel;
+class QLineEdit;
 class QTimer;
 class QPlainTextEdit;
 class QProgressBar;
@@ -133,6 +134,7 @@ public:
     void setAuthorLabels(QString userAuthor, QString assistantAuthor);
     void showPermissionRequest(QString action, bool offerAlways = false);
     void hidePermissionRequest();
+    void showConsoleInput(QString transcript);
     void showContinuationRequest(QString error);
     void showToolBudgetRequest(int chunk);
     void showSubtreeBudgetRequest(QString text);
@@ -156,6 +158,7 @@ signals:
     void reportToParentRequested();
     void compactRequested();
     void permissionAnswered(bool approved, bool always, const QString &comment);
+    void consoleInputAnswered(const QString &line, bool sent);
     void continuationAnswered(bool retry);
     void subtreeBudgetAnswered(bool granted);
     void messageLinkActivated(const QUrl &url);
@@ -242,6 +245,7 @@ private:
     QWidget        *_inputHost;
     QWidget        *_permissionHost;
     QLabel         *_permissionLabel;
+    QLineEdit      *_consoleEdit;
     QPushButton    *_approveButton;
     QPushButton    *_alwaysButton;
     QPushButton    *_rejectButton;

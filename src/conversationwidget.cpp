@@ -15,6 +15,7 @@
 #include <QLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
@@ -387,6 +388,7 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     , _inputHost(0)
     , _permissionHost(0)
     , _permissionLabel(0)
+    , _consoleEdit(0)
     , _approveButton(0)
     , _alwaysButton(0)
     , _rejectButton(0)
@@ -497,6 +499,11 @@ ConversationWidget::ConversationWidget(QWidget *parent)
 
     _permissionLabel = new QLabel(this);
     _permissionLabel->setWordWrap(true);
+    _consoleEdit = new QLineEdit(this);
+    _consoleEdit->setPlaceholderText(tr("Ввод для консоли…"));
+    _consoleEdit->hide();
+    connect(_consoleEdit, SIGNAL(returnPressed()),
+            this, SLOT(sltPermissionApprove()));
     _approveButton = new QPushButton(tr("Разрешить"), this);
     _alwaysButton = new QPushButton(tr("Всегда"), this);
     _alwaysButton->setToolTip(tr("Разрешать эту программу во всём приложении, "
@@ -516,6 +523,7 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     permissionLayout->setContentsMargins(12, 10, 12, 10);
     permissionLayout->setSpacing(8);
     permissionLayout->addWidget(_permissionLabel);
+    permissionLayout->addWidget(_consoleEdit);
     permissionLayout->addLayout(permissionButtons);
 
     _permissionHost = new QWidget(this);
@@ -578,6 +586,15 @@ void ConversationWidget::retranslateUi()
     }
     if (_rejectButton)
         _rejectButton->setText(tr("Отклонить"));
+    if (_consoleEdit)
+        _consoleEdit->setPlaceholderText(tr("Ввод для консоли…"));
+    if (_promptMode == 5)
+    {
+        if (_approveButton)
+            _approveButton->setText(tr("Отправить"));
+        if (_rejectButton)
+            _rejectButton->setText(tr("Пропустить"));
+    }
 
     if (_contextLabel)
     {
@@ -973,6 +990,8 @@ void ConversationWidget::showPermissionRequest(QString action, bool offerAlways)
     }
     if (_rejectButton)
         _rejectButton->setText(tr("Отклонить"));
+    if (_consoleEdit)
+        _consoleEdit->hide();
     if (_permissionHost)
         _permissionHost->show();
 }
@@ -982,8 +1001,36 @@ void ConversationWidget::showPermissionRequest(QString action, bool offerAlways)
 void ConversationWidget::hidePermissionRequest()
 {
     _promptMode = 0;
+    if (_consoleEdit)
+        _consoleEdit->hide();
     if (_permissionHost)
         _permissionHost->hide();
+}
+
+//----------------------------------------------
+
+void ConversationWidget::showConsoleInput(QString transcript)
+{
+    _promptMode = 5;
+    QString tail = transcript;
+    if (tail.size() > 1200)
+        tail = tail.right(1200);
+    if (_permissionLabel)
+        _permissionLabel->setText(tr("Команда ждёт ввод в консоли:\n%1").arg(tail));
+    if (_consoleEdit)
+    {
+        _consoleEdit->clear();
+        _consoleEdit->show();
+        _consoleEdit->setFocus();
+    }
+    if (_approveButton)
+        _approveButton->setText(tr("Отправить"));
+    if (_alwaysButton)
+        _alwaysButton->setVisible(false);
+    if (_rejectButton)
+        _rejectButton->setText(tr("Пропустить"));
+    if (_permissionHost)
+        _permissionHost->show();
 }
 
 //----------------------------------------------
@@ -1004,6 +1051,8 @@ void ConversationWidget::showContinuationRequest(QString error)
     }
     if (_rejectButton)
         _rejectButton->setText(tr("Завершить"));
+    if (_consoleEdit)
+        _consoleEdit->hide();
     if (_permissionHost)
         _permissionHost->show();
 }
@@ -1025,6 +1074,8 @@ void ConversationWidget::showToolBudgetRequest(int chunk)
         _alwaysButton->setVisible(false);
     if (_rejectButton)
         _rejectButton->setText(tr("Завершить"));
+    if (_consoleEdit)
+        _consoleEdit->hide();
     if (_permissionHost)
         _permissionHost->show();
 }
@@ -1042,6 +1093,8 @@ void ConversationWidget::showSubtreeBudgetRequest(QString text)
         _alwaysButton->setVisible(false);
     if (_rejectButton)
         _rejectButton->setText(tr("Запретить"));
+    if (_consoleEdit)
+        _consoleEdit->hide();
     if (_permissionHost)
         _permissionHost->show();
 }
@@ -1058,7 +1111,15 @@ void ConversationWidget::sltToolBudgetExhausted(int chunk)
 void ConversationWidget::sltPermissionApprove()
 {
     const int mode = _promptMode;
+    QString line;
+    if (mode == 5 && _consoleEdit)
+        line = _consoleEdit->text();
     hidePermissionRequest();
+    if (mode == 5)
+    {
+        emit consoleInputAnswered(line, true);
+        return;
+    }
     if (mode == 4)
     {
         emit subtreeBudgetAnswered(true);
@@ -1081,7 +1142,15 @@ void ConversationWidget::sltPermissionApprove()
 void ConversationWidget::sltPermissionAlways()
 {
     const int mode = _promptMode;
+    QString line;
+    if (mode == 5 && _consoleEdit)
+        line = _consoleEdit->text();
     hidePermissionRequest();
+    if (mode == 5)
+    {
+        emit consoleInputAnswered(line, true);
+        return;
+    }
     if (mode == 4)
     {
         emit subtreeBudgetAnswered(true);
@@ -1105,6 +1174,11 @@ void ConversationWidget::sltPermissionReject()
 {
     const int mode = _promptMode;
     hidePermissionRequest();
+    if (mode == 5)
+    {
+        emit consoleInputAnswered(QString(), false);
+        return;
+    }
     if (mode == 4)
     {
         emit subtreeBudgetAnswered(false);
