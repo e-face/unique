@@ -2089,6 +2089,9 @@ void Worker::sltBusyChanged(bool busy)
         || _state == WorkerStateWaitingContinuation
         || _state == WorkerStateWaitingChildren)
         return;
+    // Пауза на решение по бюджету функций — не конец хода.
+    if (_session && _session->agent() && _session->agent()->isWaitingToolBudget())
+        return;
     QMetaObject::invokeMethod(this, "sltIdleAfterBusy", Qt::QueuedConnection);
 }
 
@@ -2102,7 +2105,8 @@ void Worker::sltIdleAfterBusy()
         || _state == WorkerStateWaitingContinuation
         || _state == WorkerStateWaitingChildren)
         return;
-    if (_session && _session->agent() && _session->agent()->isBusy())
+    if (_session && _session->agent()
+        && (_session->agent()->isBusy() || _session->agent()->isWaitingToolBudget()))
         return;
     if (isRoot())
     {

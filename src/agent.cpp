@@ -689,6 +689,9 @@ void Agent::resolveToolBudget(bool continueWork)
         _history.append(nudge);
     }
 
+    // Иначе сжатие контекста на этом ходе завершит агента, не запросив модель,
+    // и воркер отправит родителю промежуточный текст вместо продолжения.
+    _compactThenChat = true;
     setBusy(true);
     setPhase(PhaseChat);
     maybeOptimizeThenComplete();
