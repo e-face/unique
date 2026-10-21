@@ -87,6 +87,12 @@ public:
      */
     QString personName() const;
     void setPersonName(QString name);
+    /**
+     * @brief Короткое имя для журнала: имя человека, имя инструмента или роль.
+     */
+    QString shortName() const;
+    /** Автор следующего входящего сообщения, если это не родитель. */
+    void setIncomingAuthor(const QString &name);
     QString groupId() const;
     void setGroupId(QString id);
     GroupRole groupRole() const;
@@ -231,6 +237,7 @@ private:
     void pushTaskAnchor();
     bool answeredState(WorkerState state) const;
     void sendFollowUp(QString message);
+    void stampTurnAuthor();
     void noteParentTurnEnded();
     void onChildrenAnswered();
     QString composeParentReport() const;
@@ -246,6 +253,7 @@ private:
     QString       _task;
     QString       _title;
     QString       _personName;
+    QString       _incomingAuthor;
     QString       _groupId;
     GroupRole     _groupRole;
     QString       _llmProfileId;
@@ -271,6 +279,7 @@ private:
     QString       _pendingAlwaysKey;
     QList<Worker *> _touchedThisTurn;
     QStringList   _pendingFollowUps;
+    QStringList   _pendingAuthors;
     QString       _architecture;
     QList<WorkSubtask> _workPlan;
     QString       _toolName;

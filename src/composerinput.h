@@ -41,6 +41,7 @@ public:
     void setStopEnabled(bool on);
     bool isSendEnabled() const;
     void setComposerEnabled(bool on);
+    void setSchemaAvailable(bool on);
     void setReadOnly(bool on);
     void applyTheme(QString panel, QString input, QString text, QString border,
                     QString muted, QString accent);
@@ -50,6 +51,7 @@ signals:
     void sendClicked();
     void stopClicked();
     void plusClicked();
+    void schemaClicked();
     void removeAttachmentRequested(int index);
     void filesDropped(const QStringList &absolutePaths);
 
@@ -78,6 +80,7 @@ private:
     QPlainTextEdit *_editor;
     QLabel         *_capsHint;
     QToolButton    *_plusButton;
+    QPushButton    *_schemaButton;
     QPushButton    *_stopButton;
     QPushButton    *_sendButton;
     bool            _dropHighlight;

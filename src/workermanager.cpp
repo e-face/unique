@@ -160,7 +160,7 @@ QString WorkerManager::limitsSummaryFor(Worker *worker) const
         "Worker tree limits: your depth is %1 of max %2 (root = 0). ")
                        .arg(depth)
                        .arg(limit);
-    if (worker->type() == WorkerTypeManager)
+    if (worker->type() == WorkerTypeManager || worker->type() == WorkerTypeExecutor)
     {
         if (!canSpawnLeafUnder(worker))
         {
@@ -741,7 +741,7 @@ bool WorkerManager::destroyTool(QString id)
 bool WorkerManager::canSpawn(WorkerType parentType, WorkerType childType) const
 {
     Q_UNUSED(childType);
-    if (parentType == WorkerTypeManager)
+    if (parentType == WorkerTypeManager || parentType == WorkerTypeExecutor)
         return true;
     return false;
 }
@@ -761,8 +761,8 @@ Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QStr
     {
         if (error)
             *error = QString::fromUtf8(
-                "This worker cannot create children (group interlocutors may discuss and "
-                "act, but only the group chief / a manager may delegate tasks).");
+                "This worker cannot create children (only a manager or an executor "
+                "may delegate tasks).");
         return 0;
     }
     if (type == WorkerTypeTool)
@@ -944,11 +944,11 @@ Worker *WorkerManager::addGroupMember(Worker *chief, QString presetId, QString *
             *error = QString::fromUtf8("Chief worker is missing.");
         return 0;
     }
-    if (!chief->canSpawnChildren() && !chief->isRoot())
+    if (chief->type() != WorkerTypeManager && !chief->isRoot())
     {
         if (error)
             *error = QString::fromUtf8(
-                "Only the group chief (or root manager) can add group members.");
+                "Only a manager can add group members.");
         return 0;
     }
     if (chief->isGroupInterlocutor())
@@ -1326,7 +1326,20 @@ void WorkerManager::wakeGroupAwaiter(Worker *worker, QString message)
         emit groupAwaitFinished(id);
     const QString trimmed = message.trimmed();
     if (!trimmed.isEmpty())
+    {
+        if (!worker->groupId().isEmpty() && _groupDialogues.contains(worker->groupId()))
+        {
+            const GroupDialogue dialogue = _groupDialogues.value(worker->groupId());
+            QString author = tr("Группа");
+            Worker *speaker = currentSpeaker(dialogue);
+            if (speaker && speaker != worker)
+                author = speaker->shortName();
+            else if (worker->parentWorker())
+                author = worker->parentWorker()->shortName();
+            worker->setIncomingAuthor(author);
+        }
         worker->beginFollowUp(trimmed);
+    }
 }
 
 //----------------------------------------------
@@ -1435,6 +1448,13 @@ void WorkerManager::deliverGroupAction(Worker *worker, GroupDialogue *dialogue)
 
     _groupAwaiting.remove(worker->id());
     _groupAwaitResults.remove(worker->id());
+    QString author = tr("Группа");
+    Worker *speaker = currentSpeaker(*dialogue);
+    if (speaker && speaker != worker)
+        author = speaker->shortName();
+    else if (worker->parentWorker())
+        author = worker->parentWorker()->shortName();
+    worker->setIncomingAuthor(author);
     worker->beginFollowUp(out);
 }
 
@@ -2762,6 +2782,10 @@ static void addLlmRoleTools(WorkerManager *manager, Agent *agent, Worker *worker
             agent->addTool(new CompleteTaskTool(worker, agent));
         break;
     case WorkerTypeExecutor:
+        agent->addTool(new ListChildWorkersTool(worker, agent));
+        agent->addTool(new GetChildResultTool(worker, agent));
+        agent->addTool(new DelegateTaskTool(manager, worker, agent));
+        agent->addTool(new DismissChildWorkerTool(manager, worker, agent));
         agent->addTool(new ListToolsTool(manager, agent));
         agent->addTool(new RunToolTool(manager, worker, agent));
         agent->addTool(new CompleteTaskTool(worker, agent));
@@ -3118,10 +3142,14 @@ QString WorkerManager::promptFor(Worker *worker) const
                                  "and do not do QA.\n"
                                  "- If tests look useful, say so only as a recommendation in "
                                  "complete_task: whether to test, and what to pay attention to. "
-                                 "You cannot create a tester.\n"
-                                 "- If the task is too large or mixed for one executor, stop and "
-                                 "complete_task asking the parent to replace you with a manager "
-                                 "who will decompose it. Do not swallow that task yourself.\n"
+                                 "Create a tester only when the user required testing or a report "
+                                 "recommended it.\n"
+                                 "- If the task is too large for one pass, split it with "
+                                 "delegate_task: executor for a concrete piece, manager only when "
+                                 "that piece itself needs a team. Reuse a child via worker_id "
+                                 "when the work is the same kind. The app waits until every child "
+                                 "of the batch reports, then you continue. Do not complete_task "
+                                 "while children are still working.\n"
                                  "- Routine repeated steps: run_tool an existing tool instead of "
                                  "redoing the procedure. If the same step will repeat, ask the "
                                  "parent to create_tool."));

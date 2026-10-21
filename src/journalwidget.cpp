@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QRegExp>
 #include <QSaveFile>
 #include <QTimer>
 #include <QUrl>
@@ -552,16 +553,51 @@ QString JournalWidget::friendlyIngressBody(const QString &text, int ingress)
 
 //----------------------------------------------
 
-QString JournalWidget::ingressAuthorTitle(const QString &toLabel, int ingress)
+static QString shortNameFromLabel(const QString &label)
 {
-    const QString to = toLabel.trimmed().isEmpty() ? JournalWidget::tr("воркер") : toLabel;
-    if (ingress == AgentUserIngressAssignment)
-        return JournalWidget::tr("Задание → %1").arg(to);
-    if (ingress == AgentUserIngressFollowUp)
-        return JournalWidget::tr("Уточнение → %1").arg(to);
-    if (ingress == AgentUserIngressGroup)
-        return JournalWidget::tr("Группа → %1").arg(to);
-    return JournalWidget::tr("Пользователь → %1").arg(to);
+    QString name = label.trimmed();
+    const int dot = name.indexOf(QString::fromUtf8(" \xC2\xB7 "));
+    if (dot > 0)
+        return name.left(dot).trimmed();
+    const QString toolPrefix = QString::fromUtf8("Инструмент: ");
+    if (name.startsWith(toolPrefix))
+        name = name.mid(toolPrefix.size()).trimmed();
+    const int dash = name.indexOf(QString::fromUtf8(" \xE2\x80\x94 "));
+    if (dash > 0)
+        name = name.left(dash).trimmed();
+    return name;
+}
+
+//----------------------------------------------
+
+static QString firstJournalLine(const QString &text)
+{
+    QString t = text.trimmed();
+    t.replace(QChar('\r'), QChar('\n'));
+    const int nl = t.indexOf(QChar('\n'));
+    if (nl > 0)
+        t = t.left(nl);
+    t.replace(QRegExp(QString::fromUtf8("\\s+")), QString::fromUtf8(" "));
+    t = t.trimmed();
+    if (t.size() > 88)
+        t = t.left(85) + QString::fromUtf8("…");
+    return t;
+}
+
+//----------------------------------------------
+
+static QString exchangeTitle(const QString &from, const QString &to, const QString &heading)
+{
+    const QString author = from.trimmed().isEmpty()
+                           ? JournalWidget::tr("воркер")
+                           : from.trimmed();
+    const QString dest = to.trimmed().isEmpty()
+                         ? JournalWidget::tr("воркер")
+                         : to.trimmed();
+    const QString title = heading.trimmed();
+    if (title.isEmpty())
+        return QString::fromUtf8("%1 \xE2\x86\x92 %2").arg(author, dest);
+    return QString::fromUtf8("%1 \xE2\x86\x92 %2: %3").arg(author, dest, title);
 }
 
 //----------------------------------------------
@@ -719,7 +755,12 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
     // Постоянная запись: предыдущая временная остаётся в ленте как есть.
     _transient = 0;
     const QString who = author.trimmed().isEmpty() ? tr("Чат") : author.trimmed();
-    const QString colorKey = fromUser ? QString::fromUtf8("Пользователь") : who;
+    QString colorKey = who;
+    const int arrowAt = who.indexOf(QString::fromUtf8(" \xE2\x86\x92 "));
+    if (arrowAt > 0)
+        colorKey = who.left(arrowAt).trimmed();
+    if (fromUser)
+        colorKey = QString::fromUtf8("Пользователь");
 
     if (_lastPermanent
         && _lastPermanentAuthor == who
@@ -757,6 +798,8 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
     }
     bindTitleLink(bubble, workerId);
     _lastPermanent = qobject_cast<ChatMessageFrame *>(bubble);
+    if (_lastPermanent)
+        _lastPermanent->setPreview(QString());
     _lastPermanentAuthor = who;
     _lastPermanentFromUser = fromUser;
     ensureLiveActionAtEnd();
@@ -788,19 +831,38 @@ void JournalWidget::sltJournalUser(const QString &text)
     const int ingress = agent ? agent->lastUserIngress() : AgentUserIngressHuman;
     if (ingress == AgentUserIngressSystem)
         return;
-    const QString to = labelFor(sender());
-    const QString author = ingressAuthorTitle(to, ingress);
+    QString from = agent ? agent->turnAuthor() : QString();
+    if (from.isEmpty())
+    {
+        if (ingress == AgentUserIngressHuman)
+            from = tr("Пользователь");
+        else if (ingress == AgentUserIngressGroup)
+            from = tr("Группа");
+        else
+            from = tr("Родитель");
+    }
+    const QString to = shortNameFromLabel(labelFor(sender()));
     const QString body = friendlyIngressBody(text, ingress);
     if (body.trimmed().isEmpty())
         return;
-    addPermanent(author, body, ingress == AgentUserIngressHuman, workerIdFor(sender()));
+    addPermanent(exchangeTitle(from, to, firstJournalLine(body)), body,
+                 ingress == AgentUserIngressHuman, workerIdFor(sender()));
 }
 
 //----------------------------------------------
 
 void JournalWidget::sltJournalAssistant(const QString &text)
 {
-    addPermanent(labelFor(sender()), text, false, workerIdFor(sender()));
+    Agent *agent = qobject_cast<Agent *>(sender());
+    const QString from = shortNameFromLabel(labelFor(sender()));
+    QString to = agent ? agent->journalReplyTo() : QString();
+    if (to.isEmpty())
+        to = tr("Пользователь");
+    const QString body = text.trimmed();
+    if (body.isEmpty())
+        return;
+    addPermanent(exchangeTitle(from, to, firstJournalLine(body)), text, false,
+                 workerIdFor(sender()));
 }
 
 //----------------------------------------------

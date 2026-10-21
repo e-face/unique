@@ -1,7 +1,6 @@
 #include "workergraphwidget.h"
 //----------------------------------------------
 #include "applocale.h"
-#include "appicons.h"
 #include "appsettings.h"
 #include "worker.h"
 #include "workermanager.h"
@@ -13,17 +12,16 @@
 #include <QContextMenuEvent>
 #include <QCursor>
 #include <QFont>
-#include <QFontMetrics>
 #include <QMenu>
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
-#include <QGraphicsPixmapItem>
-#include <QGraphicsRectItem>
+#include <QGraphicsPathItem>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPalette>
 #include <QPen>
 #include <QSet>
@@ -32,29 +30,8 @@
 
 //----------------------------------------------
 
-static const qreal kNodeWidth  = 200;
-static const qreal kNodeHeight = 96;
-static const qreal kHGap       = 28;
-static const qreal kVGap       = 48;
-static const qreal kIconSize   = 20;
-static const qreal kPad        = 6;
-
-//----------------------------------------------
-
-static QFont nodeFont(const QWidget *widget)
-{
-    QFont f = widget ? widget->font() : QFont();
-    const int pt = f.pointSize();
-    if (pt > 0)
-        f.setPointSize(qMax(6, (pt * 2 + 1) / 3));
-    else
-    {
-        const int px = f.pixelSize();
-        if (px > 0)
-            f.setPixelSize(qMax(8, (px * 2 + 1) / 3));
-    }
-    return f;
-}
+static const qreal kHGap = 28;
+static const qreal kVGap = 48;
 
 //----------------------------------------------
 
@@ -140,65 +117,28 @@ QString WorkerGraphWidget::stateLabelFor(WorkerState state)
 
 //----------------------------------------------
 
-static QColor stateColor(WorkerState state)
-{
-    const bool light = AppSettings::instance()->isLightTheme();
-    switch (state)
-    {
-    case WorkerStateRunning:
-        return QColor(QString::fromUtf8(light ? "#dbeafe" : "#1a5580"));
-    case WorkerStateWaitingApproval:
-        return QColor(QString::fromUtf8(light ? "#fee2e2" : "#b44532"));
-    case WorkerStateWaitingChildren:
-        return QColor(QString::fromUtf8(light ? "#ede9fe" : "#3d2e55"));
-    case WorkerStateWaitingContinuation:
-        return QColor(QString::fromUtf8(light ? "#ffedd5" : "#d9785c"));
-    case WorkerStateCompleted:
-        return QColor(QString::fromUtf8(light ? "#dcfce7" : "#2d5640"));
-    case WorkerStateFailed:
-        return QColor(QString::fromUtf8(light ? "#fecaca" : "#5a3232"));
-    case WorkerStateQueued:
-        return QColor(QString::fromUtf8(light ? "#fef3c7" : "#4a4632"));
-    case WorkerStateIdle:
-    default:
-        return QColor(QString::fromUtf8(light ? "#f3f4f6" : "#4a4a4a"));
-    }
-}
-
-//----------------------------------------------
-
 static QColor stateBorder(WorkerState state)
 {
     switch (state)
     {
     case WorkerStateRunning:
-        return QColor(QString::fromUtf8("#5aa2ff"));
+        return QColor(QString::fromUtf8("#7ea0c4"));
     case WorkerStateWaitingApproval:
-        return QColor(QString::fromUtf8("#e07a5f"));
+        return QColor(QString::fromUtf8("#d09a90"));
     case WorkerStateWaitingChildren:
-        return QColor(QString::fromUtf8("#c586c0"));
+        return QColor(QString::fromUtf8("#b7a6c8"));
     case WorkerStateWaitingContinuation:
-        return QColor(QString::fromUtf8("#e8a090"));
+        return QColor(QString::fromUtf8("#d4b59a"));
     case WorkerStateCompleted:
-        return QColor(QString::fromUtf8("#6a9955"));
+        return QColor(QString::fromUtf8("#8aaf86"));
     case WorkerStateFailed:
-        return QColor(QString::fromUtf8("#f44747"));
+        return QColor(QString::fromUtf8("#d08a8a"));
     case WorkerStateQueued:
-        return QColor(QString::fromUtf8("#d7ba7d"));
+        return QColor(QString::fromUtf8("#c8b88a"));
     case WorkerStateIdle:
     default:
-        return QColor(QString::fromUtf8("#8a8a8a"));
+        return AppSettings::instance()->borderColor();
     }
-}
-
-//----------------------------------------------
-
-static QString elideLine(QString text, const QFontMetrics &fm, int maxWidth)
-{
-    text = text.simplified();
-    if (text.isEmpty())
-        return text;
-    return fm.elidedText(text, Qt::ElideRight, maxWidth);
 }
 
 //----------------------------------------------
@@ -218,6 +158,7 @@ WorkerGraphWidget::WorkerGraphWidget(QWidget *parent)
     setFocusPolicy(Qt::StrongFocus);
     setToolTip(tr("Колёсико мыши — масштаб, перетаскивание — сдвиг, 0 — сброс"));
     setFrameShape(QFrame::NoFrame);
+    setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
     applyTheme();
     connect(_scene, SIGNAL(selectionChanged()), this, SLOT(sltSelectionChanged()));
     connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
@@ -272,6 +213,7 @@ void WorkerGraphWidget::rebuild(WorkerManager *manager)
     if (_rebuilding)
         return;
     _rebuilding = true;
+    _laidOut.clear();
     _scene->blockSignals(true);
     _scene->clear();
     _scene->blockSignals(false);
@@ -314,15 +256,16 @@ void WorkerGraphWidget::rebuild(WorkerManager *manager)
                 continue;
             const QRectF r(member->property("graphX").toReal() - 10,
                            member->property("graphY").toReal() - 10,
-                           kNodeWidth + 20, kNodeHeight + 20);
+                           SchemaNodeItem::cardWidth() + 20, SchemaNodeItem::cardHeight() + 20);
             box = any ? box.united(r) : r;
             any = true;
         }
         if (!any)
             continue;
         QPen pen(AppSettings::instance()->accentColor(), 1.6, Qt::DashLine);
-        QGraphicsRectItem *frame = _scene->addRect(box.adjusted(-4, -4, 4, 4),
-                                                   pen, Qt::NoBrush);
+        QPainterPath framePath;
+        framePath.addRoundedRect(box.adjusted(-4, -4, 4, 4), 12, 12);
+        QGraphicsPathItem *frame = _scene->addPath(framePath, pen, Qt::NoBrush);
         frame->setZValue(0);
         frame->setFlag(QGraphicsItem::ItemIsSelectable, false);
     }
@@ -343,7 +286,7 @@ qreal WorkerGraphWidget::layoutTools(qreal left, qreal top)
 
     const qreal columnLeft = left + kHGap;
     const qreal bottom = qMax(_scene->itemsBoundingRect().bottom(),
-                              top + 30 + tools.size() * (kNodeHeight + kVGap / 2));
+                              top + 30 + tools.size() * (SchemaNodeItem::cardHeight() + kVGap / 2));
     QPen separator(AppSettings::instance()->borderColor(), 1.2, Qt::DashLine);
     QGraphicsLineItem *line = _scene->addLine(left, top - 10, left, bottom, separator);
     line->setZValue(0);
@@ -352,9 +295,7 @@ qreal WorkerGraphWidget::layoutTools(qreal left, qreal top)
     QFont bold = font();
     bold.setBold(true);
     header->setFont(bold);
-    header->setDefaultTextColor(AppSettings::instance()->isLightTheme()
-                                ? AppSettings::instance()->textColor()
-                                : QColor(QString::fromUtf8("#d7ba7d")));
+    header->setDefaultTextColor(AppSettings::instance()->textColor());
     header->setPos(columnLeft, top - 6);
     header->setZValue(2);
 
@@ -362,9 +303,9 @@ qreal WorkerGraphWidget::layoutTools(qreal left, qreal top)
     foreach (Worker *tool, tools)
     {
         addNode(tool, columnLeft, y);
-        y += kNodeHeight + kVGap / 2;
+        y += SchemaNodeItem::cardHeight() + kVGap / 2;
     }
-    return kNodeWidth + kHGap;
+    return SchemaNodeItem::cardWidth() + kHGap;
 }
 
 //----------------------------------------------
@@ -372,12 +313,12 @@ qreal WorkerGraphWidget::layoutTools(qreal left, qreal top)
 qreal WorkerGraphWidget::layoutWorker(Worker *worker, qreal left, qreal top)
 {
     if (!worker)
-        return kNodeWidth;
+        return SchemaNodeItem::cardWidth();
 
     if (worker->children().isEmpty())
     {
         addNode(worker, left, top);
-        return kNodeWidth;
+        return SchemaNodeItem::cardWidth();
     }
 
     // Собеседников группы кладём рядом друг с другом, чтобы пунктирная
@@ -399,7 +340,7 @@ qreal WorkerGraphWidget::layoutWorker(Worker *worker, qreal left, qreal top)
     ordered += others;
 
     qreal x = left;
-    qreal childTop = top + kNodeHeight + kVGap;
+    qreal childTop = top + SchemaNodeItem::cardHeight() + kVGap;
     qreal total = 0;
     foreach (Worker *child, ordered)
     {
@@ -410,11 +351,11 @@ qreal WorkerGraphWidget::layoutWorker(Worker *worker, qreal left, qreal top)
     if (total > 0)
         total -= kHGap;
 
-    const qreal nodeLeft = left + qMax(qreal(0), (total - kNodeWidth) / 2);
+    const qreal nodeLeft = left + qMax(qreal(0), (total - SchemaNodeItem::cardWidth()) / 2);
     addNode(worker, nodeLeft, top);
     foreach (Worker *child, ordered)
         addEdge(worker, child);
-    return qMax(total, kNodeWidth);
+    return qMax(total, SchemaNodeItem::cardWidth());
 }
 
 //----------------------------------------------
@@ -427,54 +368,68 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
     worker->setProperty("graphX", x);
     worker->setProperty("graphY", y);
 
-    QPen border(stateBorder(worker->state()), 2);
+    QString caption;
+    if (worker->isRoot())
+        caption = tr("Главный менеджер");
+    else
+    {
+        switch (worker->type())
+        {
+        case WorkerTypeExecutor:
+            caption = tr("Исполнитель");
+            break;
+        case WorkerTypeTester:
+            caption = tr("Тестировщик");
+            break;
+        case WorkerTypeTool:
+            caption = tr("Инструмент");
+            break;
+        case WorkerTypeManager:
+        default:
+            caption = tr("Менеджер");
+            break;
+        }
+    }
+    if (worker->isGroupInterlocutor())
+        caption += tr(" · собеседник");
+    else if (worker->isGroupChief())
+        caption += tr(" · группа");
+
+    QString title = worker->personName().trimmed();
     if (worker->isTool())
-        border.setStyle(Qt::DotLine);
-    // Геометрия сразу в координатах сцены — как раньше: так клики, рёбра
-    // и itemsBoundingRect снова совпадают.
-    QGraphicsRectItem *rect = _scene->addRect(x, y, kNodeWidth, kNodeHeight,
-                                              border,
-                                              QBrush(stateColor(worker->state())));
-    rect->setFlag(QGraphicsItem::ItemIsSelectable, true);
-    rect->setData(0, worker->id());
-    rect->setCursor(Qt::PointingHandCursor);
-    rect->setZValue(1);
+    {
+        const QString name = worker->toolName().simplified();
+        if (!name.isEmpty())
+            title = name;
+    }
+    if (title.isEmpty())
+        title = worker->displayLabel().simplified();
 
-    const QFont labelFont = nodeFont(this);
-    const QFontMetrics fm(labelFont);
-    const int textMaxW = int(kNodeWidth - kPad * 3 - kIconSize);
-
-    QStringList lines;
-    lines << typeLabelFor(worker);
     const QString profileName = profileLabel(worker);
+    QStringList extra;
     if (!profileName.isEmpty())
-        lines << elideLine(tr("модель: %1").arg(profileName), fm, textMaxW);
+        extra << tr("модель: %1").arg(profileName);
+
+    QString purpose;
     QString tip;
     if (worker->isTool())
     {
-        QString name = worker->toolName().simplified();
-        if (!name.isEmpty())
-            lines << elideLine(name, fm, textMaxW);
         const bool busy = _manager && _manager->toolBusy(worker);
-        QString status = busy ? tr("занят") : tr("свободен");
+        purpose = busy ? tr("занят") : tr("свободен");
         const int queued = _manager ? _manager->toolQueueLength(worker) : 0;
         if (queued > 0)
-            status += tr(", в очереди: %1").arg(queued);
-        lines << status;
-        QString purpose = worker->toolPurpose().simplified();
-        if (!purpose.isEmpty())
-            lines << elideLine(purpose, fm, textMaxW);
+            purpose += tr(", в очереди: %1").arg(queued);
+        const QString toolPurpose = worker->toolPurpose().simplified();
+        if (!toolPurpose.isEmpty())
+            extra << toolPurpose;
         tip = worker->toolPurpose().trimmed();
-        if (!tip.isEmpty())
-            tip += QString::fromUtf8("\n\n");
-        tip += tr("Правый клик — удалить инструмент");
     }
     else
     {
-        QString task = worker->displayLabel();
-        if (!task.isEmpty() && !worker->isRoot())
-            lines << elideLine(task, fm, textMaxW);
-        lines << stateLabelFor(worker->state());
+        purpose = stateLabelFor(worker->state());
+        const QString task = worker->displayLabel().simplified();
+        if (!task.isEmpty() && !worker->isRoot() && task != title)
+            extra << task;
         tip = worker->displayLabel();
         if (!profileName.isEmpty())
         {
@@ -482,59 +437,31 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
                 tip += QString::fromUtf8("\n");
             tip += tr("Профиль: %1").arg(profileName);
         }
-        if (!tip.isEmpty())
-            tip += QString::fromUtf8("\n");
-        tip += tr("Правый клик — сменить профиль модели");
     }
-    QList<Worker *> waiting = worker->unfinishedChildren();
-    if (!waiting.isEmpty() && lines.size() < 5)
+
+    const QList<Worker *> waiting = worker->unfinishedChildren();
+    if (!waiting.isEmpty())
     {
         QStringList names;
         foreach (Worker *child, waiting)
             names.append(typeLabelFor(child));
-        lines << elideLine(tr("ждёт: %1").arg(names.join(tr(", "))),
-                           fm, textMaxW);
+        extra << tr("ждёт: %1").arg(names.join(tr(", ")));
     }
-    while (lines.size() > 5)
-        lines.removeLast();
 
+    SchemaNodeItem *node = new SchemaNodeItem(worker->isRoot());
+    node->setPos(x, y);
+    node->setMovable(false);
+    node->setLinkingEnabled(false);
+    node->setWorkerId(worker->id());
+    node->setBorderColor(stateBorder(worker->state()));
+    node->setWorkerType(worker->type(), caption);
+    node->setRole(title);
+    node->setPurpose(purpose);
+    node->setExtraLines(extra);
     if (!tip.trimmed().isEmpty())
-        rect->setToolTip(tip);
-
-    const QIcon icon = AppIcons::forWorkerType(worker->type());
-    const QPixmap pm = icon.pixmap(int(kIconSize), int(kIconSize));
-    if (!pm.isNull())
-    {
-        QGraphicsPixmapItem *pic = _scene->addPixmap(pm);
-        pic->setPos(x + kPad, y + kPad);
-        pic->setZValue(2);
-        pic->setFlag(QGraphicsItem::ItemIsSelectable, false);
-        pic->setData(0, worker->id());
-    }
-
-    QGraphicsTextItem *label = _scene->addText(lines.join(QChar('\n')));
-    label->setFont(labelFont);
-    label->setTextWidth(textMaxW);
-    label->setPos(x + kPad * 2 + kIconSize, y + kPad - 2);
-    label->setDefaultTextColor(AppSettings::instance()->isLightTheme()
-                               ? AppSettings::instance()->textColor()
-                               : QColor(QString::fromUtf8("#f2f2f2")));
-    label->setZValue(2);
-    label->setFlag(QGraphicsItem::ItemIsSelectable, false);
-    label->setData(0, worker->id());
-    // Обрезаем текст по высоте узла: иначе document раздувает label за рамку.
-    const qreal maxLabelH = kNodeHeight - kPad * 2 + 4;
-    if (label->boundingRect().height() > maxLabelH)
-    {
-        QString shorter = lines.join(QChar('\n'));
-        while (lines.size() > 1
-               && label->boundingRect().height() > maxLabelH)
-        {
-            lines.removeLast();
-            shorter = lines.join(QChar('\n'));
-            label->setPlainText(shorter);
-        }
-    }
+        node->setToolTip(tip);
+    _scene->addItem(node);
+    _laidOut.insert(worker, node);
 }
 
 //----------------------------------------------
@@ -543,13 +470,13 @@ void WorkerGraphWidget::addEdge(Worker *parent, Worker *child)
 {
     if (!parent || !child)
         return;
-    const qreal x1 = parent->property("graphX").toReal() + kNodeWidth / 2;
-    const qreal y1 = parent->property("graphY").toReal() + kNodeHeight;
-    const qreal x2 = child->property("graphX").toReal() + kNodeWidth / 2;
-    const qreal y2 = child->property("graphY").toReal();
-    QGraphicsLineItem *line = _scene->addLine(x1, y1, x2, y2,
-                                              QPen(AppSettings::instance()->borderColor(), 1.5));
-    line->setZValue(0);
+    SchemaNodeItem *from = _laidOut.value(parent, 0);
+    SchemaNodeItem *to = _laidOut.value(child, 0);
+    if (!from || !to)
+        return;
+    SchemaEdgeItem *edge = new SchemaEdgeItem(from, to);
+    edge->setFlag(QGraphicsItem::ItemIsSelectable, false);
+    _scene->addItem(edge);
 }
 
 //----------------------------------------------

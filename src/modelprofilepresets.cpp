@@ -51,6 +51,53 @@ QList<ModelProfilePreset> knownModelProfilePresets()
                        QString::fromUtf8(
                            "Alias of Flash: text + image input (routes to V4.1-Flash)"));
 
+    list << makePreset(QString::fromUtf8("GigaChat"), QString::fromUtf8("GigaChat"),
+                       WorkerTaskKindLlm, QString::fromUtf8("https://api.giga.chat/v1"),
+                       QString::fromUtf8("GigaChat"), QString(), QString(),
+                       QString::fromUtf8(
+                           "Chat model. Token field is a short-lived access token, about 30 minutes."));
+    list << makePreset(QString::fromUtf8("GigaChat"), QString::fromUtf8("GigaChat Pro"),
+                       WorkerTaskKindLlm, QString::fromUtf8("https://api.giga.chat/v1"),
+                       QString::fromUtf8("GigaChat-Pro"), QString(), QString(),
+                       QString::fromUtf8(
+                           "Stronger GigaChat chat model. Token is a short-lived access token."));
+    list << makePreset(QString::fromUtf8("GigaChat"), QString::fromUtf8("GigaChat Max"),
+                       WorkerTaskKindLlm, QString::fromUtf8("https://api.giga.chat/v1"),
+                       QString::fromUtf8("GigaChat-Max"), QString(), QString(),
+                       QString::fromUtf8(
+                           "Largest GigaChat chat model. Token is a short-lived access token."));
+    list << makePreset(QString::fromUtf8("GigaChat"), QString::fromUtf8("GigaChat 2"),
+                       WorkerTaskKindLlm, QString::fromUtf8("https://api.giga.chat/v1"),
+                       QString::fromUtf8("GigaChat-2"), QString(), QString(),
+                       QString::fromUtf8("GigaChat 2 chat model. Token is a short-lived access token."));
+    list << makePreset(QString::fromUtf8("GigaChat"), QString::fromUtf8("GigaChat 2 Pro"),
+                       WorkerTaskKindLlm, QString::fromUtf8("https://api.giga.chat/v1"),
+                       QString::fromUtf8("GigaChat-2-Pro"), QString(), QString(),
+                       QString::fromUtf8("GigaChat 2 Pro. Token is a short-lived access token."));
+    list << makePreset(QString::fromUtf8("GigaChat"), QString::fromUtf8("GigaChat 2 Max"),
+                       WorkerTaskKindLlm, QString::fromUtf8("https://api.giga.chat/v1"),
+                       QString::fromUtf8("GigaChat-2-Max"), QString(), QString(),
+                       QString::fromUtf8("GigaChat 2 Max. Token is a short-lived access token."));
+
+    list << makePreset(QString::fromUtf8("Alice AI"), QString::fromUtf8("Alice AI LLM"),
+                       WorkerTaskKindLlm,
+                       QString::fromUtf8("https://ai.api.cloud.yandex.net/v1"),
+                       QString::fromUtf8("gpt://FOLDER_ID/aliceai-llm/latest"),
+                       QString(), QString(),
+                       QString::fromUtf8(
+                           "Yandex Alice AI. Replace FOLDER_ID in the model id with the AI Studio folder id."));
+
+    list << makePreset(QString::fromUtf8("Cotype"), QString::fromUtf8("Cotype Pro 2"),
+                       WorkerTaskKindLlm, QString::fromUtf8("https://HOST:8000/v1"),
+                       QString::fromUtf8("cotype_pro_2"), QString(), QString(),
+                       QString::fromUtf8(
+                           "MTS Cotype Pro. Replace HOST with the stand address."));
+    list << makePreset(QString::fromUtf8("Cotype"), QString::fromUtf8("Cotype"),
+                       WorkerTaskKindLlm, QString::fromUtf8("https://HOST:8000/v1"),
+                       QString::fromUtf8("cotype"), QString(), QString(),
+                       QString::fromUtf8(
+                           "MTS Cotype. Replace HOST with the stand address."));
+
     list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("GPT-4.1"),
                        WorkerTaskKindLlm, QString::fromUtf8("https://api.openai.com/v1"),
                        QString::fromUtf8("gpt-4.1"));

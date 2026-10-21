@@ -95,7 +95,6 @@ private:
     static QString toolArgsExcerpt(const QString &name, const QString &arguments);
     QString elideLiveAction(const QString &text) const;
     static QString friendlyIngressBody(const QString &text, int ingress);
-    static QString ingressAuthorTitle(const QString &toLabel, int ingress);
     void setAgentLiveAction(QObject *agent, const QString &action);
     void clearAgentLiveAction(QObject *agent);
     void rebuildLiveActionList();

@@ -6,6 +6,7 @@
 #include "markdownformatter.h"
 //----------------------------------------------
 #include <QAbstractTextDocumentLayout>
+#include <QApplication>
 #include <QColor>
 #include <QDesktopServices>
 #include <QEvent>
@@ -242,6 +243,14 @@ void ChatMessageFrame::setTitleLink(QString url)
 
 //----------------------------------------------
 
+void ChatMessageFrame::setPreview(QString preview)
+{
+    _preview = preview.trimmed();
+    applyCollapsed();
+}
+
+//----------------------------------------------
+
 void ChatMessageFrame::sltAnchorClicked(const QUrl &url)
 {
     if (!url.isValid())
@@ -401,13 +410,17 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     , _contextLimitTokens(0)
     , _contextCompacting(false)
 {
-    _contextLabel = new QLabel(tr("Контекст: —"), this);
+    _contextLabel = new QLabel(this);
+    _contextLabel->hide();
     _contextBar = new QProgressBar(this);
     _contextBar->setRange(0, 1000);
     _contextBar->setValue(0);
-    _contextBar->setTextVisible(false);
-    _contextBar->setFixedHeight(8);
-    _contextBar->setMaximumWidth(220);
+    _contextBar->setTextVisible(true);
+    _contextBar->setAlignment(Qt::AlignCenter);
+    _contextBar->setFixedHeight(18);
+    _contextBar->setMinimumWidth(72);
+    _contextBar->setMaximumWidth(160);
+    _contextBar->setFormat(QString::fromUtf8("—"));
 
     _activityTimer = new QTimer(this);
     _activityTimer->setInterval(1000);
@@ -436,7 +449,7 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     contextRow->setContentsMargins(12, 10, 12, 8);
     contextRow->setSpacing(8);
     contextRow->addWidget(_contextBar);
-    contextRow->addWidget(_contextLabel, 1);
+    contextRow->addStretch(1);
     contextRow->addWidget(_compactButton);
     contextRow->addWidget(_interruptButton);
     contextRow->addWidget(_reportButton);
@@ -596,32 +609,8 @@ void ConversationWidget::retranslateUi()
             _rejectButton->setText(tr("Пропустить"));
     }
 
-    if (_contextLabel)
-    {
-        if (_contextCompacting)
-            _contextLabel->setText(tr("Сжатие контекста — сохраняем суть беседы…"));
-        else if (_contextLimitTokens <= 0 && _contextUsedTokens > 0)
-        {
-            _contextLabel->setText(
-                tr("Контекст: %1 ток. (лимит неизвестен)").arg(_contextUsedTokens));
-        }
-        else if (_contextLimitTokens <= 0)
-            _contextLabel->setText(tr("Контекст: —"));
-        else
-        {
-            const int permille = (int)qBound(qint64(0),
-                                            qint64(_contextUsedTokens) * 1000
-                                                / qint64(_contextLimitTokens),
-                                            qint64(1000));
-            const int percent = (permille + 5) / 10;
-            const int reserve = qMax(0, _contextLimitTokens - _contextUsedTokens);
-            _contextLabel->setText(tr("Контекст: %1 / %2 ток. (%3%) · запас %4")
-                                   .arg(_contextUsedTokens)
-                                   .arg(_contextLimitTokens)
-                                   .arg(percent)
-                                   .arg(reserve));
-        }
-    }
+    if (_contextBar)
+        refreshContextBar();
 
     // Подписи пузырей («Функция», «Задание» …) — по kind, не по сохранённому языку.
     refreshDisplayTitles();
@@ -1308,7 +1297,8 @@ void ConversationWidget::applyTheme()
                             : QString::fromUtf8("#8f3424");
     setStyleSheet(QString::fromUtf8(
         "ConversationWidget { background:%1; color:%2; }"
-        "QProgressBar { background:%3; border:none; border-radius:6px; }"
+        "QProgressBar { background:%3; color:%2; border:none; border-radius:6px;"
+        "  text-align:center; min-height:16px; max-height:18px; }"
         "QProgressBar::chunk { background:%4; border-radius:6px; }"
         "QScrollArea { background:%1; border:none; }"
         "QWidget#messagesHost { background:%1; }"
@@ -1343,6 +1333,8 @@ void ConversationWidget::applyTheme()
                       .replace(QString::fromUtf8("%PERMBTN%"), permBtn));
 
     applyChatLiveActionStyle();
+    if (_contextBar)
+        refreshContextBar();
 
     if (_messagesLayout)
     {
@@ -1502,25 +1494,62 @@ void ConversationWidget::sltContextUsageChanged(int usedTokens, int limitTokens)
     _contextUsedTokens = usedTokens;
     _contextLimitTokens = limitTokens;
     _contextCompacting = false;
+    refreshContextBar();
+}
 
-    if (limitTokens <= 0)
+//----------------------------------------------
+
+static QFont contextBarFont()
+{
+    QFont font = QApplication::font();
+    if (font.pointSize() > 0)
+        font.setPointSize(qMax(6, (font.pointSize() * 2) / 3));
+    else if (font.pixelSize() > 0)
+        font.setPixelSize(qMax(8, (font.pixelSize() * 2) / 3));
+    return font;
+}
+
+//----------------------------------------------
+
+void ConversationWidget::refreshContextBar()
+{
+    if (!_contextBar)
+        return;
+
+    const QFont font = contextBarFont();
+    _contextBar->setFont(font);
+    QString fontCss;
+    if (font.pointSize() > 0)
+        fontCss = QString::number(font.pointSize()) + QString::fromUtf8("pt");
+    else if (font.pixelSize() > 0)
+        fontCss = QString::number(font.pixelSize()) + QString::fromUtf8("px");
+    else
+        fontCss = QString::fromUtf8("6pt");
+
+    const int used = qMax(0, _contextUsedTokens);
+    const int limit = qMax(0, _contextLimitTokens);
+    const int usedK = (used + 500) / 1000;
+    QString text;
+    int percent = 0;
+    if (limit <= 0)
     {
         _contextBar->setValue(0);
-        _contextLabel->setText(tr("Контекст: %1 ток. (лимит неизвестен)").arg(usedTokens));
-        return;
+        text = used > 0
+               ? QString::number(usedK) + QString::fromUtf8("k/—")
+               : QString::fromUtf8("—");
     }
-
-    const int permille = (int)qBound(qint64(0),
-                                    qint64(usedTokens) * 1000 / qint64(limitTokens),
-                                    qint64(1000));
-    _contextBar->setValue(permille);
-    const int percent = (permille + 5) / 10;
-    const int reserve = qMax(0, limitTokens - usedTokens);
-    _contextLabel->setText(tr("Контекст: %1 / %2 ток. (%3%) · запас %4")
-                           .arg(usedTokens)
-                           .arg(limitTokens)
-                           .arg(percent)
-                           .arg(reserve));
+    else
+    {
+        const int limitK = (limit + 500) / 1000;
+        const int permille = (int)qBound(qint64(0),
+                                        qint64(used) * 1000 / qint64(limit),
+                                        qint64(1000));
+        percent = (permille + 5) / 10;
+        _contextBar->setValue(permille);
+        text = QString::number(usedK) + QString::fromUtf8("k/")
+               + QString::number(limitK) + QString::fromUtf8("k");
+    }
+    _contextBar->setFormat(text);
 
     QString chunk = QString::fromUtf8("#26a69a");
     if (percent >= 90)
@@ -1532,10 +1561,13 @@ void ConversationWidget::sltContextUsageChanged(int usedTokens, int limitTokens)
     const QString track = AppSettings::instance()->isLightTheme()
                           ? QString::fromUtf8("#e5e5e5")
                           : QString::fromUtf8("#5a5a5a");
+    const QString ink = AppSettings::instance()->textColor().name();
     _contextBar->setStyleSheet(
-        QString::fromUtf8("QProgressBar { background:%2; border:none; border-radius:4px; }"
-                            "QProgressBar::chunk { background:%1; border-radius:4px; }")
-        .arg(chunk, track));
+        QString::fromUtf8("QProgressBar { background:%2; color:%3; border:none;"
+                          " border-radius:4px; text-align:center; font-size:%4;"
+                          " min-height:16px; max-height:18px; }"
+                          "QProgressBar::chunk { background:%1; border-radius:4px; }")
+        .arg(chunk, track, ink, fontCss));
 }
 
 //----------------------------------------------
@@ -1544,10 +1576,7 @@ void ConversationWidget::sltCompactingChanged(bool compacting)
 {
     _contextCompacting = compacting;
     if (compacting)
-    {
-        _contextLabel->setText(tr("Сжатие контекста — сохраняем суть беседы…"));
         setActivity(tr("Сжатие контекста"));
-    }
     else
     {
         if (_agent && _agent->isBusy())
@@ -1557,7 +1586,7 @@ void ConversationWidget::sltCompactingChanged(bool compacting)
         else if (_contextUsedTokens > 0)
             sltContextUsageChanged(_contextUsedTokens, _contextLimitTokens);
         else if (_contextLabel)
-            _contextLabel->setText(tr("Контекст: —"));
+            refreshContextBar();
     }
 }
 
@@ -1869,9 +1898,11 @@ void ConversationWidget::removeBubble(QWidget *bubble)
 void ConversationWidget::setContextRowVisible(bool visible)
 {
     if (_contextLabel)
-        _contextLabel->setVisible(visible);
+        _contextLabel->hide();
     if (_contextBar)
         _contextBar->setVisible(visible);
     if (_compactButton)
         _compactButton->setVisible(visible);
+    if (_interruptButton)
+        _interruptButton->setVisible(visible);
 }

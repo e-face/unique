@@ -719,7 +719,8 @@ QString DelegateTaskTool::name() const
 QString DelegateTaskTool::description() const
 {
     return QString::fromUtf8(
-        "Give work to a direct child. plan_work first. simple -> executor, complex -> manager "
+        "Give work to a direct child. Managers call plan_work first; executors delegate "
+        "directly. simple -> executor, complex -> manager "
         "(depth limits are in your first message). Prefer worker_id of a child you already "
         "have, including COMPLETED children, whenever the new work is the same kind. Create "
         "a new worker only for a new role. type=tester only if the user required testing or "

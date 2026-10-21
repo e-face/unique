@@ -35,6 +35,7 @@ class QThread;
 class QTimer;
 class SessionTabBar;
 class SettingsPage;
+class TeamSchemaDialog;
 class Worker;
 class WorkerGraphWidget;
 class WorkerManager;
@@ -109,6 +110,8 @@ private slots:
     void sltJournalWorkerChatRequested(const QString &workerId);
     void sltShowSettings();
     void sltShowProjectSettings();
+    void sltCreateTeamSchema();
+    void sltShowMySchema();
     void sltShowStatistics();
     void sltShowAbout();
     void sltShowBalance();
@@ -205,6 +208,10 @@ private:
     void pruneRecentProjects();
     void rebuildRecentProjectsMenu();
     void updateProjectActions();
+    bool projectAwaitingFirstQuery() const;
+    QString teamSchemaPath() const;
+    bool hasSavedTeamSchema() const;
+    void storeTeamSchema(TeamSchemaDialog &dialog, bool insertIntoQuery);
     bool hasOpenProject() const;
     QString projectDialogStartPath() const;
     QString workspaceRootFromSelection(QString selected) const;
@@ -288,6 +295,8 @@ private:
     QAction             *_prevConfirmAction;
     QAction             *_nextConfirmAction;
     QAction             *_projectSettingsAction;
+    QAction             *_projectSchemaAction;
+    QAction             *_projectMySchemaAction;
     QCheckBox           *_inspectCheck;
     ComposerInput       *_composerBar;
     GraphThumb          *_graphThumb;

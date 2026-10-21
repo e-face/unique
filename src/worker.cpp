@@ -362,6 +362,7 @@ void Worker::sendFollowUp(QString message)
     const QString trimmed = message.trimmed();
     if (trimmed.isEmpty() || !_session || !_session->agent())
         return;
+    stampTurnAuthor();
     _parkForGroupDialogue = false;
     _completed = false;
     _skipIdleComplete = false;
@@ -428,6 +429,8 @@ void Worker::beginFollowUp(QString message)
     if (trimmed.isEmpty())
         return;
     _pendingFollowUps.append(trimmed);
+    _pendingAuthors.append(_incomingAuthor.trimmed());
+    _incomingAuthor.clear();
     _userStopped = false;
     if (canAcceptFollowUp())
         sltFlushFollowUps();
@@ -438,6 +441,7 @@ void Worker::beginFollowUp(QString message)
 void Worker::clearPendingFollowUps()
 {
     _pendingFollowUps.clear();
+    _pendingAuthors.clear();
 }
 
 //----------------------------------------------
@@ -468,6 +472,8 @@ void Worker::sltFlushFollowUps()
         return;
     }
     const QString next = _pendingFollowUps.takeFirst();
+    const QString author = _pendingAuthors.isEmpty() ? QString() : _pendingAuthors.takeFirst();
+    _incomingAuthor = author;
     sendFollowUp(next);
 }
 
@@ -575,6 +581,58 @@ void Worker::setPersonName(QString name)
 
 //----------------------------------------------
 
+QString Worker::shortName() const
+{
+    const QString person = _personName.trimmed();
+    if (!person.isEmpty())
+        return person;
+    if (isTool())
+    {
+        const QString tool = toolName().trimmed();
+        if (!tool.isEmpty())
+            return tool;
+        return tr("Инструмент");
+    }
+    if (isRoot())
+        return tr("Главный менеджер");
+    switch (_type)
+    {
+    case WorkerTypeExecutor:
+        return tr("Исполнитель");
+    case WorkerTypeTester:
+        return tr("Тестировщик");
+    case WorkerTypeTool:
+        return tr("Инструмент");
+    case WorkerTypeManager:
+    default:
+        return tr("Менеджер");
+    }
+}
+
+//----------------------------------------------
+
+void Worker::setIncomingAuthor(const QString &name)
+{
+    _incomingAuthor = name.trimmed();
+}
+
+//----------------------------------------------
+
+void Worker::stampTurnAuthor()
+{
+    if (!_session || !_session->agent())
+        return;
+    QString author = _incomingAuthor.trimmed();
+    _incomingAuthor.clear();
+    if (author.isEmpty() && _parentWorker)
+        author = _parentWorker->shortName();
+    if (author.isEmpty())
+        author = tr("Пользователь");
+    _session->agent()->setTurnAuthor(author);
+}
+
+//----------------------------------------------
+
 QString Worker::llmProfileId() const
 {
     return _llmProfileId;
@@ -640,7 +698,7 @@ bool Worker::canSpawnChildren() const
         return false;
     if (isTool())
         return false;
-    return type() == WorkerTypeManager;
+    return type() == WorkerTypeManager || type() == WorkerTypeExecutor;
 }
 
 //----------------------------------------------
@@ -1178,6 +1236,7 @@ void Worker::resumeAfterRestore()
         _completed = true;
         _skipIdleComplete = false;
         _pendingFollowUps.clear();
+        _pendingAuthors.clear();
         if (!_result.trimmed().isEmpty() || _toolStarted)
             _state = WorkerStateCompleted;
         else
@@ -1245,6 +1304,7 @@ void Worker::resumeAfterRestore()
 void Worker::quitBlockingLoops()
 {
     _pendingFollowUps.clear();
+    _pendingAuthors.clear();
     _completed = true;
     _skipIdleComplete = true;
     _permissionLoopActive = false;
@@ -1266,6 +1326,7 @@ void Worker::beginUserStop()
     _skipIdleComplete = true;
     _parkForGroupDialogue = false;
     _pendingFollowUps.clear();
+    _pendingAuthors.clear();
     _delegatedThisBatch.clear();
     if (_session && _session->agent())
         _session->agent()->abort();
@@ -1318,6 +1379,7 @@ void Worker::forceReportToParent()
     _userStopped = true;
     _skipIdleComplete = true;
     _pendingFollowUps.clear();
+    _pendingAuthors.clear();
     QString report = composeParentReport();
     if (report.trimmed().isEmpty())
         report = _lastAssistant.trimmed();
@@ -1399,6 +1461,7 @@ void Worker::startTask()
         return;
     if (!_session || !_session->agent())
         return;
+    stampTurnAuthor();
     _session->ensureContentLoaded();
     _completed = false;
     _skipIdleComplete = false;

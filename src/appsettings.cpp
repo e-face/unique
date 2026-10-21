@@ -1175,6 +1175,38 @@ QColor AppSettings::borderColor() const
 
 //----------------------------------------------
 
+QColor AppSettings::workerCardColor(WorkerType type, bool root) const
+{
+    switch (type)
+    {
+    case WorkerTypeExecutor:
+        return QColor(QString::fromUtf8("#e4f2ea"));
+    case WorkerTypeTester:
+        return QColor(QString::fromUtf8("#f7f1e4"));
+    case WorkerTypeTool:
+        return QColor(QString::fromUtf8("#efe8f6"));
+    case WorkerTypeManager:
+    default:
+        return QColor(QString::fromUtf8(root ? "#d5e4f4" : "#e7f0f8"));
+    }
+}
+
+//----------------------------------------------
+
+QColor AppSettings::workerCardTextColor() const
+{
+    return QColor(QString::fromUtf8("#243044"));
+}
+
+//----------------------------------------------
+
+QColor AppSettings::workerCardMutedColor() const
+{
+    return QColor(QString::fromUtf8("#5d6d7e"));
+}
+
+//----------------------------------------------
+
 QColor AppSettings::mutedTextColor() const
 {
     return isLightTheme() ? QColor(QString::fromUtf8("#737373"))

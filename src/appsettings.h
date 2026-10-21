@@ -249,6 +249,10 @@ public:
     QColor  toolbarColor() const;
     QColor  borderColor() const;
     QColor  mutedTextColor() const;
+    /** Мягкая светлая заливка карточки воркера. */
+    QColor  workerCardColor(WorkerType type, bool root = false) const;
+    QColor  workerCardTextColor() const;
+    QColor  workerCardMutedColor() const;
     QColor  selectionColor() const;
     QColor  scrollbarColor() const;
     bool    isLightTheme() const;

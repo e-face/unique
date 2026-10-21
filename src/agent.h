@@ -111,6 +111,12 @@ public:
      * @brief Источник последнего сообщения роли user (для журнала/ленты).
      */
     int lastUserIngress() const;
+    /** Кто отправил последний user-ход (короткое имя воркера или «Пользователь»). */
+    QString turnAuthor() const;
+    void setTurnAuthor(const QString &name);
+    /** Кому этот воркер отвечает в журнале: родитель или пользователь. */
+    QString journalReplyTo() const;
+    void setJournalReplyTo(const QString &name);
 
 public slots:
     /**
@@ -227,6 +233,8 @@ private:
     QString            _pendingUserMessage;
     int                _pendingUserIngress;
     int                _lastUserIngress;
+    QString            _turnAuthor;
+    QString            _journalReplyTo;
     QString            _taskAnchor;
     QString            _followUpAnchor;
     int                _summaryChunkTotal;

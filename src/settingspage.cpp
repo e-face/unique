@@ -593,6 +593,13 @@ void SettingsPage::retranslateUi()
 
 //----------------------------------------------
 
+void SettingsPage::reloadWorkerLimits()
+{
+    loadWorkerLimits();
+}
+
+//----------------------------------------------
+
 void SettingsPage::loadWorkerLimits()
 {
     AppSettings *s = AppSettings::instance();
@@ -1195,14 +1202,8 @@ bool SettingsPage::pickModelProfilePreset(LlmProfile *outProfile)
         return false;
 
     QDialog dialog(this);
-    dialog.setWindowTitle(tr("Новый профиль модели"));
+    dialog.setWindowTitle(tr("Пресеты моделей"));
     dialog.resize(640, 480);
-
-    QLabel *hint = new QLabel(
-        tr("Выберите пресет провайдера (URL, модель, класс задач). "
-           "Токен API нужно ввести отдельно после создания."),
-        &dialog);
-    hint->setWordWrap(true);
 
     QComboBox *filter = new QComboBox(&dialog);
     filter->addItem(tr("Все классы"), -1);
@@ -1258,7 +1259,7 @@ bool SettingsPage::pickModelProfilePreset(LlmProfile *outProfile)
         QListWidgetItem *item = list->currentItem();
         if (!item || item->data(Qt::UserRole).toInt() < 0)
         {
-            detail->setText(tr("Пустой профиль: заполните поля вручную, токен — отдельно."));
+            detail->clear();
             return;
         }
         const int index = item->data(Qt::UserRole).toInt();
@@ -1292,7 +1293,7 @@ bool SettingsPage::pickModelProfilePreset(LlmProfile *outProfile)
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
     QVBoxLayout *root = new QVBoxLayout(&dialog);
-    root->addWidget(hint);
+    root->addWidget(filter);
     root->addWidget(filter);
     root->addWidget(list, 1);
     root->addWidget(detail);
@@ -1812,30 +1813,44 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
            "Иначе история сжимается раньше, по этому потолку."));
 
     QPushButton *capButton = new QPushButton(tr("окно модели"), &dialog);
-    capButton->setToolTip(tr("Запросить GET /models и подставить размер окна."));
-    QLabel *capHint = new QLabel(&dialog);
-    capHint->setWordWrap(true);
+    capButton->setToolTip(tr("Использовать размер окна, полученный из API /models."));
 
-    auto updateCapHint = [&]() {
+    auto updateCapMode = [&]() {
         const QString baseUrl = urlEdit->text().trimmed();
         const QString modelName = modelEdit->text().trimmed();
-        QString model = modelName;
-        if (model.isEmpty())
-            model = tr("модель не задана");
-        const int window = OpenAiCompatibleClient::resolvedContextWindow(baseUrl, modelName);
         const bool fromApi = OpenAiCompatibleClient::hasApiContextWindow(baseUrl, modelName);
+        const int keep = capSpin->value();
+        capButton->setEnabled(fromApi);
         if (fromApi)
         {
-            capHint->setText(tr("окно %1: %2 ток. (из API /models)")
-                             .arg(model)
-                             .arg(window));
+            capSpin->setRange(0, 4000000);
+            capSpin->setSpecialValueText(tr("окно модели"));
+            capSpin->setToolTip(
+                tr("0 — полное окно модели. Можно указать точное число, в том числе равное окну. "
+                   "Иначе история сжимается раньше, по этому потолку."));
+            if (keep > 0)
+                capSpin->setValue(keep);
         }
         else
         {
-            capHint->setText(tr("окно %1: %2 ток. (оценка: API не отдаёт размер окна)")
-                             .arg(model)
-                             .arg(window));
+            capSpin->setSpecialValueText(QString());
+            capSpin->setRange(1024, 4000000);
+            capSpin->setToolTip(
+                tr("API не сообщил размер окна. Укажите потолок контекста числом."));
+            if (keep >= 1024)
+                capSpin->setValue(keep);
         }
+    };
+
+    auto requestCatalog = [&]() {
+        const QString baseUrl = urlEdit->text().trimmed();
+        const QString modelName = modelEdit->text().trimmed();
+        if (!baseUrl.isEmpty() && !modelName.isEmpty())
+        {
+            OpenAiCompatibleClient::fetchContextCatalog(
+                baseUrl, tokenEdit->text().trimmed(), modelName);
+        }
+        updateCapMode();
     };
 
     auto applyProfile = [&](const LlmProfile &source) {
@@ -1852,33 +1867,19 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
         balancePathEdit->setText(source.balanceJsonPath);
         toolSpin->setValue(qMax(2, source.maxToolIterations));
         capSpin->setValue(source.contextCap);
-        updateCapHint();
+        requestCatalog();
     };
 
-    bool pendingWindow = false;
     connect(capButton, &QPushButton::clicked, &dialog, [&]() {
-        const QString baseUrl = urlEdit->text().trimmed();
-        const QString modelName = modelEdit->text().trimmed();
-        pendingWindow = true;
-        OpenAiCompatibleClient::fetchContextCatalog(baseUrl, tokenEdit->text().trimmed(),
-                                                    modelName);
-        const int window = OpenAiCompatibleClient::resolvedContextWindow(baseUrl, modelName);
-        capSpin->setValue(window > 0 ? window : 0);
-        updateCapHint();
+        if (OpenAiCompatibleClient::hasApiContextWindow(
+                urlEdit->text().trimmed(), modelEdit->text().trimmed()))
+            capSpin->setValue(0);
     });
     connect(OpenAiCompatibleClient::catalogHub(), &LlmClient::contextWindowChanged,
-            &dialog, [&]() {
-        if (!pendingWindow)
-            return;
-        pendingWindow = false;
-        const int window = OpenAiCompatibleClient::resolvedContextWindow(
-                               urlEdit->text().trimmed(), modelEdit->text().trimmed());
-        if (window > 0)
-            capSpin->setValue(window);
-        updateCapHint();
-    });
-    connect(urlEdit, &QLineEdit::editingFinished, &dialog, [&]() { updateCapHint(); });
-    connect(modelEdit, &QLineEdit::editingFinished, &dialog, [&]() { updateCapHint(); });
+            &dialog, [&]() { updateCapMode(); });
+    connect(urlEdit, &QLineEdit::editingFinished, &dialog, [&]() { requestCatalog(); });
+    connect(modelEdit, &QLineEdit::editingFinished, &dialog, [&]() { requestCatalog(); });
+    connect(tokenEdit, &QLineEdit::editingFinished, &dialog, [&]() { requestCatalog(); });
 
     QPushButton *fromPreset = new QPushButton(tr("Из пресета…"), &dialog);
     connect(fromPreset, &QPushButton::clicked, &dialog, [&]() {
@@ -1912,12 +1913,7 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
     capRow->addWidget(capSpin);
     capRow->addWidget(capButton);
     capRow->addStretch();
-    QVBoxLayout *capCell = new QVBoxLayout();
-    capCell->setContentsMargins(0, 0, 0, 0);
-    capCell->setSpacing(2);
-    capCell->addLayout(capRow);
-    capCell->addWidget(capHint);
-    form->addRow(tr("Потолок контекста:"), capCell);
+    form->addRow(tr("Потолок контекста:"), capRow);
 
     QDialogButtonBox *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);

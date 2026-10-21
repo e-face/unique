@@ -2,11 +2,13 @@
 #define WORKERGRAPHWIDGET_H
 
 #include <QGraphicsView>
+#include <QHash>
 #include <QPixmap>
 #include <QPointer>
 #include <QSize>
 
 #include "workertypes.h"
+#include "workerschema.h"
 
 class Worker;
 class WorkerManager;
@@ -68,6 +70,7 @@ private:
 
     QGraphicsScene         *_scene;
     QPointer<WorkerManager> _manager;
+    QHash<Worker *, SchemaNodeItem *> _laidOut;
     qreal                   _zoom;
     bool                    _rebuilding;
 };

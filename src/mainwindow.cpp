@@ -20,6 +20,7 @@
 #include "projecttreedock.h"
 #include "projectworkspace.h"
 #include "settingspage.h"
+#include "teamschemaeditor.h"
 #include "usagestatswidget.h"
 #include "worker.h"
 #include "workergraphwidget.h"
@@ -67,6 +68,7 @@
 #include <QMetaObject>
 #include <QKeyEvent>
 #include <QPlainTextEdit>
+#include <QTextCursor>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegExp>
@@ -395,6 +397,8 @@ MainWindow::MainWindow(QWidget *parent)
     , _prevConfirmAction(0)
     , _nextConfirmAction(0)
     , _projectSettingsAction(0)
+    , _projectSchemaAction(0)
+    , _projectMySchemaAction(0)
     , _inspectCheck(0)
     , _composerBar(0)
     , _graphThumb(0)
@@ -494,6 +498,8 @@ void MainWindow::showEvent(QShowEvent *event)
     sltWorkerTreeChanged();
     resumeWorkers();
     endStatusProgress(tr("Готово"));
+    updateComposerState();
+    updateProjectActions();
 }
 
 //----------------------------------------------
@@ -838,9 +844,9 @@ void MainWindow::switchToProject(QString workspaceRoot, bool loadExisting)
     sltBusyChanged(false);
     updateComposerState();
     updateProjectActions();
-    const QString native = QDir::toNativeSeparators(
-        hasOpenProject() ? _workspace->root() : clean);
-    endStatusProgress(tr("Проект: %1").arg(native));
+    endStatusProgress();
+    if (statusBar())
+        statusBar()->clearMessage();
 }
 
 //----------------------------------------------
@@ -1053,12 +1059,6 @@ void MainWindow::performProjectSwitch()
     }
 
     switchToProject(workspace, loadExisting);
-    if (loadExisting)
-        statusBar()->showMessage(tr("Открыт проект: %1").arg(
-                                     QDir::toNativeSeparators(workspace)));
-    else
-        statusBar()->showMessage(tr("Новый проект: %1").arg(
-                                     QDir::toNativeSeparators(workspace)));
 }
 
 //----------------------------------------------
@@ -1193,9 +1193,15 @@ void MainWindow::sendRootComposerMessage(QString text, QJsonArray contentParts)
             session->agent()->injectContext(prefix);
     }
     if (!contentParts.isEmpty())
+    {
+        session->agent()->setTurnAuthor(tr("Пользователь"));
         session->agent()->sendUserMultimodal(text, contentParts);
+    }
     else
+    {
+        session->agent()->setTurnAuthor(tr("Пользователь"));
         session->agent()->sendUserMessage(text);
+    }
     updateComposerState();
 }
 
@@ -1626,7 +1632,19 @@ void MainWindow::applyWorkerUi(Worker *worker)
     worker->session()->widget()->setAuthorLabels(
         tr("Пользователь"), workerWindowTitle(worker));
     if (_journal && worker->session()->agent())
+    {
         _journal->setAgentLabel(worker->session()->agent(), workerWindowTitle(worker));
+        QString replyTo = tr("Пользователь");
+        if (worker->parentWorker())
+            replyTo = worker->parentWorker()->shortName();
+        worker->session()->agent()->setJournalReplyTo(replyTo);
+        foreach (Worker *child, worker->children())
+        {
+            if (!child || !child->session() || !child->session()->agent())
+                continue;
+            child->session()->agent()->setJournalReplyTo(worker->shortName());
+        }
+    }
     if (root)
         updateComposerState();
 }
@@ -1675,6 +1693,10 @@ void MainWindow::sltWorkerCreated(Worker *worker)
     {
         _journal->attachAgent(worker->session()->agent(), workerWindowTitle(worker),
                               worker->id());
+        QString replyTo = tr("Пользователь");
+        if (worker->parentWorker())
+            replyTo = worker->parentWorker()->shortName();
+        worker->session()->agent()->setJournalReplyTo(replyTo);
         if (!_resetting && !_loadingProject && !worker->isRoot())
             _journal->addTransient(workerWindowTitle(worker), tr("Создан"),
                                    worker->task().isEmpty() ? tr("Новый воркер") : worker->task(),
@@ -2137,6 +2159,79 @@ void MainWindow::sltShowProjectSettings()
     _projectSettingsPage->setProjectPath(_workspace->root());
     _projectSettingsPage->reloadAll();
     ensureTabVisible(_projectSettingsPage, tr("Настройки проекта"));
+}
+
+//----------------------------------------------
+
+QString MainWindow::teamSchemaPath() const
+{
+    if (!hasOpenProject() || !_workspace)
+        return QString();
+    const QString dir = AppSettings::projectStoreDir(_workspace->root());
+    if (dir.isEmpty())
+        return QString();
+    return dir + QString::fromUtf8("/team-schema.json");
+}
+
+//----------------------------------------------
+
+bool MainWindow::hasSavedTeamSchema() const
+{
+    const QString path = teamSchemaPath();
+    return !path.isEmpty() && QFileInfo(path).isFile() && QFileInfo(path).size() > 2;
+}
+
+//----------------------------------------------
+
+void MainWindow::storeTeamSchema(TeamSchemaDialog &dialog, bool insertIntoQuery)
+{
+    dialog.commitPlacement();
+    const QString path = teamSchemaPath();
+    if (!path.isEmpty())
+        dialog.saveToFile(path);
+    AppSettings::instance()->setMaxWorkerDepth(SettingsKindProject, dialog.nestingDepth());
+    if (_projectSettingsPage)
+        _projectSettingsPage->reloadWorkerLimits();
+    if (insertIntoQuery && _composer && projectAwaitingFirstQuery())
+    {
+        const QString block = dialog.instructionText().trimmed();
+        if (!block.isEmpty())
+        {
+            _composer->setPlainText(TeamSchemaDialog::mergeIntoQuery(_composer->toPlainText(), block));
+            QTextCursor cursor = _composer->textCursor();
+            cursor.movePosition(QTextCursor::End);
+            _composer->setTextCursor(cursor);
+            _composer->setFocus();
+        }
+    }
+    updateProjectActions();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltCreateTeamSchema()
+{
+    if (!hasOpenProject() || !_composer || !projectAwaitingFirstQuery())
+        return;
+    TeamSchemaDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    storeTeamSchema(dialog, true);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltShowMySchema()
+{
+    if (!hasOpenProject() || !hasSavedTeamSchema())
+        return;
+    TeamSchemaDialog dialog(this);
+    dialog.setReviewMode(true);
+    if (!dialog.loadFromFile(teamSchemaPath()))
+        return;
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    storeTeamSchema(dialog, true);
 }
 
 //----------------------------------------------
@@ -3253,6 +3348,7 @@ void MainWindow::setupUi()
     connect(_composerBar, SIGNAL(sendClicked()), this, SLOT(sltComposerSend()));
     connect(_composerBar, SIGNAL(stopClicked()), this, SLOT(sltComposerStop()));
     connect(_composerBar, SIGNAL(plusClicked()), this, SLOT(sltComposerAttachPlus()));
+    connect(_composerBar, SIGNAL(schemaClicked()), this, SLOT(sltCreateTeamSchema()));
     connect(_composerBar, SIGNAL(removeAttachmentRequested(int)),
             this, SLOT(sltComposerRemoveAttachment(int)));
     connect(_composerBar, SIGNAL(filesDropped(QStringList)),
@@ -3397,6 +3493,14 @@ void MainWindow::setupMenus()
 
     _projectMenu = menuBar()->addMenu(L("menu.project"));
 
+    _projectSchemaAction = _projectMenu->addAction(L("menu.project.schema"));
+    connect(_projectSchemaAction, SIGNAL(triggered()),
+            this, SLOT(sltCreateTeamSchema()));
+
+    _projectMySchemaAction = _projectMenu->addAction(L("menu.project.mySchema"));
+    connect(_projectMySchemaAction, SIGNAL(triggered()),
+            this, SLOT(sltShowMySchema()));
+
     _projectSettingsAction = _projectMenu->addAction(L("menu.project.settings"));
     connect(_projectSettingsAction, SIGNAL(triggered()),
             this, SLOT(sltShowProjectSettings()));
@@ -3441,6 +3545,10 @@ void MainWindow::retranslateUi()
         _windowSettingsAction->setText(L("menu.window.settings"));
     if (_projectMenu)
         _projectMenu->setTitle(L("menu.project"));
+    if (_projectSchemaAction)
+        _projectSchemaAction->setText(L("menu.project.schema"));
+    if (_projectMySchemaAction)
+        _projectMySchemaAction->setText(L("menu.project.mySchema"));
     if (_projectSettingsAction)
         _projectSettingsAction->setText(L("menu.project.settings"));
     if (_helpMenu)
@@ -3976,11 +4084,8 @@ void MainWindow::sltChatSaveFinished()
         saveOpenChats(false);
         return;
     }
-    if (statusBar() && _progressDepth <= 0 && hasOpenProject() && _workspace)
-    {
-        statusBar()->showMessage(tr("Проект: %1").arg(
-                                     QDir::toNativeSeparators(_workspace->root())));
-    }
+    if (statusBar() && _progressDepth <= 0)
+        statusBar()->clearMessage();
 }
 
 //----------------------------------------------
@@ -4465,8 +4570,6 @@ void MainWindow::applyProjectDirectory(bool loadFileChanges, bool bindTree)
         return;
     }
     promptOrphanProjectPresets();
-    if (_progressDepth <= 0)
-        statusBar()->showMessage(tr("Проект: %1").arg(QDir::toNativeSeparators(root)));
     updateProjectActions();
 }
 
@@ -4636,6 +4739,32 @@ void MainWindow::updateProjectActions()
                 action->setEnabled(hasProject);
         }
     }
+    if (_projectSchemaAction)
+        _projectSchemaAction->setEnabled(hasProject && projectAwaitingFirstQuery());
+    if (_projectMySchemaAction)
+        _projectMySchemaAction->setEnabled(hasProject && hasSavedTeamSchema());
+}
+
+//----------------------------------------------
+
+bool MainWindow::projectAwaitingFirstQuery() const
+{
+    if (!hasOpenProject())
+        return false;
+    ChatSession *session = rootSession();
+    if (!session || !session->agent())
+        return true;
+    session->ensureContentLoaded();
+    const QList<LlmMessage> history = session->agent()->history();
+    for (int i = 0; i < history.size(); ++i)
+    {
+        const LlmMessage &message = history.at(i);
+        if (message.role != LlmRoleUser || message.hideInUi)
+            continue;
+        if (!message.content.trimmed().isEmpty() || !message.contentParts.isEmpty())
+            return false;
+    }
+    return true;
 }
 
 //----------------------------------------------
@@ -4951,6 +5080,7 @@ void MainWindow::updateComposerState()
     const bool composerOn = hasOpenProject() && !_resetting;
     _composerBar->setReadOnly(!canSend);
     _composerBar->setComposerEnabled(composerOn);
+    _composerBar->setSchemaAvailable(projectAwaitingFirstQuery());
     _composerBar->setSendEnabled(canSend);
     _composerBar->setStopEnabled(active && !_resetting);
     setAllStopEnabled(active && !_resetting);

@@ -48,6 +48,7 @@ public:
     void loadProfiles();
     void commitCurrentProfile();
     void reloadAll();
+    void reloadWorkerLimits();
 
 public slots:
     void retranslateUi();

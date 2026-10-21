@@ -854,6 +854,34 @@ int Agent::lastUserIngress() const
 
 //----------------------------------------------
 
+QString Agent::turnAuthor() const
+{
+    return _turnAuthor;
+}
+
+//----------------------------------------------
+
+void Agent::setTurnAuthor(const QString &name)
+{
+    _turnAuthor = name.trimmed();
+}
+
+//----------------------------------------------
+
+QString Agent::journalReplyTo() const
+{
+    return _journalReplyTo;
+}
+
+//----------------------------------------------
+
+void Agent::setJournalReplyTo(const QString &name)
+{
+    _journalReplyTo = name.trimmed();
+}
+
+//----------------------------------------------
+
 void Agent::sendUserMessage(QString text, int ingress)
 {
     const QString trimmed = text.trimmed();

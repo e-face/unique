@@ -126,6 +126,7 @@ ComposerInput::ComposerInput(QWidget *parent)
     , _editor(0)
     , _capsHint(0)
     , _plusButton(0)
+    , _schemaButton(0)
     , _stopButton(0)
     , _sendButton(0)
     , _dropHighlight(false)
@@ -178,9 +179,14 @@ ComposerInput::ComposerInput(QWidget *parent)
     _plusButton->setCursor(Qt::PointingHandCursor);
     connect(_plusButton, SIGNAL(clicked()), this, SIGNAL(plusClicked()));
 
+    _schemaButton = new QPushButton(this);
+    _schemaButton->setObjectName(QString::fromUtf8("composerSchema"));
+    _schemaButton->setCursor(Qt::PointingHandCursor);
+    connect(_schemaButton, SIGNAL(clicked()), this, SIGNAL(schemaClicked()));
+
     _capsHint = new QLabel(this);
     _capsHint->setObjectName(QString::fromUtf8("composerCapsHint"));
-    _capsHint->setStyleSheet(QString::fromUtf8("font-size:12px;"));
+    _capsHint->hide();
 
     _stopButton = new QPushButton(this);
     _stopButton->setObjectName(QString::fromUtf8("composerStop"));
@@ -201,7 +207,7 @@ ComposerInput::ComposerInput(QWidget *parent)
     toolbar->setContentsMargins(4, 0, 4, 2);
     toolbar->setSpacing(8);
     toolbar->addWidget(_plusButton, 0, Qt::AlignVCenter);
-    toolbar->addWidget(_capsHint, 0, Qt::AlignVCenter);
+    toolbar->addWidget(_schemaButton, 0, Qt::AlignVCenter);
     toolbar->addStretch(1);
     toolbar->addWidget(_stopButton, 0, Qt::AlignVCenter);
     toolbar->addWidget(_sendButton, 0, Qt::AlignVCenter);
@@ -255,6 +261,11 @@ void ComposerInput::retranslateUi()
     // Placeholder подставляет MainWindow::updateComposerState() по состоянию.
     if (_plusButton)
         _plusButton->setToolTip(L("composer.attachTip"));
+    if (_schemaButton)
+    {
+        _schemaButton->setText(L("composer.schema"));
+        _schemaButton->setToolTip(L("composer.schemaTip"));
+    }
     if (_stopButton)
     {
         _stopButton->setText(L("composer.stop"));
@@ -281,11 +292,12 @@ void ComposerInput::retranslateUi()
 
 void ComposerInput::setCapsHint(QString text, QString toolTip)
 {
+    Q_UNUSED(text);
+    Q_UNUSED(toolTip);
     if (!_capsHint)
         return;
-    const QString t = text.trimmed();
-    _capsHint->setText(t.isEmpty() ? tr("Auto") : t);
-    _capsHint->setToolTip(toolTip.trimmed().isEmpty() ? _capsHint->text() : toolTip);
+    _capsHint->clear();
+    _capsHint->hide();
 }
 
 //----------------------------------------------
@@ -332,6 +344,14 @@ void ComposerInput::setComposerEnabled(bool on)
 
 //----------------------------------------------
 
+void ComposerInput::setSchemaAvailable(bool on)
+{
+    if (_schemaButton)
+        _schemaButton->setVisible(on);
+}
+
+//----------------------------------------------
+
 void ComposerInput::setReadOnly(bool on)
 {
     if (_editor)
@@ -361,6 +381,11 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
         "  font-size:18px; font-weight:bold; padding:0; }"
         "QToolButton#composerPlus:hover { background:%6; }"
         "QToolButton#composerPlus:disabled { color:%5; }"
+        "QPushButton#composerSchema {"
+        "  background:transparent; color:%3; border:1px solid %2; border-radius:12px;"
+        "  padding:4px 10px; }"
+        "QPushButton#composerSchema:hover { background:%6; }"
+        "QPushButton#composerSchema:disabled { color:%5; border-color:%5; }"
         "QPushButton#composerSend {"
         "  background:%3; color:%1; border:none; border-radius:16px;"
         "  font-size:16px; font-weight:bold; padding:0; }"

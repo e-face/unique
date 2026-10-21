@@ -40,6 +40,8 @@ public:
      * @brief Ссылка в заголовке (например unique-worker:&lt;id&gt;).
      */
     void setTitleLink(QString url);
+    /** Текст после заголовка в свёрнутой строке. Пустая строка — только заголовок. */
+    void setPreview(QString preview);
     /**
      * @brief Добавить абзац (экранированный текст) в уже существующее сообщение.
      */
@@ -223,6 +225,7 @@ private:
     /** Нормализовать kind старых записей ленты к стабильному коду. */
     QString normalizeDisplayKind(const ChatDisplayItem &item) const;
     void refreshDisplayTitles();
+    void refreshContextBar();
 
     Agent          *_agent;
     QLabel         *_contextLabel;
