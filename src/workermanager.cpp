@@ -2920,12 +2920,14 @@ void WorkerManager::installTools(Worker *worker)
         addReadOnlyFileTools(agent, _workspace);
         addModalityTools(agent, _workspace, worker, modality);
         agent->addTool(new CompleteTaskTool(worker, agent));
+        agent->addTool(new RequestPermissionTool(worker, agent));
     }
     else if (modality == WorkerTaskKindDecisions)
     {
         addReadOnlyFileTools(agent, _workspace);
         addModalityTools(agent, _workspace, worker, modality);
         agent->addTool(new CompleteTaskTool(worker, agent));
+        agent->addTool(new RequestPermissionTool(worker, agent));
         if (worker->type() == WorkerTypeManager && !worker->isGroupInterlocutor())
         {
             agent->addTool(new ListChildWorkersTool(worker, agent));
@@ -2948,6 +2950,7 @@ void WorkerManager::installTools(Worker *worker)
         else if (worker->type() == WorkerTypeManager)
         {
             addReadOnlyFileTools(agent, _workspace);
+            agent->addTool(new RequestPermissionTool(worker, agent));
         }
         else
         {
@@ -3101,6 +3104,22 @@ void WorkerManager::linkParent(Worker *child, QString parentId)
 
 //----------------------------------------------
 
+static QString internetSearchRule(const AppLocale *locale)
+{
+    const QString fallback = QString::fromUtf8(
+        "\nINTERNET SEARCH: Any search on the internet requires the user's confirmation "
+        "before it starts. Do not search the web, open a page to look something up, "
+        "fetch online results, or delegate such a search until the user approves that "
+        "search. Each search is confirmed separately; a previous approval does not cover "
+        "the next one. If you cannot run the search yourself, call request_permission "
+        "and wait for the answer. If the user rejects it, do not search.");
+    if (!locale)
+        return fallback;
+    return locale->model(QString::fromUtf8("internet_search"), fallback);
+}
+
+//----------------------------------------------
+
 QString WorkerManager::promptFor(Worker *worker) const
 {
     if (!worker)
@@ -3124,6 +3143,7 @@ QString WorkerManager::promptFor(Worker *worker) const
                                  "You are a GROUP INTERLOCUTOR named in your first message."));
         base += verificationDepth;
         base += locale->model(QString::fromUtf8("sequence_suffix"));
+        base += internetSearchRule(locale);
         return base;
     }
     switch (type)
@@ -3208,6 +3228,7 @@ QString WorkerManager::promptFor(Worker *worker) const
     base += locale->model(QString::fromUtf8("communication_suffix"));
     base += verificationDepth;
     base += locale->model(QString::fromUtf8("sequence_suffix"));
+    base += internetSearchRule(locale);
     return base;
 }
 

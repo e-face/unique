@@ -503,6 +503,154 @@ static bool commandMayAffectOutside(QString command, QString workDir,
 
 //----------------------------------------------
 
+static bool isWebLookupProgram(QString key)
+{
+    key = key.toLower();
+    static const char *names[] = {
+        "curl", "wget", "w3m", "lynx", "links", "elinks",
+        "aria2c", "httpie", "xh",
+        "iwr", "irm", "invoke-webrequest", "invoke-restmethod",
+        0
+    };
+    for (int i = 0; names[i]; ++i)
+    {
+        if (key == QString::fromUtf8(names[i]))
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+static bool isNonSearchNetProgram(QString key)
+{
+    key = key.toLower();
+    static const char *names[] = {
+        "git", "svn", "hg",
+        "npm", "npx", "yarn", "pnpm", "composer", "bundle", "gem",
+        "pip", "pip3", "conda",
+        "cargo", "go", "dotnet", "nuget", "mvn", "gradle",
+        "docker", "podman",
+        "winget", "choco", "chocolatey", "scoop",
+        "cmake", "msbuild", "vcpkg",
+        0
+    };
+    for (int i = 0; names[i]; ++i)
+    {
+        if (key == QString::fromUtf8(names[i]))
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+static QString httpUrlHost(QString token)
+{
+    const QString lower = token.toLower();
+    int at = lower.indexOf(QString::fromUtf8("https://"));
+    int skip = 8;
+    const int httpAt = lower.indexOf(QString::fromUtf8("http://"));
+    if (at < 0 || (httpAt >= 0 && httpAt < at))
+    {
+        at = httpAt;
+        skip = 7;
+    }
+    if (at < 0)
+        return QString();
+    QString host = lower.mid(at + skip);
+    for (int i = 0; i < host.size(); ++i)
+    {
+        const QChar c = host.at(i);
+        if (c == QChar('/') || c == QChar('\\') || c == QChar('?')
+            || c == QChar('#') || c == QChar(':'))
+        {
+            host = host.left(i);
+            break;
+        }
+    }
+    if (host.startsWith(QChar('[')))
+    {
+        const int end = host.indexOf(QChar(']'));
+        if (end > 0)
+            host = host.mid(1, end - 1);
+    }
+    return host;
+}
+
+//----------------------------------------------
+
+static bool isLocalWebHost(QString host)
+{
+    host = host.trimmed().toLower();
+    if (host.isEmpty())
+        return true;
+    if (host == QString::fromUtf8("localhost")
+        || host == QString::fromUtf8("127.0.0.1")
+        || host == QString::fromUtf8("::1")
+        || host == QString::fromUtf8("0.0.0.0"))
+        return true;
+    if (host.startsWith(QString::fromUtf8("127.")))
+        return true;
+    if (host.endsWith(QString::fromUtf8(".localhost")))
+        return true;
+    return false;
+}
+
+//----------------------------------------------
+
+static bool tokenHasHttpUrl(QString token)
+{
+    const QString lower = token.toLower();
+    return lower.contains(QString::fromUtf8("https://"))
+        || lower.contains(QString::fromUtf8("http://"));
+}
+
+//----------------------------------------------
+
+static bool tokenHasRemoteHttpUrl(QString token)
+{
+    const QString host = httpUrlHost(token);
+    if (host.isEmpty())
+        return false;
+    return !isLocalWebHost(host);
+}
+
+//----------------------------------------------
+
+static bool commandSearchesInternet(QString command)
+{
+    const QStringList segments = commandSegments(command);
+    foreach (const QString &segment, segments)
+    {
+        const QString key = commandProgramKey(segment).toLower();
+        if (isNonSearchNetProgram(key))
+            continue;
+        const QStringList tokens = splitCommandTokens(segment);
+        bool remote = false;
+        bool anyUrl = false;
+        foreach (const QString &token, tokens)
+        {
+            if (!tokenHasHttpUrl(token))
+                continue;
+            anyUrl = true;
+            if (tokenHasRemoteHttpUrl(token))
+                remote = true;
+        }
+        if (isWebLookupProgram(key))
+        {
+            if (anyUrl && !remote)
+                continue;
+            return true;
+        }
+        if (remote)
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
 static bool commandAffectsSystemSettings(QString command)
 {
     const QStringList segments = commandSegments(command);
@@ -1262,7 +1410,9 @@ QString RequestPermissionTool::description() const
 {
     return QString::fromUtf8(
         "Ask the user to approve an action before doing it. "
-        "Use for delete, rename, overwrite, or other destructive file changes. "
+        "Required before any internet search when you will not run that search "
+        "yourself: each search needs its own approval. "
+        "Also use for delete, rename, overwrite, or other destructive file changes. "
         "The function returns approved or rejected.");
 }
 
@@ -1881,7 +2031,8 @@ QString RunCommandAgentTool::description() const
         "Run shell command(s) (cmd). Prefer commands=[...] for several independent commands "
         "in one call (or multiple run_command tool_calls in the same turn). Single command= "
         "still works. User approves the program (or every time if it touches paths outside "
-        "the project). working_directory is relative to the project; timeout_sec default 120, "
+        "the project). Any internet search asks the user every time, with no 'always' "
+        "option. working_directory is relative to the project; timeout_sec default 120, "
         "max 300. If the program waits for a line (Y/N, pause, set /p), the last lines "
         "are shown to the user and their answer is written to stdin. Do not pipe through "
         "more. For GUI/servers set background=true. Scratch output in ___project___/tmp, "
@@ -2104,14 +2255,17 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
         relDir = workDir;
 
     const QString programKey = commandProgramKey(command);
-    const QString action = QString::fromUtf8(
-        "Run command in directory %1:\n%2")
-                               .arg(relDir, command);
+    const bool webSearch = commandSearchesInternet(command);
+    const QString action = webSearch
+        ? QString::fromUtf8("Internet search in directory %1:\n%2").arg(relDir, command)
+        : QString::fromUtf8("Run command in directory %1:\n%2").arg(relDir, command);
 
     AppSettings *appSettings = AppSettings::instance();
     const bool rememberable = !programKey.isEmpty();
     QString decision;
-    if (rememberable && appSettings->isCommandAlwaysAllowed(programKey))
+    if (webSearch)
+        decision = _owner->askPermission(action, false, QString());
+    else if (rememberable && appSettings->isCommandAlwaysAllowed(programKey))
         decision = QString::fromUtf8("approved: always");
     else if (system && appSettings->systemSettingsControlEnabled())
         decision = _owner->askPermission(action, rememberable, programKey);

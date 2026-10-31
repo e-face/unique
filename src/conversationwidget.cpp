@@ -969,7 +969,6 @@ void ConversationWidget::refreshDisplayTitles()
 
 void ConversationWidget::showPermissionRequest(QString action, bool offerAlways)
 {
-    Q_UNUSED(offerAlways);
     _promptMode = 1;
     if (_permissionLabel)
         _permissionLabel->setText(tr("Разрешить действие?\n%1").arg(action));
@@ -977,7 +976,7 @@ void ConversationWidget::showPermissionRequest(QString action, bool offerAlways)
         _approveButton->setText(tr("Разрешить"));
     if (_alwaysButton)
     {
-        _alwaysButton->setVisible(true);
+        _alwaysButton->setVisible(offerAlways);
         _alwaysButton->setText(tr("Всегда"));
     }
     if (_rejectButton)

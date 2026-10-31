@@ -2189,9 +2189,6 @@ void MainWindow::storeTeamSchema(TeamSchemaDialog &dialog, bool insertIntoQuery)
     const QString path = teamSchemaPath();
     if (!path.isEmpty())
         dialog.saveToFile(path);
-    AppSettings::instance()->setMaxWorkerDepth(SettingsKindProject, dialog.nestingDepth());
-    if (_projectSettingsPage)
-        _projectSettingsPage->reloadWorkerLimits();
     if (insertIntoQuery && _composer && projectAwaitingFirstQuery())
     {
         const QString block = dialog.instructionText().trimmed();

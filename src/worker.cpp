@@ -1729,17 +1729,17 @@ void Worker::onChildrenAnswered()
 
 QString Worker::askPermission(QString action, bool offerAlways, QString alwaysKey)
 {
-    Q_UNUSED(offerAlways);
     QString key = alwaysKey.trimmed();
     if (key.isEmpty())
         key = action.trimmed();
-    if (!key.isEmpty() && AppSettings::instance()->isCommandAlwaysAllowed(key))
+    if (offerAlways && !key.isEmpty()
+        && AppSettings::instance()->isCommandAlwaysAllowed(key))
         return QString::fromUtf8("approved: always");
 
     _permissionResult.clear();
     _permissionAction = action;
-    _permissionOfferAlways = true;
-    _pendingAlwaysKey = key;
+    _permissionOfferAlways = offerAlways;
+    _pendingAlwaysKey = offerAlways ? key : QString();
     setState(WorkerStateWaitingApproval);
     emit permissionRequested(action);
 
@@ -1806,7 +1806,8 @@ void Worker::resolvePermission(bool approved, bool always, QString comment)
         _permissionResult = QString::fromUtf8("approved");
     else
         _permissionResult = QString::fromUtf8("rejected");
-    if (approved && always && !_pendingAlwaysKey.trimmed().isEmpty())
+    if (approved && always && _permissionOfferAlways
+        && !_pendingAlwaysKey.trimmed().isEmpty())
     {
         AppSettings::instance()->addAlwaysAllowedCommand(_pendingAlwaysKey, _permissionAction);
         _permissionResult = QString::fromUtf8("approved: always");
