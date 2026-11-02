@@ -8,11 +8,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QFontMetrics>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QLabel>
 #include <QRegExp>
 #include <QSaveFile>
 #include <QTimer>
@@ -26,7 +24,6 @@
 static const int kJournalTextClip       = 16000;
 static const int kMaxPersistedEntries   = 100;
 static const int kJournalPersistMs      = 500;
-static const int kLiveActionHeight      = 24;
 static const int kLiveRotateMs          = 3000;
 static const int kLiveFadeMs            = 40;
 /** Полный цикл яркости «чёткий → почти невидимый → чёткий», мс. */
@@ -39,30 +36,16 @@ JournalWidget::JournalWidget(QWidget *parent)
     , _lastPermanentFromUser(false)
     , _loading(false)
     , _persistDirty(false)
-    , _liveActionLine(0)
     , _liveRotateTimer(0)
     , _liveFadeTimer(0)
     , _persistTimer(0)
     , _liveActionIndex(0)
     , _liveFadePhase(0.0)
+    , _publishedFadeAlpha(-1)
 {
     setUserInputEnabled(false);
     setContextRowVisible(false);
     setChatLiveActionVisible(false);
-
-    _liveActionLine = new QLabel(messagesHost());
-    _liveActionLine->setObjectName(QString::fromUtf8("journalLiveAction"));
-    _liveActionLine->setWordWrap(false);
-    _liveActionLine->setTextInteractionFlags(Qt::NoTextInteraction);
-    _liveActionLine->setFixedHeight(kLiveActionHeight);
-    _liveActionLine->setMinimumHeight(kLiveActionHeight);
-    _liveActionLine->setMaximumHeight(kLiveActionHeight);
-    _liveActionLine->setContentsMargins(12, 0, 12, 0);
-    _liveActionLine->setText(QString::fromUtf8(" "));
-    _liveActionLine->show();
-    if (messagesLayout())
-        messagesLayout()->addWidget(_liveActionLine, 0, Qt::AlignTop);
-    applyLiveActionFadeStyle();
 
     _liveRotateTimer = new QTimer(this);
     _liveRotateTimer->setInterval(kLiveRotateMs);
@@ -89,13 +72,7 @@ void JournalWidget::resetUi()
     _liveActions.clear();
     _liveActionIndex = 0;
     _liveFadePhase = 0.0;
-    if (_liveActionLine && messagesLayout())
-    {
-        messagesLayout()->addWidget(_liveActionLine, 0, Qt::AlignTop);
-        _liveActionLine->setFixedHeight(kLiveActionHeight);
-        _liveActionLine->show();
-        refreshLiveActionText();
-    }
+    refreshLiveActionText();
 }
 
 //----------------------------------------------
@@ -502,22 +479,6 @@ QString JournalWidget::toolArgsExcerpt(const QString &name, const QString &argum
 
 //----------------------------------------------
 
-QString JournalWidget::elideLiveAction(const QString &text) const
-{
-    if (!_liveActionLine)
-        return text;
-    QFontMetrics fm(_liveActionLine->font());
-    int width = _liveActionLine->contentsRect().width();
-    if (width < 40)
-        width = qMax(120, _liveActionLine->width() - 24);
-    if (width < 40)
-        width = 360;
-    // elidedText сам ставит «…» в конце, когда строка не входит.
-    return fm.elidedText(text, Qt::ElideRight, width);
-}
-
-//----------------------------------------------
-
 QString JournalWidget::friendlyIngressBody(const QString &text, int ingress)
 {
     QString t = text.trimmed();
@@ -652,24 +613,8 @@ void JournalWidget::rebuildLiveActionList()
 
 //----------------------------------------------
 
-void JournalWidget::ensureLiveActionAtEnd()
-{
-    if (!_liveActionLine || !messagesLayout())
-        return;
-    messagesLayout()->removeWidget(_liveActionLine);
-    messagesLayout()->addWidget(_liveActionLine, 0, Qt::AlignTop);
-    _liveActionLine->setFixedHeight(kLiveActionHeight);
-    _liveActionLine->show();
-}
-
-//----------------------------------------------
-
 void JournalWidget::applyLiveActionFadeStyle()
 {
-    if (!_liveActionLine)
-        return;
-    AppSettings *s = AppSettings::instance();
-    QColor c = s->mutedTextColor();
     double alpha = 0.0;
     if (!_liveActions.isEmpty())
     {
@@ -677,30 +622,23 @@ void JournalWidget::applyLiveActionFadeStyle()
         const double wave = 0.5 * (1.0 + qSin(_liveFadePhase * 2.0 * 3.14159265358979323846));
         alpha = 0.12 + wave * 0.88;
     }
-    c.setAlpha(qBound(0, int(alpha * 255.0 + 0.5), 255));
-    _liveActionLine->setStyleSheet(
-        QString::fromUtf8(
-            "QLabel#journalLiveAction { color:rgba(%1,%2,%3,%4); font-style:italic; "
-            "background:transparent; border:none; min-height:%5px; max-height:%5px; }")
-            .arg(c.red())
-            .arg(c.green())
-            .arg(c.blue())
-            .arg(c.alpha())
-            .arg(kLiveActionHeight));
+    const int fade = qBound(0, int(alpha * 255.0 + 0.5), 255);
+    if (fade != _publishedFadeAlpha)
+    {
+        _publishedFadeAlpha = fade;
+        emit liveFadeChanged(_publishedFadeAlpha);
+    }
 }
 
 //----------------------------------------------
 
 void JournalWidget::refreshLiveActionText()
 {
-    if (!_liveActionLine)
-        return;
-
     if (_liveActions.isEmpty())
     {
-        _liveActionLine->setText(QString::fromUtf8(" "));
         _liveFadePhase = 0.0;
         applyLiveActionFadeStyle();
+        publishLiveStatus();
         if (_liveRotateTimer)
             _liveRotateTimer->stop();
         if (_liveFadeTimer)
@@ -710,8 +648,8 @@ void JournalWidget::refreshLiveActionText()
 
     if (_liveActionIndex < 0 || _liveActionIndex >= _liveActions.size())
         _liveActionIndex = 0;
-    _liveActionLine->setText(elideLiveAction(_liveActions.at(_liveActionIndex).text));
     applyLiveActionFadeStyle();
+    publishLiveStatus();
 
     if (_liveRotateTimer && !_liveRotateTimer->isActive())
         _liveRotateTimer->start();
@@ -729,9 +667,31 @@ void JournalWidget::sltLiveActionRotate()
         return;
     }
     _liveActionIndex = (_liveActionIndex + 1) % _liveActions.size();
-    if (_liveActionLine)
-        _liveActionLine->setText(elideLiveAction(_liveActions.at(_liveActionIndex).text));
     applyLiveActionFadeStyle();
+    publishLiveStatus();
+}
+
+//----------------------------------------------
+
+QString JournalWidget::currentLiveActionText() const
+{
+    if (_liveActions.isEmpty())
+        return QString();
+    int index = _liveActionIndex;
+    if (index < 0 || index >= _liveActions.size())
+        index = 0;
+    return _liveActions.at(index).text.trimmed();
+}
+
+//----------------------------------------------
+
+void JournalWidget::publishLiveStatus()
+{
+    const QString text = currentLiveActionText();
+    if (text == _publishedLiveStatus)
+        return;
+    _publishedLiveStatus = text;
+    emit liveStatusChanged(text);
 }
 
 //----------------------------------------------
@@ -777,7 +737,6 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
         }
         if (!workerId.trimmed().isEmpty())
             bindTitleLink(_lastPermanent, workerId);
-        ensureLiveActionAtEnd();
         if (!isRestoring() && pinBottom())
             scheduleScrollToBottom();
         rememberEntry(who, text, fromUser, workerId);
@@ -802,7 +761,6 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
         _lastPermanent->setPreview(QString());
     _lastPermanentAuthor = who;
     _lastPermanentFromUser = fromUser;
-    ensureLiveActionAtEnd();
     rememberEntry(who, text, fromUser, workerId);
 }
 
@@ -820,7 +778,6 @@ void JournalWidget::addTransient(const QString &author, const QString &title,
     const QString who = author.trimmed().isEmpty() ? tr("Чат") : author.trimmed();
     _transient = addPlainBubble(caption(who, title), text, objectName, false, true, false, who);
     bindTitleLink(_transient, workerId);
-    ensureLiveActionAtEnd();
 }
 
 //----------------------------------------------

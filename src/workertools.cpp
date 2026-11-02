@@ -1411,7 +1411,8 @@ QString RequestPermissionTool::description() const
     return QString::fromUtf8(
         "Ask the user to approve an action before doing it. "
         "Required before any internet search when you will not run that search "
-        "yourself: each search needs its own approval. "
+        "yourself. The dialog offers Always, same as a shell command: if the user "
+        "grants it, later searches with that program are not asked again. "
         "Also use for delete, rename, overwrite, or other destructive file changes. "
         "The function returns approved or rejected.");
 }
@@ -2263,10 +2264,10 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
     AppSettings *appSettings = AppSettings::instance();
     const bool rememberable = !programKey.isEmpty();
     QString decision;
-    if (webSearch)
-        decision = _owner->askPermission(action, false, QString());
-    else if (rememberable && appSettings->isCommandAlwaysAllowed(programKey))
+    if (rememberable && appSettings->isCommandAlwaysAllowed(programKey))
         decision = QString::fromUtf8("approved: always");
+    else if (webSearch)
+        decision = _owner->askPermission(action, rememberable, programKey);
     else if (system && appSettings->systemSettingsControlEnabled())
         decision = _owner->askPermission(action, rememberable, programKey);
     else if (outside && appSettings->outsideFilesControlEnabled()

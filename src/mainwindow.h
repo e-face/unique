@@ -108,6 +108,8 @@ private slots:
     void sltShowGraph();
     void sltShowJournal();
     void sltJournalWorkerChatRequested(const QString &workerId);
+    void sltComposerLiveStatus(const QString &text);
+    void sltComposerLiveFade(int alpha);
     void sltShowSettings();
     void sltShowProjectSettings();
     void sltCreateTeamSchema();
@@ -224,6 +226,7 @@ private:
     QIcon iconForSession(ChatSession *session) const;
     void applyAppStyle();
     void styleStatusPills();
+    void refreshLiveStatusBar();
     void updateComposerState();
     void updateComposerAttachmentsUi();
     void addComposerAbsoluteFiles(const QStringList &absolutePaths);
@@ -302,6 +305,9 @@ private:
     GraphThumb          *_graphThumb;
     QPlainTextEdit      *_composer;
     QStringList          _composerAttachments;
+    QString              _composerLiveStatus;
+    int                  _composerLiveAlpha;
+    QLabel              *_liveStatusLabel;
     QProgressBar        *_progressBar;
     QLabel              *_workTimeLabel;
     QLabel              *_changedFilesLabel;

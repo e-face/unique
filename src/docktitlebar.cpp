@@ -1,7 +1,58 @@
 #include "docktitlebar.h"
 //----------------------------------------------
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPainterPath>
+#include <QRegion>
+
+//----------------------------------------------
+
+namespace
+{
+const int kDockCornerRadius = 10;
+
+class DockRoundClip : public QObject
+{
+public:
+    explicit DockRoundClip(QWidget *dock, QObject *parent = 0)
+        : QObject(parent)
+        , _dock(dock)
+    {
+        if (!_dock)
+            return;
+        _dock->setAttribute(Qt::WA_StyledBackground, true);
+        _dock->installEventFilter(this);
+        apply();
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event)
+    {
+        if (watched == _dock && event
+            && (event->type() == QEvent::Resize || event->type() == QEvent::Show))
+            apply();
+        return false;
+    }
+
+private:
+    void apply()
+    {
+        if (!_dock)
+            return;
+        const QRect rect = _dock->rect();
+        if (rect.width() < 4 || rect.height() < 4)
+            return;
+        const qreal radius = qMin(qreal(kDockCornerRadius),
+                                  qMin(rect.width(), rect.height()) / 2.0);
+        QPainterPath path;
+        path.addRoundedRect(QRectF(rect), radius, radius);
+        _dock->setMask(QRegion(path.toFillPolygon().toPolygon()));
+    }
+
+    QWidget *_dock;
+};
+}
 
 //----------------------------------------------
 
@@ -18,6 +69,8 @@ DockTitleBar::DockTitleBar(QString title, QWidget *parent)
     lay->setContentsMargins(12, 8, 12, 8);
     lay->setSpacing(0);
     lay->addWidget(_label, 1);
+    if (QWidget *dock = parentWidget())
+        new DockRoundClip(dock, this);
 }
 
 //----------------------------------------------

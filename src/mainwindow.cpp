@@ -75,6 +75,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QShowEvent>
+#include <QSizePolicy>
 #include <QSize>
 #include <QSignalBlocker>
 #include <QStatusBar>
@@ -294,12 +295,20 @@ protected:
     virtual void paintEvent(QPaintEvent *event)
     {
         QStatusBar::paintEvent(event);
+        const QObjectList kids = children();
+        for (int i = 0; i < kids.size(); ++i)
+        {
+            QWidget *w = qobject_cast<QWidget *>(kids.at(i));
+            if (w && w->isVisible()
+                && w->objectName() == QString::fromUtf8("statusLiveAction"))
+                return;
+        }
+
         const QString msg = currentMessage();
         if (msg.isEmpty())
             return;
 
         int right = width() - 8;
-        const QObjectList kids = children();
         for (int i = 0; i < kids.size(); ++i)
         {
             QWidget *w = qobject_cast<QWidget *>(kids.at(i));
@@ -403,6 +412,8 @@ MainWindow::MainWindow(QWidget *parent)
     , _composerBar(0)
     , _graphThumb(0)
     , _composer(0)
+    , _composerLiveAlpha(255)
+    , _liveStatusLabel(0)
     , _progressBar(0)
     , _workTimeLabel(0)
     , _changedFilesLabel(0)
@@ -511,7 +522,8 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
         if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter)
         {
-            if (!(keyEvent->modifiers() & Qt::ShiftModifier))
+            if (!(keyEvent->modifiers() & Qt::ShiftModifier)
+                && _composerBar && _composerBar->isSendEnabled())
             {
                 sltComposerSend();
                 return true;
@@ -1519,8 +1531,34 @@ void MainWindow::createJournalWindow()
     _journal = new JournalWidget();
     connect(_journal, SIGNAL(workerChatRequested(QString)),
             this, SLOT(sltJournalWorkerChatRequested(QString)));
+    connect(_journal, SIGNAL(liveStatusChanged(QString)),
+            this, SLOT(sltComposerLiveStatus(QString)));
+    connect(_journal, SIGNAL(liveFadeChanged(int)),
+            this, SLOT(sltComposerLiveFade(int)));
     if (_tabBar)
         _tabBar->setJournalPage(_journal);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerLiveStatus(const QString &text)
+{
+    const QString next = text.trimmed();
+    if (_composerLiveStatus == next)
+        return;
+    _composerLiveStatus = next;
+    refreshLiveStatusBar();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerLiveFade(int alpha)
+{
+    if (_composerLiveAlpha == alpha)
+        return;
+    _composerLiveAlpha = alpha;
+    if (!_composerLiveStatus.isEmpty())
+        refreshLiveStatusBar();
 }
 
 //----------------------------------------------
@@ -3352,10 +3390,9 @@ void MainWindow::setupUi()
             this, SLOT(sltComposerFilesDropped(QStringList)));
 
     QVBoxLayout *root = new QVBoxLayout(central);
-    // Единый визуальный шаг между доками / вкладками / композером.
-    const int gap = 12;
-    root->setContentsMargins(gap, gap, gap, gap);
-    root->setSpacing(gap);
+    // Отступ центральной области от доков и краёв окна — 2px со всех сторон.
+    root->setContentsMargins(2, 2, 2, 2);
+    root->setSpacing(12);
     root->addWidget(_tabs, 1);
     root->addWidget(_composerBar);
 
@@ -3413,6 +3450,13 @@ void MainWindow::setupUi()
     _progressBar->setValue(0);
     _progressBar->hide();
     statusBar()->addPermanentWidget(_progressBar);
+
+    _liveStatusLabel = new QLabel(statusBar());
+    _liveStatusLabel->setObjectName(QString::fromUtf8("statusLiveAction"));
+    _liveStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    _liveStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    _liveStatusLabel->hide();
+    statusBar()->addWidget(_liveStatusLabel, 1);
 
     _workTimeLabel = new QLabel(statusBar());
     _changedFilesLabel = new QLabel(statusBar());
@@ -3692,6 +3736,61 @@ void MainWindow::styleStatusPills()
                             : QString::fromUtf8("#e07a5f");
     _addedLinesLabel->setStyleSheet(frame.arg(added, bg, border));
     _removedLinesLabel->setStyleSheet(frame.arg(removed, bg, border));
+    refreshLiveStatusBar();
+}
+
+//----------------------------------------------
+
+void MainWindow::refreshLiveStatusBar()
+{
+    if (!_liveStatusLabel)
+        return;
+    if (_composerLiveStatus.isEmpty())
+    {
+        _liveStatusLabel->hide();
+        if (statusBar())
+            statusBar()->update();
+        return;
+    }
+
+    AppSettings *s = AppSettings::instance();
+    QColor c = s->mutedTextColor();
+    c.setAlpha(qBound(0, _composerLiveAlpha, 255));
+    QFont font = _liveStatusLabel->font();
+    font.setItalic(true);
+    _liveStatusLabel->setFont(font);
+
+    int maxW = 240;
+    if (statusBar())
+    {
+        int right = statusBar()->width();
+        const QObjectList kids = statusBar()->children();
+        for (int i = 0; i < kids.size(); ++i)
+        {
+            QWidget *w = qobject_cast<QWidget *>(kids.at(i));
+            if (!w || w == _liveStatusLabel || !w->isVisible() || w->x() <= 2)
+                continue;
+            right = qMin(right, w->x());
+        }
+        maxW = qMax(80, right - 16);
+    }
+    const QFontMetrics fm(font);
+    _liveStatusLabel->setText(fm.elidedText(_composerLiveStatus, Qt::ElideRight, maxW));
+    _liveStatusLabel->setToolTip(_composerLiveStatus);
+    _liveStatusLabel->setStyleSheet(
+        QString::fromUtf8(
+            "QLabel#statusLiveAction { color:rgba(%1,%2,%3,%4); font-style:italic;"
+            " background:transparent; border:none; padding:0 8px; }")
+            .arg(c.red())
+            .arg(c.green())
+            .arg(c.blue())
+            .arg(c.alpha()));
+    _liveStatusLabel->show();
+    if (statusBar())
+    {
+        statusBar()->clearMessage();
+        statusBar()->update();
+    }
 }
 
 //----------------------------------------------
@@ -5075,8 +5174,8 @@ void MainWindow::updateComposerState()
     const bool canSend = hasOpenProject() && session && !_resetting && !busy && !waiting;
     const bool active = anyWorkActive();
     const bool composerOn = hasOpenProject() && !_resetting;
-    _composerBar->setReadOnly(!canSend);
     _composerBar->setComposerEnabled(composerOn);
+    _composerBar->setReadOnly(false);
     _composerBar->setSchemaAvailable(projectAwaitingFirstQuery());
     _composerBar->setSendEnabled(canSend);
     _composerBar->setStopEnabled(active && !_resetting);
@@ -5110,8 +5209,6 @@ void MainWindow::updateComposerState()
         _composerBar->setPlaceholder(L("composer.placeholder.noProject"));
     else if (!session)
         _composerBar->setPlaceholder(L("composer.placeholder.noRoot"));
-    else if (!canSend)
-        _composerBar->setPlaceholder(L("composer.placeholder.busy"));
     else
         _composerBar->setPlaceholder(L("composer.placeholder.ready"));
 }

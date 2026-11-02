@@ -122,19 +122,19 @@ static QColor stateBorder(WorkerState state)
     switch (state)
     {
     case WorkerStateRunning:
-        return QColor(QString::fromUtf8("#7ea0c4"));
+        return QColor(QString::fromUtf8("#1565c0"));
     case WorkerStateWaitingApproval:
-        return QColor(QString::fromUtf8("#d09a90"));
+        return QColor(QString::fromUtf8("#e04b32"));
     case WorkerStateWaitingChildren:
-        return QColor(QString::fromUtf8("#b7a6c8"));
+        return QColor(QString::fromUtf8("#7b3fb0"));
     case WorkerStateWaitingContinuation:
-        return QColor(QString::fromUtf8("#d4b59a"));
+        return QColor(QString::fromUtf8("#e08612"));
     case WorkerStateCompleted:
-        return QColor(QString::fromUtf8("#8aaf86"));
+        return QColor(QString::fromUtf8("#1f8f3a"));
     case WorkerStateFailed:
-        return QColor(QString::fromUtf8("#d08a8a"));
+        return QColor(QString::fromUtf8("#d01212"));
     case WorkerStateQueued:
-        return QColor(QString::fromUtf8("#c8b88a"));
+        return QColor(QString::fromUtf8("#c49208"));
     case WorkerStateIdle:
     default:
         return AppSettings::instance()->borderColor();
@@ -192,17 +192,21 @@ QPixmap WorkerGraphWidget::overviewPixmap(QSize size) const
     if (bounds.isEmpty() || !bounds.isValid())
     {
         QPixmap empty(size);
-        empty.fill(AppSettings::instance()->panelColor());
+        empty.fill(Qt::transparent);
         return empty;
     }
     bounds.adjust(-16, -16, 16, 16);
     QPixmap pix(size);
-    pix.fill(AppSettings::instance()->panelColor());
+    pix.fill(Qt::transparent);
+    const QBrush savedBackground = _scene->backgroundBrush();
+    _scene->setBackgroundBrush(Qt::NoBrush);
     QPainter painter(&pix);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     _scene->render(&painter, QRectF(0, 0, size.width(), size.height()), bounds,
                    Qt::KeepAspectRatio);
+    painter.end();
+    _scene->setBackgroundBrush(savedBackground);
     return pix;
 }
 

@@ -10,7 +10,6 @@
 #include <QUrl>
 
 class Agent;
-class QLabel;
 class QTimer;
 
 //----------------------------------------------
@@ -37,9 +36,8 @@ struct JournalEntry
  * @brief Журнал: сводная лента чатов проекта.
  *
  * Сообщения пользователя и ассистента — с подписью автора.
- * Вызовы функций в постоянную ленту не попадают; текущее действие
- * — одна строка фиксированной высоты после последнего сообщения
- * (смена текста + мерцание, без пересоздания виджета).
+ * Вызовы функций в постоянную ленту не попадают. Текущее действие
+ * в журнал не выводится: оно мерцает в строке состояния.
  * Заметки/ошибки — временные свёрнутые записи (новая замещает предыдущую).
  * Постоянные записи сохраняются в ___project___/journal.json
  * (не больше последних 100).
@@ -61,6 +59,10 @@ public:
 
 signals:
     void workerChatRequested(const QString &workerId);
+    /** Текущее действие для строки состояния; пусто, когда запрос не выполняется. */
+    void liveStatusChanged(const QString &text);
+    /** Яркость той же строки, 0…255. */
+    void liveFadeChanged(int alpha);
 
 public slots:
     void addPermanent(const QString &author, const QString &text, bool fromUser,
@@ -93,14 +95,14 @@ private:
     static QString caption(const QString &author, const QString &title);
     static QString actionTitleForTool(const QString &name);
     static QString toolArgsExcerpt(const QString &name, const QString &arguments);
-    QString elideLiveAction(const QString &text) const;
     static QString friendlyIngressBody(const QString &text, int ingress);
     void setAgentLiveAction(QObject *agent, const QString &action);
     void clearAgentLiveAction(QObject *agent);
     void rebuildLiveActionList();
-    void ensureLiveActionAtEnd();
     void refreshLiveActionText();
     void applyLiveActionFadeStyle();
+    QString currentLiveActionText() const;
+    void publishLiveStatus();
     void bindTitleLink(QWidget *bubble, const QString &workerId);
     void resetUi();
     void rememberEntry(const QString &author, const QString &text, bool fromUser,
@@ -127,12 +129,13 @@ private:
     bool                       _lastPermanentFromUser;
     bool                       _loading;
     bool                       _persistDirty;
-    QLabel                    *_liveActionLine;
     QTimer                    *_liveRotateTimer;
     QTimer                    *_liveFadeTimer;
     QTimer                    *_persistTimer;
     int                        _liveActionIndex;
     double                     _liveFadePhase;
+    QString                    _publishedLiveStatus;
+    int                        _publishedFadeAlpha;
 };
 
 #endif // JOURNALWIDGET_H

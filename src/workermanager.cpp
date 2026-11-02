@@ -3109,10 +3109,12 @@ static QString internetSearchRule(const AppLocale *locale)
     const QString fallback = QString::fromUtf8(
         "\nINTERNET SEARCH: Any search on the internet requires the user's confirmation "
         "before it starts. Do not search the web, open a page to look something up, "
-        "fetch online results, or delegate such a search until the user approves that "
-        "search. Each search is confirmed separately; a previous approval does not cover "
-        "the next one. If you cannot run the search yourself, call request_permission "
-        "and wait for the answer. If the user rejects it, do not search.");
+        "fetch online results, or delegate such a search until the user approves. "
+        "run_command shows the same dialog as other shell commands, including Always "
+        "for that program. After the user presses Always, later searches with the same "
+        "program run without another question. If you cannot run the search yourself, "
+        "call request_permission and wait for the answer. If the user rejects it, "
+        "do not search.");
     if (!locale)
         return fallback;
     return locale->model(QString::fromUtf8("internet_search"), fallback);
