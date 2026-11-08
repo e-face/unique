@@ -59,6 +59,26 @@ struct LlmProfile
      *        Пусто — авторазбор типичных ответов (DeepSeek и др.).
      */
     QString balanceJsonPath;
+    /**
+     * @brief Путь запроса генерации (от baseUrl или полный URL).
+     *        Пусто — стандартные OpenAI-совместимые пути для класса задач.
+     */
+    QString requestPath;
+    /**
+     * @brief Шаблон опроса асинхронной задачи с {id}, например /tasks/{id}.
+     *        Пусто — ссылка из ответа провайдера или /tasks/{id}.
+     */
+    QString taskPath;
+    /**
+     * @brief Каталог моделей со схемой параметров (от baseUrl или полный URL).
+     *        Пусто — /models.
+     */
+    QString catalogUrl;
+    /**
+     * @brief JSON-объект: поля, добавляемые в каждый запрос генерации,
+     *        если их не задал вызывающий. Пусто — ничего.
+     */
+    QString extraBody;
     /** Максимум вызовов функций за ход воркера с этим профилем. */
     int maxToolIterations;
     /**
@@ -154,6 +174,11 @@ struct WorkspaceSettings
     QList<WorkerPreset>    workerPresets;
     /** Пресет корневого воркера при создании проекта / пустого сеанса. */
     QString                rootWorkerPresetId;
+    /**
+     * Идентификаторы пресетов из настроек программы, которые в этом проекте
+     * удалили и не нужно подтягивать снова.
+     */
+    QSet<QString>          hiddenWorkerPresetIds;
     QString                workerProfileId[3];
     int                    maxWorkerDepth;
     int                    maxConcurrentWorkers;
@@ -167,8 +192,9 @@ struct WorkspaceSettings
  *
  * Оформление UI и полные профили моделей — только в defaults (config/ai).
  * В проекте хранятся ссылки на профили (workerProfileId, preset.profileId)
- * плюс пресеты, лимиты и контроль действий; при создании проекта копируются
- * из defaults, дальше правятся независимо (кроме тел профилей).
+ * плюс пресеты, лимиты и контроль действий. При создании проекта пресеты
+ * копируются из defaults. Новый пресет в настройках программы дописывается
+ * и в открытый проект; удалённый в проекте повторно не подтягивается.
  */
 class AppSettings : public QObject
 {
@@ -264,6 +290,12 @@ public:
      */
     bool showForwardedContext() const;
     void setShowForwardedContext(bool enabled);
+
+    /**
+     * @brief Одобрять запросы подтверждения моделей без диалога.
+     */
+    bool autoApprovePermissions() const;
+    void setAutoApprovePermissions(bool enabled);
 
     QString uiLanguage() const;
     void setUiLanguage(QString code);
@@ -435,6 +467,7 @@ private:
     void saveWorkerPresets(QSettings *settings, const WorkspaceSettings &bundle) const;
     void ensureWorkerPresetsSeeded(WorkspaceSettings *bundle);
     void ensureRootWorkerPresetId(WorkspaceSettings *bundle);
+    bool copyMissingDefaultPresets(WorkspaceSettings *bundle);
     void syncPresetTaskKind(WorkerPreset *preset) const;
     void syncBundlePresetTaskKinds(WorkspaceSettings *bundle) const;
     void dedupePresetsByTypeProfile(WorkspaceSettings *bundle) const;
@@ -483,6 +516,7 @@ private:
     bool                   _persistDefaultsPending;
     bool                   _persistProjectPending;
     bool                   _showForwardedContext;
+    bool                   _autoApprovePermissions;
     QString                _uiLanguage;
     QByteArray             _mainWindowGeometry;
     QByteArray             _mainWindowState;

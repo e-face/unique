@@ -11,13 +11,11 @@
 QString UsageStatsWidget::roleTitle(const QString &role) const
 {
     if (role == QString::fromUtf8("root"))
-        return tr("Главный менеджер");
-    if (role == QString::fromUtf8("manager"))
-        return tr("Менеджеры");
-    if (role == QString::fromUtf8("executor"))
+        return tr("Исполнитель");
+    if (role == QString::fromUtf8("manager")
+        || role == QString::fromUtf8("executor")
+        || role == QString::fromUtf8("tester"))
         return tr("Исполнители");
-    if (role == QString::fromUtf8("tester"))
-        return tr("Тестировщики");
     if (role == QString::fromUtf8("tool"))
         return tr("Инструменты");
     if (role == QString::fromUtf8("other"))

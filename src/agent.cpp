@@ -201,6 +201,7 @@ Agent::Agent(QObject *parent)
     , _toolBudgetChunk(kDefaultMaxToolIterations)
     , _toolIterations(0)
     , _contextCap(0)
+    , _tracksContext(true)
     , _lastEstimated(0)
     , _modelWorkId(0)
     , _busy(false)
@@ -353,8 +354,10 @@ void Agent::recordLocalExchange(QString userText, QString assistantText, int ing
         LlmMessage msg;
         msg.role = LlmRoleUser;
         msg.content = user;
+        msg.hideInUi = (ingress == AgentUserIngressSystem);
         _history.append(msg);
-        emit userMessage(user);
+        if (!msg.hideInUi)
+            emit userMessage(user);
     }
     if (!assistant.isEmpty())
     {
@@ -633,7 +636,12 @@ void Agent::applyProfileLimits(const LlmProfile &profile)
         iterations = kDefaultMaxToolIterations;
     _toolBudgetChunk = iterations > 0 ? iterations : kDefaultMaxToolIterations;
     setMaxToolIterations(iterations);
+    // Сжимает и считает контекст только воркер с языковой моделью.
+    // Медиа-исполнитель ходит в API генерации и окна контекста не имеет.
+    _tracksContext = !workerTaskKindIsMediaExecutor(profile.modality);
     setContextCap(profile.contextCap);
+    if (_tracksContext)
+        publishContextUsage();
 }
 
 //----------------------------------------------
@@ -683,9 +691,10 @@ void Agent::resolveToolBudget(bool continueWork)
         LlmMessage nudge;
         nudge.role = LlmRoleUser;
         nudge.content = QString::fromUtf8(
-            "TOOL BUDGET EXHAUSTED. You have no more function calls except complete_task. "
-            "Call complete_task NOW with the best report you can give (what you did, "
-            "files changed, what is left). If you cannot call it, answer in text.");
+            "TOOL BUDGET EXHAUSTED. If you are a child, the only remaining call is "
+            "complete_task: report what you did in YOUR part. If you are the top "
+            "executor, you have no complete_task: answer the user in text with the "
+            "outcome. Do not tell the user or a parent to finish the work for you.");
         _history.append(nudge);
     }
 
@@ -819,6 +828,13 @@ int Agent::contextLimit() const
 
 //----------------------------------------------
 
+bool Agent::tracksContext() const
+{
+    return _tracksContext;
+}
+
+//----------------------------------------------
+
 QList<LlmMessage> Agent::history() const
 {
     return _history;
@@ -945,8 +961,11 @@ void Agent::beginUserTurn(QString text, int ingress, QJsonArray contentParts)
     user.role = LlmRoleUser;
     user.content = text;
     user.contentParts = contentParts;
+    // Служебный пинг видит только модель. В чат и в сохранённую ленту он не попадает.
+    user.hideInUi = (ingress == AgentUserIngressSystem);
     _history.append(user);
-    emit userMessage(text);
+    if (!user.hideInUi)
+        emit userMessage(text);
 
     _toolIterations = 0;
     _finalAnswerRound = false;
@@ -979,6 +998,13 @@ void Agent::sendUserMessageAfterCompact(QString text, int ingress)
     if (_history.isEmpty())
         resetHistory();
 
+    // У медиа-воркера нет окна контекста — сводку моделью не запрашиваем.
+    if (!_tracksContext)
+    {
+        sendUserMessage(trimmed, ingress);
+        return;
+    }
+
     // Сжимать нечего — обычная отправка.
     int movable = 0;
     for (int i = (_history.first().role == LlmRoleSystem) ? 1 : 0; i < _history.size(); ++i)
@@ -1008,6 +1034,8 @@ void Agent::sendUserMessageAfterCompact(QString text, int ingress)
 
 void Agent::compactContext()
 {
+    if (!_tracksContext)
+        return;
     if (_busy)
     {
         emit failed(tr("Агент занят предыдущим запросом."));
@@ -1183,7 +1211,7 @@ void Agent::sltClientFailed(const QString &error)
         return;
     }
 
-    if (_phase == PhaseChat && !_overflowRetried
+    if (_tracksContext && _phase == PhaseChat && !_overflowRetried
         && ContextOptimizer::isContextOverflowError(error))
     {
         _overflowRetried = true;
@@ -1244,6 +1272,11 @@ void Agent::setPhase(Phase phase)
 
 void Agent::maybeOptimizeThenComplete()
 {
+    if (!_tracksContext)
+    {
+        requestCompletion();
+        return;
+    }
     emitContextUsage();
     const int used = estimatedPromptTokens();
     const int limit = contextLimit();
@@ -1267,6 +1300,11 @@ void Agent::maybeOptimizeThenComplete()
 
 void Agent::runCompact(CompactMode mode)
 {
+    if (!_tracksContext)
+    {
+        continueAfterCompact();
+        return;
+    }
     _optimizer.repairToolTurns(&_history);
     emitContextUsage();
 
@@ -1508,8 +1546,11 @@ void Agent::requestCompletion()
         }
     }
     request.tools = toolsForRequest();
-    _lastEstimated = _optimizer.estimatePrompt(request.messages, request.tools);
-    emitContextUsage();
+    if (_tracksContext)
+    {
+        _lastEstimated = _optimizer.estimatePrompt(request.messages, request.tools);
+        emitContextUsage();
+    }
     // См. requestNextSummaryChunk: requestAsText только при Inspect.
     if (_inspectIo)
         gateInspect(tr("Запрос"), requestAsText(request));
@@ -1532,6 +1573,8 @@ void Agent::emitContextUsage()
 
 void Agent::publishContextUsage()
 {
+    if (!_tracksContext)
+        return;
     emit contextUsageChanged(estimatedPromptTokens(), contextLimit());
 }
 
@@ -1618,10 +1661,20 @@ void Agent::handleToolCalls(LlmMessage message)
         else if (_finalAnswerRound && call.name != QString::fromUtf8("complete_task"))
         {
             ok = false;
-            result = QString::fromUtf8(
-                "TOOL BUDGET EXHAUSTED (%1 calls). Only complete_task is allowed. "
-                "Call it now with the best report you have.")
-                         .arg(_maxToolIterations);
+            if (findTool(QString::fromUtf8("complete_task")))
+            {
+                result = QString::fromUtf8(
+                    "TOOL BUDGET EXHAUSTED (%1 calls). Only complete_task is allowed. "
+                    "Call it now with the report for your parent.")
+                             .arg(_maxToolIterations);
+            }
+            else
+            {
+                result = QString::fromUtf8(
+                    "TOOL BUDGET EXHAUSTED (%1 calls). You are the top executor and "
+                    "have no complete_task. Stop calling functions and answer the user.")
+                             .arg(_maxToolIterations);
+            }
         }
         else if (!tool)
         {

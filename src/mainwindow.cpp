@@ -1587,26 +1587,18 @@ QString MainWindow::workerWindowTitle(Worker *worker) const
     if (!worker)
         return tr("Чат");
     QString role;
-    switch (worker->type())
+    if (worker->isTool())
     {
-    case WorkerTypeExecutor:
-        role = tr("Исполнитель");
-        break;
-    case WorkerTypeTester:
-        role = tr("Тестировщик");
-        break;
-    case WorkerTypeTool:
         if (!worker->toolName().isEmpty())
             return tr("Инструмент: %1").arg(worker->toolName());
         role = tr("Инструмент");
-        break;
-    case WorkerTypeManager:
-    default:
-        if (worker->isRoot() && worker->personName().isEmpty())
-            return worker->session() ? worker->session()->title() : tr("Главный чат");
-        role = tr("Менеджер");
-        break;
     }
+    else if (worker->isCheckOnly())
+        role = tr("Проверка");
+    else if (worker->isRoot() && worker->personName().isEmpty())
+        return worker->session() ? worker->session()->title() : tr("Главный чат");
+    else
+        role = tr("Исполнитель");
     if (worker->isGroupInterlocutor())
         role += tr(" · собеседник");
     else if (worker->isGroupChief())
@@ -1637,6 +1629,9 @@ void MainWindow::applyWorkerUi(Worker *worker)
     const bool root = worker->isRoot();
     worker->session()->widget()->setUserInputEnabled(root);
     worker->session()->widget()->setReportToParentVisible(!root);
+    if (worker->session()->agent())
+        worker->session()->widget()->setContextMeterVisible(
+            worker->session()->agent()->tracksContext());
     // Главный чат называем так, как модель сама озаглавила задание в plan_work:
     // это точнее первых 48 символов запроса пользователя.
     if (root && !worker->title().isEmpty()
@@ -1750,9 +1745,7 @@ void MainWindow::sltWorkerFinished()
     if (_resetting || _closing)
         return;
     Worker *worker = qobject_cast<Worker *>(sender());
-    if (!worker || !worker->isRoot())
-        return;
-    focusWorkerSession(worker);
+    Q_UNUSED(worker);
 }
 
 //----------------------------------------------
@@ -1949,8 +1942,6 @@ void MainWindow::sltWorkerProfileChangeRequested(const QString &workerId,
         if (_workers)
             _workers->installTools(worker);
         applyWorkerUi(worker);
-        // Показать вкладку воркера, чтобы композитор подтянул его caps/вложения.
-        ensureSessionVisible(worker->session());
     }
     // Заново определить входы модели (OpenRouter /images/models и т.п.).
     const ModelCapabilities caps =
@@ -3241,7 +3232,7 @@ LlmProfile MainWindow::profileForComposerTarget() const
     if (profile.id.isEmpty() && worker)
         profile = AppSettings::instance()->profileForWorkerType(worker->type());
     if (profile.id.isEmpty())
-        profile = AppSettings::instance()->profileForWorkerType(WorkerTypeManager);
+        profile = AppSettings::instance()->profileForWorkerType(WorkerTypeExecutor);
     return profile;
 }
 
@@ -3890,7 +3881,7 @@ void MainWindow::applyClientToSession(ChatSession *session)
     if (!session || !session->client() || !session->agent())
         return;
 
-    WorkerType type = WorkerTypeManager;
+    WorkerType type = WorkerTypeExecutor;
     LlmProfile profile;
     if (session->worker())
     {
@@ -4038,6 +4029,7 @@ void MainWindow::loadOpenChats()
         const WorkerType type = workerTypeFromString(shot.workerType);
         Worker *worker = _workers->createWorker(type, shot.id, session, 0, shot.task,
                                                 shot.llmProfileId);
+        worker->setCheckOnly(shot.checkOnly);
         worker->setTitle(shot.workerTitle);
         if (!shot.personName.isEmpty())
             worker->setPersonName(shot.personName);

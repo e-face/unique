@@ -136,6 +136,7 @@ private:
     double                     _liveFadePhase;
     QString                    _publishedLiveStatus;
     int                        _publishedFadeAlpha;
+    QString                    _transientBody;
 };
 
 #endif // JOURNALWIDGET_H

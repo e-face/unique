@@ -24,6 +24,7 @@ struct WorkSubtask
     QString name;
     QString task;
     QString complexity;
+    QString how;
     QString reason;
     bool    cannotSplit;
     bool    delegated;
@@ -122,6 +123,9 @@ public:
     int depth() const;
     bool isRoot() const;
     bool isTool() const;
+    /** Независимая проверка: читать и запускать команды, без записи и без детей. */
+    bool isCheckOnly() const;
+    void setCheckOnly(bool on);
     bool hasAnswered() const;
     bool isUserStopped() const;
 
@@ -207,6 +211,13 @@ public:
     WorkSubtask *findWorkSubtask(QString name, QString task);
     void markSubtaskDelegated(QString name);
     void clearWorkPlan();
+    void noteListedTools();
+    void noteListedPresets();
+    void noteWorkAction();
+    bool listedTools() const;
+    bool listedPresets() const;
+    bool needsWorkOpening() const;
+    QString openingBlockReason() const;
 
 signals:
     void stateChanged();
@@ -242,9 +253,12 @@ private:
     void onChildrenAnswered();
     QString composeParentReport() const;
     QString childOutcomesSummary() const;
+    bool shouldNudgeToContinue() const;
+    QString continueNudgeText() const;
 
     QString       _id;
     WorkerType    _type;
+    bool          _checkOnly;
     WorkerState   _state;
     Worker       *_parentWorker;
     QList<Worker *> _children;
@@ -303,6 +317,10 @@ private:
     int           _pendingSubtreeGrantBatches;
     qint64        _pendingSubtreeGrantMs;
     QString       _subtreeBudgetPromptText;
+    bool          _listedTools;
+    bool          _listedPresets;
+    bool          _actedAfterPlan;
+    int           _idleNudges;
 };
 
 #endif // WORKER_H

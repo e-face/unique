@@ -27,7 +27,8 @@ static const int kChildTaskLabelChars = 120;
 
 Worker::Worker(QObject *parent)
     : QObject(parent)
-    , _type(WorkerTypeManager)
+    , _type(WorkerTypeExecutor)
+    , _checkOnly(false)
     , _state(WorkerStateIdle)
     , _parentWorker(0)
     , _session(0)
@@ -57,6 +58,10 @@ Worker::Worker(QObject *parent)
     , _subtreeBudgetLoopActive(false)
     , _pendingSubtreeGrantBatches(0)
     , _pendingSubtreeGrantMs(0)
+    , _listedTools(false)
+    , _listedPresets(false)
+    , _actedAfterPlan(false)
+    , _idleNudges(0)
 {
     QString id = QUuid::createUuid().toString();
     if (id.startsWith(QChar('{')))
@@ -99,7 +104,7 @@ WorkerType Worker::type() const
 
 void Worker::setType(WorkerType type)
 {
-    _type = type;
+    _type = normalizeWorkerType(type);
 }
 
 //----------------------------------------------
@@ -593,20 +598,9 @@ QString Worker::shortName() const
             return tool;
         return tr("Инструмент");
     }
-    if (isRoot())
-        return tr("Главный менеджер");
-    switch (_type)
-    {
-    case WorkerTypeExecutor:
-        return tr("Исполнитель");
-    case WorkerTypeTester:
-        return tr("Тестировщик");
-    case WorkerTypeTool:
-        return tr("Инструмент");
-    case WorkerTypeManager:
-    default:
-        return tr("Менеджер");
-    }
+    if (_checkOnly)
+        return tr("Проверка");
+    return tr("Исполнитель");
 }
 
 //----------------------------------------------
@@ -694,11 +688,9 @@ bool Worker::isGroupInterlocutor() const
 
 bool Worker::canSpawnChildren() const
 {
-    if (isGroupInterlocutor())
+    if (isGroupInterlocutor() || isTool() || _checkOnly)
         return false;
-    if (isTool())
-        return false;
-    return type() == WorkerTypeManager || type() == WorkerTypeExecutor;
+    return type() == WorkerTypeExecutor;
 }
 
 //----------------------------------------------
@@ -835,6 +827,20 @@ bool Worker::isRoot() const
 bool Worker::isTool() const
 {
     return _type == WorkerTypeTool;
+}
+
+//----------------------------------------------
+
+bool Worker::isCheckOnly() const
+{
+    return _checkOnly;
+}
+
+//----------------------------------------------
+
+void Worker::setCheckOnly(bool on)
+{
+    _checkOnly = on;
 }
 
 //----------------------------------------------
@@ -1431,10 +1437,10 @@ QString Worker::composeStartPrefix() const
                            .arg(siblings.left(2500));
         handoff += QString::fromUtf8(
             "COMMUNICATION: Do not discuss with sibling workers. Receive work from your "
-            "parent and report via complete_task; managers assign children via "
-            "delegate_task. Group dialogue uses group_speak / group_await / "
-            "group_propose / group_vote only. Keep your work as isolated as possible "
-            "from siblings so contexts barely overlap. Name the files/interfaces you own.\n");
+            "parent and report your finished part via complete_task. You may split your "
+            "own part further with delegate_task. Group dialogue uses group_speak / "
+            "group_await / group_propose / group_vote only. Keep your work as isolated "
+            "as possible from siblings so contexts barely overlap. Name what you own.\n");
         parts.append(handoff);
     }
     const QString hint = KnowledgeStore::instance()->hintFor(_type, _task);
@@ -1475,6 +1481,10 @@ void Worker::startTask()
     if (!isTool())
         _changedFiles.clear();
     clearWorkPlan();
+    _listedTools = false;
+    _listedPresets = false;
+    _actedAfterPlan = false;
+    _idleNudges = 0;
     _hasVerification = false;
     _verificationPassed = false;
     _verificationCommand.clear();
@@ -1563,7 +1573,10 @@ QString Worker::childResultsReport() const
     if (isRoot())
     {
         text = QString::fromUtf8(
-            "All child workers have answered. Summarize the outcome for the user. "
+            "All child workers have answered. You are the top executor: there is no "
+            "parent and no complete_task. Your next reply is the report for the user: "
+            "what was asked, what each part delivered, and the outcome. "
+            "Do not end without that reply. Do not tell the user to finish the rest. "
             "Do not spawn more workers unless something failed and still needs work.\n");
     }
     else
@@ -1735,6 +1748,8 @@ QString Worker::askPermission(QString action, bool offerAlways, QString alwaysKe
     if (offerAlways && !key.isEmpty()
         && AppSettings::instance()->isCommandAlwaysAllowed(key))
         return QString::fromUtf8("approved: always");
+    if (AppSettings::instance()->autoApprovePermissions())
+        return QString::fromUtf8("approved");
 
     _permissionResult.clear();
     _permissionAction = action;
@@ -1868,39 +1883,6 @@ void Worker::markUsed()
 
 //----------------------------------------------
 
-static bool assignmentLooksComposite(QString text)
-{
-    const QString t = text.trimmed();
-    if (t.size() >= 400)
-        return true;
-    QRegExp numbered(QString::fromUtf8("(?:^|\\n)\\s*\\d+[.)]\\s+\\S"));
-    int pos = 0;
-    int n = 0;
-    while ((pos = numbered.indexIn(t, pos)) != -1)
-    {
-        ++n;
-        pos += numbered.matchedLength();
-    }
-    if (n >= 2)
-        return true;
-    QRegExp bullets(QString::fromUtf8("(?:^|\\n)\\s*[-*]\\s+\\S"));
-    pos = 0;
-    n = 0;
-    while ((pos = bullets.indexIn(t, pos)) != -1)
-    {
-        ++n;
-        pos += bullets.matchedLength();
-    }
-    if (n >= 2)
-        return true;
-    const int paragraphs = t.count(QString::fromUtf8("\n\n"));
-    if (paragraphs >= 2 && t.size() >= 220)
-        return true;
-    return false;
-}
-
-//----------------------------------------------
-
 QString Worker::currentAssignment() const
 {
     if (!_task.trimmed().isEmpty())
@@ -1960,9 +1942,11 @@ QString Worker::applyWorkPlan(QString architecture, const QList<WorkSubtask> &it
     if (items.isEmpty())
         return QString::fromUtf8("The plan must list at least one subtask.");
 
+    QList<WorkSubtask> normalized = items;
     QSet<QString> names;
-    foreach (const WorkSubtask &item, items)
+    for (int i = 0; i < normalized.size(); ++i)
     {
+        WorkSubtask &item = normalized[i];
         const QString name = item.name.trimmed().toLower();
         const QString task = item.task.trimmed();
         const QString complexity = item.complexity.trimmed().toLower();
@@ -1974,43 +1958,26 @@ QString Worker::applyWorkPlan(QString architecture, const QList<WorkSubtask> &it
         if (task.size() < 8)
             return QString::fromUtf8("Subtask '%1' needs a concrete task description.")
                 .arg(item.name.trimmed());
-        if (complexity != QString::fromUtf8("simple") && complexity != QString::fromUtf8("complex"))
-            return QString::fromUtf8(
-                "Subtask '%1' complexity must be 'simple' or 'complex'.")
-                .arg(item.name.trimmed());
-        if (complexity == QString::fromUtf8("complex") && item.cannotSplit)
-            return QString::fromUtf8(
-                "Subtask '%1': if it cannot be split further, mark complexity=simple, not complex.")
-                .arg(item.name.trimmed());
-        if (complexity == QString::fromUtf8("complex"))
+        QString how = item.how.trimmed().toLower();
+        if (how.isEmpty())
+            how = (complexity == QString::fromUtf8("complex"))
+                      ? QString::fromUtf8("delegate")
+                      : QString::fromUtf8("self");
+        if (how != QString::fromUtf8("self")
+            && how != QString::fromUtf8("delegate")
+            && how != QString::fromUtf8("tool"))
         {
-            WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
-            if (manager && !manager->canSpawnManagerUnder(this))
-                return QString::fromUtf8(
-                    "Subtask '%1' is marked complex, but type=manager is not allowed at your "
-                    "depth. Split it in THIS plan into simple executor-sized subtasks.")
-                    .arg(item.name.trimmed());
-            if (item.expectedParts < 3)
-                return QString::fromUtf8(
-                    "Subtask '%1' is complex but would give a child manager only %2 part(s). "
-                    "An intermediate manager for 1-2 parts is wasteful: list those parts here "
-                    "as simple subtasks and delegate them to executors yourself, or set "
-                    "expected_parts>=3 if the subtask really needs its own decomposition.")
-                    .arg(item.name.trimmed())
-                    .arg(item.expectedParts);
+            return QString::fromUtf8(
+                "Subtask '%1' how must be self, delegate, or tool.")
+                .arg(item.name.trimmed());
         }
+        item.how = how;
+        item.delegated = false;
     }
 
-    if (assignmentLooksComposite(currentAssignment()) && items.size() < 2)
-        return QString::fromUtf8(
-            "This assignment is composite. Split it into at least two subtasks. "
-            "Still-complex subtasks become child managers; simple/atomic ones become executors. "
-            "Do not give the whole job to one executor.");
-
     _architecture = arch;
-    _workPlan = items;
-    for (int i = 0; i < _workPlan.size(); ++i)
-        _workPlan[i].delegated = false;
+    _workPlan = normalized;
+    _actedAfterPlan = false;
     return QString();
 }
 
@@ -2067,6 +2034,124 @@ void Worker::clearWorkPlan()
 {
     _architecture.clear();
     _workPlan.clear();
+    _actedAfterPlan = false;
+}
+
+//----------------------------------------------
+
+void Worker::noteListedTools()
+{
+    _listedTools = true;
+}
+
+//----------------------------------------------
+
+void Worker::noteListedPresets()
+{
+    _listedPresets = true;
+}
+
+//----------------------------------------------
+
+void Worker::noteWorkAction()
+{
+    if (hasWorkPlan())
+        _actedAfterPlan = true;
+}
+
+//----------------------------------------------
+
+bool Worker::listedTools() const
+{
+    return _listedTools;
+}
+
+//----------------------------------------------
+
+bool Worker::listedPresets() const
+{
+    return _listedPresets;
+}
+
+//----------------------------------------------
+
+bool Worker::needsWorkOpening() const
+{
+    if (!canSpawnChildren())
+        return false;
+    WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
+    if (!manager)
+        return true;
+    const WorkerTaskKind kind = manager->modalityOf(const_cast<Worker *>(this));
+    if (workerTaskKindIsMediaExecutor(kind))
+        return false;
+    return true;
+}
+
+//----------------------------------------------
+
+QString Worker::openingBlockReason() const
+{
+    if (!needsWorkOpening() || hasWorkPlan())
+        return QString();
+    QStringList steps;
+    if (!_listedTools)
+        steps << QString::fromUtf8("list_tools");
+    if (!_listedPresets)
+        steps << QString::fromUtf8("list_worker_presets");
+    steps << QString::fromUtf8("plan_work");
+    return QString::fromUtf8(
+        "Before any other action call, in order: %1. "
+        "plan_work is your own plan. Save tokens and time. "
+        "how=self is the default — you do the part. "
+        "how=delegate or how=tool only when you judge the task complex enough "
+        "that a child or a tool is cheaper. You decide. "
+        "Then carry the plan out. A status message does not finish the task.")
+        .arg(steps.join(QString::fromUtf8(", ")));
+}
+
+//----------------------------------------------
+
+bool Worker::shouldNudgeToContinue() const
+{
+    if (_idleNudges >= 2 || !needsWorkOpening())
+        return false;
+    if (!hasWorkPlan() || !_actedAfterPlan)
+        return true;
+    for (int i = 0; i < _workPlan.size(); ++i)
+    {
+        if (_workPlan.at(i).how == QString::fromUtf8("delegate")
+            && !_workPlan.at(i).delegated)
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+QString Worker::continueNudgeText() const
+{
+    if (!hasWorkPlan())
+        return openingBlockReason();
+    QStringList pending;
+    for (int i = 0; i < _workPlan.size(); ++i)
+    {
+        if (_workPlan.at(i).how == QString::fromUtf8("delegate")
+            && !_workPlan.at(i).delegated)
+            pending << _workPlan.at(i).name.trimmed();
+    }
+    if (!pending.isEmpty())
+    {
+        return QString::fromUtf8(
+            "You stopped in the middle. These plan parts are not delegated yet: %1. "
+            "Continue the plan. A status message does not finish the task.")
+            .arg(pending.join(QString::fromUtf8(", ")));
+    }
+    return QString::fromUtf8(
+        "You stopped in the middle. Carry out the plan from plan_work. "
+        "A status message does not finish the task. "
+        "The top executor answers the user only when the outcome exists; "
+        "a child calls complete_task only then.");
 }
 
 //----------------------------------------------
@@ -2118,10 +2203,19 @@ void Worker::sltResumeAfterError()
         message += QString::fromUtf8(": ");
         message += _lastError.trimmed();
     }
-    message += QString::fromUtf8(
-        ".\nContinue the assigned task. "
-        "If you cannot finish, call complete_task with what was done and what failed. "
-        "The parent is still waiting for your answer.");
+    if (isRoot())
+    {
+        message += QString::fromUtf8(
+            ".\nContinue the task and answer the user. "
+            "You have no parent and you do not call complete_task.");
+    }
+    else
+    {
+        message += QString::fromUtf8(
+            ".\nContinue your part. "
+            "If you cannot finish it, call complete_task with what was done and what failed. "
+            "The parent is still waiting for your part, not for the user.");
+    }
     _session->agent()->sendUserMessage(message, AgentUserIngressSystem);
 }
 
@@ -2172,15 +2266,23 @@ void Worker::sltIdleAfterBusy()
     if (_session && _session->agent()
         && (_session->agent()->isBusy() || _session->agent()->isWaitingToolBudget()))
         return;
+    if (shouldNudgeToContinue() && _session && _session->agent())
+    {
+        ++_idleNudges;
+        setState(WorkerStateRunning);
+        _session->agent()->sendUserMessage(continueNudgeText(), AgentUserIngressSystem);
+        return;
+    }
     if (isRoot())
     {
         if (_state == WorkerStateRunning
             && !(_session && _session->agent() && _session->agent()->hasPendingContinue()))
         {
+            const QString answer = _lastAssistant.trimmed();
+            if (!answer.isEmpty())
+                _result = answer;
             setState(WorkerStateIdle);
             noteParentTurnEnded();
-            // Главный менеджер ответил пользователю: сообщаем окну,
-            // чтобы оно открыло его чат.
             emit finished();
         }
         return;

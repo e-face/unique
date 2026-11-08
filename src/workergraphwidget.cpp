@@ -5,6 +5,7 @@
 #include "worker.h"
 #include "workermanager.h"
 //----------------------------------------------
+#include <QApplication>
 #include <QAction>
 #include <QActionGroup>
 #include <QBrush>
@@ -59,27 +60,12 @@ QString WorkerGraphWidget::typeLabelFor(Worker *worker)
     if (!worker)
         return WorkerGraphWidget::tr("Воркер");
     QString role;
-    if (worker->isRoot())
-        role = WorkerGraphWidget::tr("Главный менеджер");
+    if (worker->isTool())
+        role = WorkerGraphWidget::tr("Инструмент");
+    else if (worker->isCheckOnly())
+        role = WorkerGraphWidget::tr("Проверка");
     else
-    {
-        switch (worker->type())
-        {
-        case WorkerTypeExecutor:
-            role = WorkerGraphWidget::tr("Исполнитель");
-            break;
-        case WorkerTypeTester:
-            role = WorkerGraphWidget::tr("Тестировщик");
-            break;
-        case WorkerTypeTool:
-            role = WorkerGraphWidget::tr("Инструмент");
-            break;
-        case WorkerTypeManager:
-        default:
-            role = WorkerGraphWidget::tr("Менеджер");
-            break;
-        }
-    }
+        role = WorkerGraphWidget::tr("Исполнитель");
     if (worker->isGroupInterlocutor())
         role += WorkerGraphWidget::tr(" · собеседник");
     else if (worker->isGroupChief())
@@ -148,6 +134,8 @@ WorkerGraphWidget::WorkerGraphWidget(QWidget *parent)
     , _scene(new QGraphicsScene(this))
     , _zoom(1.0)
     , _rebuilding(false)
+    , _pressing(false)
+    , _dragged(false)
 {
     setScene(_scene);
     setRenderHint(QPainter::Antialiasing, true);
@@ -160,7 +148,6 @@ WorkerGraphWidget::WorkerGraphWidget(QWidget *parent)
     setFrameShape(QFrame::NoFrame);
     setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
     applyTheme();
-    connect(_scene, SIGNAL(selectionChanged()), this, SLOT(sltSelectionChanged()));
     connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
             this, SLOT(sltLocaleChanged()));
 }
@@ -373,27 +360,12 @@ void WorkerGraphWidget::addNode(Worker *worker, qreal x, qreal y)
     worker->setProperty("graphY", y);
 
     QString caption;
-    if (worker->isRoot())
-        caption = tr("Главный менеджер");
+    if (worker->isTool())
+        caption = tr("Инструмент");
+    else if (worker->isCheckOnly())
+        caption = tr("Проверка");
     else
-    {
-        switch (worker->type())
-        {
-        case WorkerTypeExecutor:
-            caption = tr("Исполнитель");
-            break;
-        case WorkerTypeTester:
-            caption = tr("Тестировщик");
-            break;
-        case WorkerTypeTool:
-            caption = tr("Инструмент");
-            break;
-        case WorkerTypeManager:
-        default:
-            caption = tr("Менеджер");
-            break;
-        }
-    }
+        caption = tr("Исполнитель");
     if (worker->isGroupInterlocutor())
         caption += tr(" · собеседник");
     else if (worker->isGroupChief())
@@ -500,15 +472,57 @@ QString WorkerGraphWidget::workerIdAt(const QPoint &pos) const
 
 void WorkerGraphWidget::mousePressEvent(QMouseEvent *event)
 {
+    if (!event)
+        return;
     if (event->button() == Qt::RightButton)
     {
         // Контекстное меню обработает contextMenuEvent.
         event->accept();
         return;
     }
-    const QString id = workerIdAt(event->pos());
+    if (event->button() == Qt::LeftButton)
+    {
+        _pressing = true;
+        _dragged = false;
+        _pressPos = event->pos();
+        _pressWorkerId = workerIdAt(event->pos());
+    }
     QGraphicsView::mousePressEvent(event);
-    if (!id.isEmpty())
+}
+
+//----------------------------------------------
+
+void WorkerGraphWidget::mouseMoveEvent(QMouseEvent *event)
+{
+    if (!event)
+        return;
+    if (_pressing && !_dragged)
+    {
+        const QPoint delta = event->pos() - _pressPos;
+        if (delta.manhattanLength() >= QApplication::startDragDistance())
+            _dragged = true;
+    }
+    QGraphicsView::mouseMoveEvent(event);
+}
+
+//----------------------------------------------
+
+void WorkerGraphWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (!event)
+        return;
+    QString id;
+    bool openChat = false;
+    if (event->button() == Qt::LeftButton && _pressing)
+    {
+        openChat = !_dragged && !_pressWorkerId.isEmpty();
+        id = _pressWorkerId;
+        _pressing = false;
+        _dragged = false;
+        _pressWorkerId.clear();
+    }
+    QGraphicsView::mouseReleaseEvent(event);
+    if (openChat)
         emit workerActivated(id);
 }
 
@@ -527,9 +541,6 @@ void WorkerGraphWidget::contextMenuEvent(QContextMenuEvent *event)
     }
 
     QMenu menu(this);
-    QAction *openAction = menu.addAction(tr("Открыть чат"));
-    menu.addSeparator();
-
     QMenu *profileMenu = menu.addMenu(tr("Профиль модели"));
     QString currentProfileId = worker->llmProfileId().trimmed();
     if (currentProfileId.isEmpty())
@@ -587,9 +598,7 @@ void WorkerGraphWidget::contextMenuEvent(QContextMenuEvent *event)
     QAction *chosen = menu.exec(event->globalPos());
     if (!chosen)
         return;
-    if (chosen == openAction)
-        emit workerActivated(id);
-    else if (chosen == stopAction)
+    if (chosen == stopAction)
         emit workerInterruptRequested(id);
     else if (reportAction && chosen == reportAction)
         emit reportToParentRequested(id);
@@ -659,21 +668,6 @@ void WorkerGraphWidget::keyPressEvent(QKeyEvent *event)
         return;
     }
     QGraphicsView::keyPressEvent(event);
-}
-
-//----------------------------------------------
-
-void WorkerGraphWidget::sltSelectionChanged()
-{
-    foreach (QGraphicsItem *item, _scene->selectedItems())
-    {
-        const QString id = item->data(0).toString();
-        if (!id.isEmpty())
-        {
-            emit workerActivated(id);
-            return;
-        }
-    }
 }
 
 //----------------------------------------------

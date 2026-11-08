@@ -6,6 +6,8 @@
 #include "projectworkspace.h"
 #include "worker.h"
 //----------------------------------------------
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -14,6 +16,7 @@
 #include <QJsonParseError>
 #include <QMimeDatabase>
 #include <QRegExp>
+#include <QTimer>
 
 //----------------------------------------------
 
@@ -379,7 +382,9 @@ QJsonObject buildTextToSpeechToolArgs(const QString &taskText, const QJsonObject
     if (!voice.isEmpty())
         out.insert(QString::fromUtf8("voice"), voice);
 
-    const QString format = obj.value(QString::fromUtf8("format")).toString().trimmed();
+    QString format = obj.value(QString::fromUtf8("format")).toString().trimmed();
+    if (format.isEmpty())
+        format = obj.value(QString::fromUtf8("response_format")).toString().trimmed();
     if (!format.isEmpty())
         out.insert(QString::fromUtf8("format"), format);
     const QString outputPath = obj.value(QString::fromUtf8("output_path")).toString().trimmed();
@@ -391,6 +396,440 @@ QJsonObject buildTextToSpeechToolArgs(const QString &taskText, const QJsonObject
         out.insert(QString::fromUtf8("instructions"), instructions);
 
     return out;
+}
+
+//----------------------------------------------
+
+static void modalityNotice(QObject *toolParent, QString text);
+
+//----------------------------------------------
+
+static void waitMs(int ms)
+{
+    if (ms <= 0)
+        return;
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, SIGNAL(timeout()), &loop, SLOT(quit()));
+    timer.start(ms);
+    loop.exec();
+}
+
+//----------------------------------------------
+
+static QStringList urlsFromJsonValue(const QJsonValue &value)
+{
+    QStringList urls;
+    if (value.isString())
+    {
+        const QString url = value.toString().trimmed();
+        if (!url.isEmpty())
+            urls.append(url);
+    }
+    else if (value.isArray())
+    {
+        const QJsonArray list = value.toArray();
+        for (int i = 0; i < list.size(); ++i)
+            urls.append(urlsFromJsonValue(list.at(i)));
+    }
+    return urls;
+}
+
+//----------------------------------------------
+
+static QJsonObject taskObjectFromRoot(const QJsonObject &root)
+{
+    const QJsonValue data = root.value(QString::fromUtf8("data"));
+    if (data.isObject())
+        return data.toObject();
+    if (data.isArray() && !data.toArray().isEmpty() && data.toArray().at(0).isObject())
+        return data.toArray().at(0).toObject();
+    return root;
+}
+
+//----------------------------------------------
+
+static QString submittedTaskId(const QJsonObject &root)
+{
+    const QJsonObject item = taskObjectFromRoot(root);
+    if (item.contains(QString::fromUtf8("result")))
+        return QString();
+    if (!item.value(QString::fromUtf8("b64_json")).toString().trimmed().isEmpty())
+        return QString();
+    if (!urlsFromJsonValue(item.value(QString::fromUtf8("url"))).isEmpty())
+        return QString();
+    QString id = item.value(QString::fromUtf8("task_id")).toString().trimmed();
+    if (id.isEmpty())
+        id = item.value(QString::fromUtf8("id")).toString().trimmed();
+    if (id.isEmpty())
+        return QString();
+    const QString status = item.value(QString::fromUtf8("status")).toString().trimmed().toLower();
+    if (status == QString::fromUtf8("completed")
+        || status == QString::fromUtf8("succeeded")
+        || status == QString::fromUtf8("success")
+        || status == QString::fromUtf8("failed")
+        || status == QString::fromUtf8("error"))
+        return QString();
+    return id;
+}
+
+//----------------------------------------------
+
+/** Ссылка на файл результата: ключ, где она лежала, и сам URL. */
+struct MediaLink
+{
+    QString key;
+    QString url;
+};
+
+//----------------------------------------------
+
+static void collectMediaLinks(const QJsonValue &value, const QString &key,
+                              QList<MediaLink> *out)
+{
+    if (!out)
+        return;
+    if (value.isObject())
+    {
+        const QJsonObject obj = value.toObject();
+        foreach (const QString &k, obj.keys())
+            collectMediaLinks(obj.value(k), k, out);
+        return;
+    }
+    if (value.isArray())
+    {
+        const QJsonArray arr = value.toArray();
+        for (int i = 0; i < arr.size(); ++i)
+            collectMediaLinks(arr.at(i), key, out);
+        return;
+    }
+    if (!value.isString())
+        return;
+    const QString text = value.toString().trimmed();
+    if (!text.startsWith(QString::fromUtf8("http://"), Qt::CaseInsensitive)
+        && !text.startsWith(QString::fromUtf8("https://"), Qt::CaseInsensitive)
+        && !text.startsWith(QString::fromUtf8("data:"), Qt::CaseInsensitive))
+        return;
+    MediaLink link;
+    link.key = key.toLower();
+    link.url = text;
+    out->append(link);
+}
+
+//----------------------------------------------
+
+static bool keyMentionsAny(const QString &key, const char *const *words)
+{
+    for (int i = 0; words[i]; ++i)
+    {
+        if (key.contains(QString::fromUtf8(words[i])))
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+static bool urlHasAnyExtension(const QString &url, const char *const *exts)
+{
+    QString path = url;
+    const int q = path.indexOf(QChar('?'));
+    if (q >= 0)
+        path = path.left(q);
+    path = path.toLower();
+    for (int i = 0; exts[i]; ++i)
+    {
+        if (path.endsWith(QString::fromUtf8(".") + QString::fromUtf8(exts[i])))
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+/**
+ * @brief Все ссылки на файлы результата, подходящие под класс задач.
+ *
+ * kind: "image" | "video" | "audio". Сначала ссылки, у которых ключ или
+ * расширение говорят о нужной модальности; если таких нет — любые ссылки,
+ * кроме служебных (статус, превью, обложка).
+ */
+static QStringList resultMediaUrls(const QJsonObject &root, const QString &kind)
+{
+    static const char *imageWords[] = { "image", "img", "picture", "photo", 0 };
+    static const char *videoWords[] = { "video", "clip", "movie", 0 };
+    static const char *audioWords[] = { "audio", "sound", "speech", "voice", "track", 0 };
+    static const char *imageExts[] = { "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", 0 };
+    static const char *videoExts[] = { "mp4", "webm", "mov", "mkv", "avi", 0 };
+    static const char *audioExts[] = { "mp3", "wav", "m4a", "ogg", "flac", "aac", "opus", 0 };
+    static const char *serviceWords[] = { "status", "poll", "task", "callback", "thumb",
+                                          "preview", "cover", "icon", "avatar", 0 };
+
+    const char *const *words = audioWords;
+    const char *const *exts = audioExts;
+    const char *const *otherWords1 = imageWords;
+    const char *const *otherWords2 = videoWords;
+    if (kind == QString::fromUtf8("image"))
+    {
+        words = imageWords;
+        exts = imageExts;
+        otherWords1 = videoWords;
+        otherWords2 = audioWords;
+    }
+    else if (kind == QString::fromUtf8("video"))
+    {
+        words = videoWords;
+        exts = videoExts;
+        otherWords1 = imageWords;
+        otherWords2 = audioWords;
+    }
+
+    QList<MediaLink> links;
+    collectMediaLinks(root, QString(), &links);
+
+    QStringList matched;
+    QStringList neutral;
+    foreach (const MediaLink &link, links)
+    {
+        if (keyMentionsAny(link.key, serviceWords)
+            || link.url.contains(QString::fromUtf8("/tasks/"), Qt::CaseInsensitive))
+            continue;
+        const bool sameKind = keyMentionsAny(link.key, words) || urlHasAnyExtension(link.url, exts);
+        const bool otherKind = keyMentionsAny(link.key, otherWords1)
+                               || keyMentionsAny(link.key, otherWords2);
+        if (sameKind)
+        {
+            if (!matched.contains(link.url))
+                matched.append(link.url);
+        }
+        else if (!otherKind && !neutral.contains(link.url))
+            neutral.append(link.url);
+    }
+    return matched.isEmpty() ? neutral : matched;
+}
+
+//----------------------------------------------
+
+static QJsonObject pollProviderTask(ModalityApiClient *client, const QString &taskId,
+                                    const QStringList &statusUrls,
+                                    QObject *noticeParent, QString *error)
+{
+    const int budgetMs = qMax(30000, AppSettings::instance()->llmTimeoutSec() * 1000);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    QString pollUrl;
+    modalityNotice(noticeParent,
+                   QString::fromUtf8("Waiting for provider task %1…").arg(taskId));
+    while (elapsed.elapsed() < budgetMs)
+    {
+        QStringList candidates;
+        if (!pollUrl.isEmpty())
+            candidates << pollUrl;
+        else
+            candidates = statusUrls;
+        ModalityApiClient::Result status;
+        for (int i = 0; i < candidates.size(); ++i)
+        {
+            status = client->getBytes(candidates.at(i), 15000);
+            if (status.ok || (status.status != 404 && status.status != 405))
+            {
+                pollUrl = candidates.at(i);
+                break;
+            }
+        }
+        if (!status.ok)
+        {
+            if (error)
+            {
+                *error = status.error;
+                if (status.status == 404 || status.status == 405)
+                    *error += QString::fromUtf8(
+                        " (no task status URL worked; set the task status path in the "
+                        "model profile)");
+            }
+            return QJsonObject();
+        }
+        QJsonParseError pe;
+        const QJsonDocument doc = QJsonDocument::fromJson(status.body, &pe);
+        if (!doc.isObject())
+        {
+            if (error)
+                *error = QString::fromUtf8("Task status is not JSON.");
+            return QJsonObject();
+        }
+        const QJsonObject root = doc.object();
+        const QJsonObject item = taskObjectFromRoot(root);
+        const QString state = item.value(QString::fromUtf8("status")).toString().trimmed().toLower();
+        if (state == QString::fromUtf8("completed")
+            || state == QString::fromUtf8("succeeded")
+            || state == QString::fromUtf8("success"))
+            return root;
+        if (state == QString::fromUtf8("failed")
+            || state == QString::fromUtf8("error")
+            || state == QString::fromUtf8("cancelled")
+            || state == QString::fromUtf8("canceled"))
+        {
+            QString message = item.value(QString::fromUtf8("error")).toObject()
+                                  .value(QString::fromUtf8("message")).toString().trimmed();
+            if (message.isEmpty())
+                message = QString::fromUtf8(status.body.left(500));
+            if (error)
+                *error = QString::fromUtf8("Task %1 failed: %2").arg(taskId, message);
+            return QJsonObject();
+        }
+        waitMs(3000);
+    }
+    if (error)
+        *error = QString::fromUtf8("Task %1 timed out before the file was ready.").arg(taskId);
+    return QJsonObject();
+}
+
+//----------------------------------------------
+
+static bool takeAsyncMedia(ModalityApiClient *client, const QByteArray &body,
+                           const QString &submitPath, const QString &kind,
+                           QObject *noticeParent, QList<QByteArray> *files, QString *error)
+{
+    if (!files)
+        return false;
+    files->clear();
+    QJsonParseError pe;
+    const QJsonDocument doc = QJsonDocument::fromJson(body, &pe);
+    if (!doc.isObject())
+        return false;
+    const QString taskId = submittedTaskId(doc.object());
+    if (taskId.isEmpty())
+        return false;
+    const QStringList statusUrls = client->taskStatusUrls(doc.object(), taskId, submitPath);
+    const QJsonObject done = pollProviderTask(client, taskId, statusUrls, noticeParent, error);
+    if (done.isEmpty())
+        return true;
+    const QStringList urls = resultMediaUrls(done, kind);
+    if (urls.isEmpty())
+    {
+        if (error)
+            *error = QString::fromUtf8("Task %1 completed without a file URL.").arg(taskId);
+        return true;
+    }
+    foreach (const QString &url, urls)
+    {
+        modalityNotice(noticeParent, QString::fromUtf8("Downloading %1").arg(url.left(120)));
+        const ModalityApiClient::Result dl = client->getBytes(url);
+        if (!dl.ok)
+        {
+            if (error)
+                *error = dl.error;
+            files->clear();
+            return true;
+        }
+        if (!dl.body.isEmpty())
+            files->append(dl.body);
+    }
+    if (files->isEmpty() && error)
+        *error = QString::fromUtf8("Task %1 completed but the download was empty.").arg(taskId);
+    return true;
+}
+
+//----------------------------------------------
+
+/**
+ * @brief POST по пути профиля, либо по каталогу и стандартным путям.
+ *        404/405 открывает следующий путь только когда путь профиля пуст.
+ *        В ошибку попадают все попытки, а не только последняя.
+ */
+static ModalityApiClient::Result postToFirstEndpoint(ModalityApiClient *client,
+                                                     const QStringList &standardPaths,
+                                                     const QString &catalogEndpoint,
+                                                     const QJsonObject &body,
+                                                     QObject *noticeParent,
+                                                     const QString &label,
+                                                     QString *usedPath)
+{
+    ModalityApiClient::Result result;
+    if (!client)
+        return result;
+    QStringList ordered = standardPaths;
+    const QString fromCatalog = catalogEndpoint.trimmed();
+    if (!fromCatalog.isEmpty())
+        ordered.prepend(fromCatalog);
+    const QStringList paths = client->requestPaths(ordered);
+    const bool profilePath = !client->requestPath().isEmpty();
+    QStringList attempts;
+    foreach (const QString &path, paths)
+    {
+        const QString url = client->resolveUrl(path);
+        modalityNotice(noticeParent, QString::fromUtf8("%1: POST %2…").arg(label, url));
+        result = client->postJson(path, body);
+        if (usedPath)
+            *usedPath = path;
+        if (result.ok)
+            return result;
+        attempts << QString::fromUtf8("%1 — %2").arg(url, result.error);
+        if (profilePath)
+            break;
+        if (result.status != 404 && result.status != 405)
+            break;
+    }
+    if (attempts.isEmpty())
+        return result;
+    if (profilePath)
+    {
+        result.error = QString::fromUtf8(
+            "Request path from the model profile failed. No other path was tried.\n%1")
+            .arg(attempts.join(QString::fromUtf8("\n")));
+    }
+    else
+    {
+        result.error = QString::fromUtf8(
+            "Generation request failed. The model profile request path is empty, "
+            "so standard paths were tried:\n%1\n"
+            "Set the request path on the model profile to the provider endpoint.")
+            .arg(attempts.join(QString::fromUtf8("\n")));
+    }
+    return result;
+}
+
+//----------------------------------------------
+
+static QString saveDownloadedFiles(ProjectWorkspace *workspace, Worker *owner,
+                                   const QList<QByteArray> &files, QString outputPath,
+                                   const QString &prefix, const QString &extension,
+                                   QString *error)
+{
+    if (files.isEmpty())
+    {
+        if (error)
+            *error = QString::fromUtf8("No downloaded files.");
+        return QString();
+    }
+    QString path = outputPath.trimmed();
+    if (path.isEmpty())
+        path = ModalityApiClient::defaultArtifactPath(workspace, prefix, extension);
+    QStringList saved;
+    for (int i = 0; i < files.size(); ++i)
+    {
+        QString onePath = path;
+        if (files.size() > 1)
+        {
+            const QFileInfo info(path);
+            onePath = info.path() + QChar('/') + info.completeBaseName()
+                      + QString::fromUtf8("_%1.").arg(i + 1) + info.suffix();
+        }
+        QString saveError;
+        const QString rel = ModalityApiClient::saveBytes(workspace, onePath, files.at(i),
+                                                        &saveError);
+        if (rel.isEmpty())
+        {
+            if (error)
+                *error = saveError;
+            return QString();
+        }
+        if (owner)
+            owner->noteFileChanged(rel);
+        saved.append(rel);
+    }
+    return saved.join(QString::fromUtf8(", "));
 }
 
 //----------------------------------------------
@@ -444,14 +883,23 @@ static QString saveImagePayload(ModalityApiClient *client, ProjectWorkspace *wor
     {
         const QJsonObject item = data.at(i).toObject();
         QByteArray bytes;
-        const QString b64 = item.value(QString::fromUtf8("b64_json")).toString();
+        QString b64 = item.value(QString::fromUtf8("b64_json")).toString();
+        if (b64.isEmpty())
+            b64 = item.value(QString::fromUtf8("b64")).toString();
+        if (b64.isEmpty())
+            b64 = item.value(QString::fromUtf8("image_base64")).toString();
         if (!b64.isEmpty())
         {
             bytes = decodeDataUrlOrBase64(b64);
         }
         else
         {
-            const QString url = item.value(QString::fromUtf8("url")).toString().trimmed();
+            QString url = item.value(QString::fromUtf8("url")).toString().trimmed();
+            if (url.isEmpty())
+            {
+                const QJsonObject imageUrl = item.value(QString::fromUtf8("image_url")).toObject();
+                url = imageUrl.value(QString::fromUtf8("url")).toString().trimmed();
+            }
             if (url.isEmpty())
                 continue;
             const ModalityApiClient::Result dl = client->getBytes(url);
@@ -488,7 +936,15 @@ static QString saveImagePayload(ModalityApiClient *client, ProjectWorkspace *wor
     if (saved.isEmpty())
     {
         if (error)
-            *error = QString::fromUtf8("No image bytes in provider response.");
+        {
+            QStringList keys;
+            if (!data.isEmpty() && data.at(0).isObject())
+                keys = data.at(0).toObject().keys();
+            *error = QString::fromUtf8(
+                "No image bytes in provider response. First data item keys: %1.")
+                         .arg(keys.isEmpty() ? QString::fromUtf8("(none)")
+                                             : keys.join(QString::fromUtf8(", ")));
+        }
         return QString();
     }
     return saved.join(QString::fromUtf8(", "));
@@ -517,9 +973,10 @@ QString GenerateImageTool::description() const
 {
     return QString::fromUtf8(
         "Generate or edit an image via the worker's image model. "
-        "Minimal payload by default (model+prompt). Pass reference_path for "
-        "image-to-image models that require input_references (e.g. ming-image "
-        "design-layer). Do NOT pass n unless the provider documents it. "
+        "Minimal payload by default (model+prompt). Optional provider fields "
+        "size, n, resolution, quality, output_format and background are forwarded "
+        "when set and dropped if the provider rejects them. Pass reference_path "
+        "for image-to-image models that require input_references. "
         "Saves PNG/JPEG into the project.");
 }
 
@@ -538,15 +995,14 @@ QJsonObject GenerateImageTool::parametersSchema() const
     QJsonObject n;
     n.insert(QString::fromUtf8("type"), QString::fromUtf8("integer"));
     n.insert(QString::fromUtf8("description"),
-             QString::fromUtf8("Optional. Only send if provider supports n; "
-                               "many OpenRouter/Novita models reject n."));
+             QString::fromUtf8("Optional count. Sent when set; dropped if the provider rejects n."));
     QJsonObject refPath;
     refPath.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     refPath.insert(QString::fromUtf8("description"),
                    QString::fromUtf8(
                        "Project-relative path to a reference image for image-to-image "
-                       "(sent as input_references[0] data URL). Required by models like "
-                       "inclusionai/ming-image-0.1-design-layer."));
+                       "(sent as input_references[0] data URL). Required when the model "
+                       "needs an input image."));
     QJsonObject refUrl;
     refUrl.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     refUrl.insert(QString::fromUtf8("description"),
@@ -556,10 +1012,30 @@ QJsonObject GenerateImageTool::parametersSchema() const
     output.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     output.insert(QString::fromUtf8("description"),
                   QString::fromUtf8("Relative output path inside the project."));
+    QJsonObject resolution;
+    resolution.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    resolution.insert(QString::fromUtf8("description"),
+                      QString::fromUtf8("Optional provider resolution (for example 1k, 2k)."));
+    QJsonObject quality;
+    quality.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    quality.insert(QString::fromUtf8("description"),
+                   QString::fromUtf8("Optional provider quality."));
+    QJsonObject outputFormat;
+    outputFormat.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    outputFormat.insert(QString::fromUtf8("description"),
+                        QString::fromUtf8("Optional output format (png, jpeg, webp)."));
+    QJsonObject background;
+    background.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    background.insert(QString::fromUtf8("description"),
+                      QString::fromUtf8("Optional background (for example transparent)."));
     QJsonObject properties;
     properties.insert(QString::fromUtf8("prompt"), prompt);
     properties.insert(QString::fromUtf8("size"), size);
     properties.insert(QString::fromUtf8("n"), n);
+    properties.insert(QString::fromUtf8("resolution"), resolution);
+    properties.insert(QString::fromUtf8("quality"), quality);
+    properties.insert(QString::fromUtf8("output_format"), outputFormat);
+    properties.insert(QString::fromUtf8("background"), background);
     properties.insert(QString::fromUtf8("reference_path"), refPath);
     properties.insert(QString::fromUtf8("reference_url"), refUrl);
     properties.insert(QString::fromUtf8("output_path"), output);
@@ -644,6 +1120,57 @@ static bool errorMentions(QString error, QString token)
 
 //----------------------------------------------
 
+static void copyArgString(QJsonObject *body, const QJsonObject &args, const char *key)
+{
+    if (!body || !key)
+        return;
+    const QString value = args.value(QString::fromUtf8(key)).toString().trimmed();
+    if (!value.isEmpty())
+        body->insert(QString::fromUtf8(key), value);
+}
+
+//----------------------------------------------
+
+static bool mediaFieldHandled(const QString &key)
+{
+    static const char *skip[] = {
+        "prompt", "text", "input", "script", "model", "output_path",
+        "reference_path", "reference_url", "path", "instructions",
+        "format", "voice", "voice_id", "n", "size", "seconds", "duration",
+        "resolution", "quality", "output_format", "background", "aspect_ratio",
+        0
+    };
+    for (int i = 0; skip[i]; ++i)
+    {
+        if (key == QString::fromUtf8(skip[i]))
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+static void copyExtraMediaFields(QJsonObject *body, const QJsonObject &args)
+{
+    if (!body)
+        return;
+    foreach (const QString &key, args.keys())
+    {
+        if (mediaFieldHandled(key) || body->contains(key))
+            continue;
+        const QJsonValue value = args.value(key);
+        if (value.isNull() || value.isUndefined() || value.isObject())
+            continue;
+        if (value.isString() && value.toString().trimmed().isEmpty())
+            continue;
+        if (value.isArray() && value.toArray().isEmpty())
+            continue;
+        body->insert(key, value);
+    }
+}
+
+//----------------------------------------------
+
 QString GenerateImageTool::invoke(QString argumentsJson, bool *ok)
 {
     QJsonObject args;
@@ -679,16 +1206,16 @@ QString GenerateImageTool::invoke(QString argumentsJson, bool *ok)
     body.insert(QString::fromUtf8("prompt"), prompt);
 
     const QString size = args.value(QString::fromUtf8("size")).toString().trimmed();
-    if (!size.isEmpty() && caps.supportsSize)
+    if (!size.isEmpty())
         body.insert(QString::fromUtf8("size"), size);
-    else if (!size.isEmpty() && !caps.supportsSize)
-    {
-        modalityNotice(parent(),
-                       QString::fromUtf8("Image: size ignored (model does not support size)."));
-    }
+    copyArgString(&body, args, "resolution");
+    copyArgString(&body, args, "quality");
+    copyArgString(&body, args, "output_format");
+    copyArgString(&body, args, "background");
+    copyArgString(&body, args, "aspect_ratio");
+    copyExtraMediaFields(&body, args);
 
-    // n — только если caps.supportsN (обычно nMax>1) и явно передали.
-    if (args.contains(QString::fromUtf8("n")) && caps.supportsN)
+    if (args.contains(QString::fromUtf8("n")))
     {
         int n = args.value(QString::fromUtf8("n")).toInt(1);
         if (caps.nMin > 0 && n < caps.nMin)
@@ -750,37 +1277,17 @@ QString GenerateImageTool::invoke(QString argumentsJson, bool *ok)
         return msg;
     }
 
-    const QString base = client.baseUrl().toLower();
+    client.applyBodyDefaults(&body);
     QStringList endpoints;
-    if (base.contains(QString::fromUtf8("openrouter.ai")))
-    {
-        endpoints << QString::fromUtf8("/images")
-                  << QString::fromUtf8("/images/generations");
-    }
-    else
-    {
-        endpoints << QString::fromUtf8("/images/generations")
-                  << QString::fromUtf8("/images");
-    }
+    endpoints << QString::fromUtf8("/images/generations")
+              << QString::fromUtf8("/images");
 
     ModalityApiClient::Result result;
     QString usedEndpoint;
     for (int pass = 0; pass < 3; ++pass)
     {
-        foreach (const QString &endpoint, endpoints)
-        {
-            modalityNotice(parent(),
-                           QString::fromUtf8("Image: POST %1 (pass %2)…")
-                               .arg(endpoint)
-                               .arg(pass + 1));
-            result = client.postJson(endpoint, body);
-            usedEndpoint = endpoint;
-            if (result.ok)
-                break;
-            if (result.status == 404 || result.status == 405)
-                continue;
-            break;
-        }
+        result = postToFirstEndpoint(&client, endpoints, caps.requestEndpoint, body,
+                                     parent(), QString::fromUtf8("Image"), &usedEndpoint);
         if (result.ok)
             break;
 
@@ -816,6 +1323,29 @@ QString GenerateImageTool::invoke(QString argumentsJson, bool *ok)
                                QString::fromUtf8("Image: provider rejected size — retrying without size."));
                 changed = true;
             }
+            if (body.contains(QString::fromUtf8("aspect_ratio"))
+                && errorMentions(err, QString::fromUtf8("aspect_ratio")))
+            {
+                body.remove(QString::fromUtf8("aspect_ratio"));
+                changed = true;
+            }
+        }
+        foreach (const QString &key, body.keys())
+        {
+            if (key == QString::fromUtf8("model")
+                || key == QString::fromUtf8("prompt")
+                || key == QString::fromUtf8("n")
+                || key == QString::fromUtf8("input_references")
+                || key == QString::fromUtf8("image_urls")
+                || key.size() < 4)
+                continue;
+            if (!errorMentions(err, key))
+                continue;
+            body.remove(key);
+            modalityNotice(parent(),
+                           QString::fromUtf8("Image: provider rejected %1 — retrying without it.")
+                               .arg(key));
+            changed = true;
         }
         if (errorMentions(err, QString::fromUtf8("input_references")))
         {
@@ -832,8 +1362,7 @@ QString GenerateImageTool::invoke(QString argumentsJson, bool *ok)
                     "(input_references must have exactly 1 item). "
                     "Call generate_image with reference_path=\"path/in/project.png\" "
                     "or reference_url=\"https://...\" / data URL. "
-                    "For pure text-to-image use a model that does not require references "
-                    "(e.g. inclusionai/ming-image-0.1-design, not design-layer).\n"
+                    "For pure text-to-image use a model that does not require references.\n"
                     "Provider error: %1")
                     .arg(err);
             }
@@ -856,6 +1385,33 @@ QString GenerateImageTool::invoke(QString argumentsJson, bool *ok)
                    QString::fromUtf8("Image: response OK from %1 (%2 bytes), saving…")
                        .arg(usedEndpoint)
                        .arg(result.body.size()));
+
+    QList<QByteArray> asyncFiles;
+    QString asyncError;
+    if (takeAsyncMedia(&client, result.body, usedEndpoint, QString::fromUtf8("image"),
+                       parent(), &asyncFiles, &asyncError))
+    {
+        if (asyncFiles.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return asyncError;
+        }
+        const QString saved = saveDownloadedFiles(
+            _workspace, _owner, asyncFiles,
+            args.value(QString::fromUtf8("output_path")).toString(),
+            QString::fromUtf8("image"), QString::fromUtf8("png"), &error);
+        if (saved.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return error;
+        }
+        if (ok)
+            *ok = true;
+        modalityNotice(parent(), QString::fromUtf8("Image: saved → %1").arg(saved));
+        return QString::fromUtf8("Generated image(s): %1").arg(saved);
+    }
 
     QJsonParseError pe;
     const QJsonDocument doc = QJsonDocument::fromJson(result.body, &pe);
@@ -1018,14 +1574,44 @@ QString TextToSpeechTool::invoke(QString argumentsJson, bool *ok)
     body.insert(QString::fromUtf8("voice"),
                 voice.isEmpty() ? QString::fromUtf8("alloy") : voice);
     body.insert(QString::fromUtf8("response_format"), format);
+    client.applyBodyDefaults(&body);
 
-    const ModalityApiClient::Result result =
-        client.postJson(QString::fromUtf8("/audio/speech"), body);
+    const ModelCapabilities caps =
+        ModelCapabilityService::instance()->capabilitiesFor(profile);
+    QString usedPath;
+    const ModalityApiClient::Result result = postToFirstEndpoint(
+        &client, QStringList() << QString::fromUtf8("/audio/speech"),
+        caps.requestEndpoint, body, parent(), QString::fromUtf8("Speech"), &usedPath);
     if (!result.ok)
     {
         if (ok)
             *ok = false;
         return result.error;
+    }
+
+    QList<QByteArray> asyncFiles;
+    QString asyncError;
+    if (takeAsyncMedia(&client, result.body, usedPath, QString::fromUtf8("audio"),
+                       parent(), &asyncFiles, &asyncError))
+    {
+        if (asyncFiles.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return asyncError;
+        }
+        const QString saved = saveDownloadedFiles(
+            _workspace, _owner, asyncFiles, path,
+            QString::fromUtf8("tts"), format, &error);
+        if (saved.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return error;
+        }
+        if (ok)
+            *ok = true;
+        return QString::fromUtf8("Speech audio: %1").arg(saved);
     }
 
     // Ответ — сырые байты аудио (или JSON с ошибкой/url).
@@ -1294,22 +1880,47 @@ QString GenerateAudioTool::invoke(QString argumentsJson, bool *ok)
     if (args.contains(QString::fromUtf8("duration")))
         body.insert(QString::fromUtf8("duration"),
                     args.value(QString::fromUtf8("duration")).toDouble());
+    copyExtraMediaFields(&body, args);
+    client.applyBodyDefaults(&body);
 
-    static const char *kPaths[] = {
-        "/audio/generations", "/sound/generations", "/v1/audio/generations", 0
-    };
-    ModalityApiClient::Result result;
-    for (int i = 0; kPaths[i]; ++i)
-    {
-        result = client.postJson(QString::fromUtf8(kPaths[i]), body);
-        if (result.ok)
-            break;
-    }
+    const ModelCapabilities caps =
+        ModelCapabilityService::instance()->capabilitiesFor(profile);
+    QString usedPath;
+    const ModalityApiClient::Result result = postToFirstEndpoint(
+        &client,
+        QStringList() << QString::fromUtf8("/audio/generations")
+                      << QString::fromUtf8("/sound/generations"),
+        caps.requestEndpoint, body, parent(), QString::fromUtf8("Audio"), &usedPath);
     if (!result.ok)
     {
         if (ok)
             *ok = false;
         return result.error;
+    }
+
+    QList<QByteArray> asyncFiles;
+    QString asyncError;
+    if (takeAsyncMedia(&client, result.body, usedPath, QString::fromUtf8("audio"),
+                       parent(), &asyncFiles, &asyncError))
+    {
+        if (asyncFiles.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return asyncError;
+        }
+        const QString saved = saveDownloadedFiles(
+            _workspace, _owner, asyncFiles, path,
+            QString::fromUtf8("audio"), QString::fromUtf8("mp3"), &error);
+        if (saved.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return error;
+        }
+        if (ok)
+            *ok = true;
+        return QString::fromUtf8("Generated audio: %1").arg(saved);
     }
 
     QByteArray bytes = result.body;
@@ -1463,22 +2074,48 @@ QString GenerateVideoTool::invoke(QString argumentsJson, bool *ok)
     const QString size = args.value(QString::fromUtf8("size")).toString().trimmed();
     if (!size.isEmpty())
         body.insert(QString::fromUtf8("size"), size);
+    copyExtraMediaFields(&body, args);
+    client.applyBodyDefaults(&body);
 
-    static const char *kPaths[] = {
-        "/videos/generations", "/video/generations", "/videos", 0
-    };
-    ModalityApiClient::Result result;
-    for (int i = 0; kPaths[i]; ++i)
-    {
-        result = client.postJson(QString::fromUtf8(kPaths[i]), body);
-        if (result.ok)
-            break;
-    }
+    const ModelCapabilities caps =
+        ModelCapabilityService::instance()->capabilitiesFor(profile);
+    QString usedPath;
+    const ModalityApiClient::Result result = postToFirstEndpoint(
+        &client,
+        QStringList() << QString::fromUtf8("/videos/generations")
+                      << QString::fromUtf8("/video/generations")
+                      << QString::fromUtf8("/videos"),
+        caps.requestEndpoint, body, parent(), QString::fromUtf8("Video"), &usedPath);
     if (!result.ok)
     {
         if (ok)
             *ok = false;
         return result.error;
+    }
+
+    QList<QByteArray> asyncFiles;
+    QString asyncError;
+    if (takeAsyncMedia(&client, result.body, usedPath, QString::fromUtf8("video"),
+                       parent(), &asyncFiles, &asyncError))
+    {
+        if (asyncFiles.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return asyncError;
+        }
+        const QString saved = saveDownloadedFiles(
+            _workspace, _owner, asyncFiles, path,
+            QString::fromUtf8("video"), QString::fromUtf8("mp4"), &error);
+        if (saved.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return error;
+        }
+        if (ok)
+            *ok = true;
+        return QString::fromUtf8("Generated video: %1").arg(saved);
     }
 
     QByteArray bytes;
@@ -1646,8 +2283,11 @@ QString EmbedTextsTool::invoke(QString argumentsJson, bool *ok)
         input.append(t);
     body.insert(QString::fromUtf8("input"), input);
 
-    const ModalityApiClient::Result result =
-        client.postJson(QString::fromUtf8("/embeddings"), body);
+    client.applyBodyDefaults(&body);
+    QString usedPath;
+    const ModalityApiClient::Result result = postToFirstEndpoint(
+        &client, QStringList() << QString::fromUtf8("/embeddings"), QString(), body,
+        parent(), QString::fromUtf8("Embeddings"), &usedPath);
     if (!result.ok)
     {
         if (ok)

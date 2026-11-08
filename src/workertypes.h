@@ -6,7 +6,11 @@
 //----------------------------------------------
 
 /**
- * @brief Роль воркера: изолированный набор функций и промпта.
+ * @brief Вид воркера.
+ *
+ * В дереве только исполнитель. Инструмент — общий специалист вне дерева.
+ * Manager и Tester оставлены в перечислении, чтобы старые файлы читались,
+ * и сразу приводятся к исполнителю.
  */
 enum WorkerType
 {
@@ -192,7 +196,7 @@ inline bool workerTaskKindUsesAgentChat(WorkerTaskKind kind)
 struct WorkerPreset
 {
     WorkerPreset()
-        : type(WorkerTypeManager)
+        : type(WorkerTypeExecutor)
         , taskKind(WorkerTaskKindLlm)
     {
     }
@@ -206,20 +210,21 @@ struct WorkerPreset
 
 //----------------------------------------------
 
+/** Менеджер и тестировщик из старых проектов — это исполнитель. */
+inline WorkerType normalizeWorkerType(WorkerType type)
+{
+    if (type == WorkerTypeTool)
+        return WorkerTypeTool;
+    return WorkerTypeExecutor;
+}
+
+//----------------------------------------------
+
 inline QString workerTypeToString(WorkerType type)
 {
-    switch (type)
-    {
-    case WorkerTypeExecutor:
-        return QString::fromUtf8("executor");
-    case WorkerTypeTester:
-        return QString::fromUtf8("tester");
-    case WorkerTypeTool:
+    if (normalizeWorkerType(type) == WorkerTypeTool)
         return QString::fromUtf8("tool");
-    case WorkerTypeManager:
-    default:
-        return QString::fromUtf8("manager");
-    }
+    return QString::fromUtf8("executor");
 }
 
 //----------------------------------------------
@@ -240,15 +245,9 @@ inline bool isKnownWorkerTypeName(QString value)
 
 inline WorkerType workerTypeFromString(QString value)
 {
-    if (value == QString::fromUtf8("executor")
-        || value == QString::fromUtf8("file")
-        || value == QString::fromUtf8("code"))
-        return WorkerTypeExecutor;
-    if (value == QString::fromUtf8("tester"))
-        return WorkerTypeTester;
     if (value == QString::fromUtf8("tool"))
         return WorkerTypeTool;
-    return WorkerTypeManager;
+    return WorkerTypeExecutor;
 }
 
 //----------------------------------------------

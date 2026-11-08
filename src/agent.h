@@ -91,6 +91,8 @@ public:
     bool hasPendingContinue() const;
     int  estimatedPromptTokens() const;
     int  contextLimit() const;
+    /** Медиа-воркер не ведёт окно контекста: ни сжатие, ни подсчёт. */
+    bool tracksContext() const;
     QList<LlmMessage> history() const;
     void setHistory(const QList<LlmMessage> &history);
     void requestStopAfterTools();
@@ -246,6 +248,7 @@ private:
     int                _toolBudgetChunk;
     int                _toolIterations;
     int                _contextCap;
+    bool               _tracksContext;
     int                _lastEstimated;
     int                _modelWorkId;
     bool               _busy;

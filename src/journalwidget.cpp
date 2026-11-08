@@ -42,6 +42,7 @@ JournalWidget::JournalWidget(QWidget *parent)
     , _liveActionIndex(0)
     , _liveFadePhase(0.0)
     , _publishedFadeAlpha(-1)
+    , _transientBody()
 {
     setUserInputEnabled(false);
     setContextRowVisible(false);
@@ -65,6 +66,7 @@ void JournalWidget::resetUi()
 {
     ConversationWidget::clearMessages();
     _transient = 0;
+    _transientBody.clear();
     _lastPermanent = 0;
     _lastPermanentAuthor.clear();
     _lastPermanentFromUser = false;
@@ -405,6 +407,12 @@ QString JournalWidget::actionTitleForTool(const QString &name)
         return JournalWidget::tr("команда");
     if (n == QString::fromUtf8("complete_task"))
         return JournalWidget::tr("завершение задачи");
+    if (n == QString::fromUtf8("plan_work"))
+        return JournalWidget::tr("план");
+    if (n == QString::fromUtf8("list_tools"))
+        return JournalWidget::tr("список инструментов");
+    if (n == QString::fromUtf8("list_worker_presets"))
+        return JournalWidget::tr("список воркеров");
     if (n == QString::fromUtf8("spawn_worker") || n == QString::fromUtf8("create_worker")
         || n == QString::fromUtf8("delegate_task"))
         return JournalWidget::tr("поручение");
@@ -770,6 +778,9 @@ void JournalWidget::addTransient(const QString &author, const QString &title,
                                  const QString &text, const QString &kind,
                                  const QString &workerId)
 {
+    if (_transient && _transientBody == text)
+        return;
+    _transientBody = text;
     if (_transient)
         removeBubble(_transient);
     QString objectName = kind;

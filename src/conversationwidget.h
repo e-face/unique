@@ -12,6 +12,7 @@
 #include <QWidget>
 
 class Agent;
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QTimer;
@@ -145,6 +146,8 @@ public:
     void applyTheme();
     bool hasActivePrompt() const;
     void setContextRowVisible(bool visible);
+    /** Шкала контекста и кнопка сжатия. Прервать остаётся. */
+    void setContextMeterVisible(bool visible);
     /**
      * @brief Состояние воркера, перекрывающее показания агента
      *        (ожидание детей, разрешения, очередь). Пусто — снять.
@@ -191,6 +194,8 @@ private slots:
     void sltPermissionApprove();
     void sltPermissionAlways();
     void sltPermissionReject();
+    void sltAutoApproveToggled(bool checked);
+    void sltDisplayOptionsChanged();
     void sltToolBudgetExhausted(int chunk);
     void sltActivityTick();
 
@@ -244,6 +249,7 @@ private:
     QVBoxLayout    *_messagesLayout;
     QPlainTextEdit *_input;
     QPushButton    *_sendButton;
+    QCheckBox      *_autoApproveBox;
     QPushButton    *_stopButton;
     QPushButton    *_interruptButton;
     QPushButton    *_reportButton;

@@ -690,12 +690,12 @@ QString PlanWorkTool::name() const
 QString PlanWorkTool::description() const
 {
     return QString::fromUtf8(
-        "Required before the first delegate_task. You plan; you do not implement or test. "
-        "simple/cannot_split -> executor; complex needs expected_parts>=3, otherwise keep "
-        "the pieces in YOUR plan as simple items. Shape subtasks so each child is reusable "
-        "for follow-ups of the same kind — not a new worker per tiny edit. Do not assign "
-        "testers in the plan. Repeated same-shaped steps are create_tool/run_tool, not extra "
-        "executors. Note which preset_id fits each subtask (modality and purpose).");
+        "Record YOUR plan, then carry it out. Call list_tools and list_worker_presets first. "
+        "Save tokens and time. Default every part to how=self and do it yourself. "
+        "how=delegate or how=tool only for a complex task where you judge that a child "
+        "or a tool will cost less than doing the work here. You decide; a short or "
+        "ordinary task is one how=self subtask. After the plan is accepted, do the work "
+        "in this same turn.");
 }
 
 //----------------------------------------------
@@ -715,20 +715,14 @@ QJsonObject PlanWorkTool::parametersSchema() const
                                     "language; it becomes the child worker's name in the UI."));
     QJsonObject task;
     task.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
-    QJsonObject complexity;
-    complexity.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
-    complexity.insert(QString::fromUtf8("description"),
-                      QString::fromUtf8("simple or complex"));
-    QJsonObject cannotSplit;
-    cannotSplit.insert(QString::fromUtf8("type"), QString::fromUtf8("boolean"));
-    QJsonObject expectedParts;
-    expectedParts.insert(QString::fromUtf8("type"), QString::fromUtf8("integer"));
-    expectedParts.insert(QString::fromUtf8("description"),
-                         QString::fromUtf8(
-                             "For complex subtasks only: how many independent executor-sized "
-                             "parts the child manager would create. Must be >= 3; with 1-2 "
-                             "parts do not create a manager, list the parts here as simple "
-                             "subtasks instead."));
+    QJsonObject how;
+    how.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    how.insert(QString::fromUtf8("description"),
+               QString::fromUtf8(
+                   "self — you do this part (default; saves tokens and time). "
+                   "delegate — a child, only if you judge that split cheaper. "
+                   "tool — a repeated utilitarian step, only if a tool is cheaper "
+                   "than doing it inline."));
     QJsonObject reason;
     reason.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     reason.insert(QString::fromUtf8("description"),
@@ -737,14 +731,12 @@ QJsonObject PlanWorkTool::parametersSchema() const
     QJsonObject subtaskProps;
     subtaskProps.insert(QString::fromUtf8("name"), name);
     subtaskProps.insert(QString::fromUtf8("task"), task);
-    subtaskProps.insert(QString::fromUtf8("complexity"), complexity);
-    subtaskProps.insert(QString::fromUtf8("cannot_split"), cannotSplit);
-    subtaskProps.insert(QString::fromUtf8("expected_parts"), expectedParts);
+    subtaskProps.insert(QString::fromUtf8("how"), how);
     subtaskProps.insert(QString::fromUtf8("reason"), reason);
     QJsonArray subtaskRequired;
     subtaskRequired.append(QString::fromUtf8("name"));
     subtaskRequired.append(QString::fromUtf8("task"));
-    subtaskRequired.append(QString::fromUtf8("complexity"));
+    subtaskRequired.append(QString::fromUtf8("how"));
     QJsonObject subtaskItem;
     subtaskItem.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
     subtaskItem.insert(QString::fromUtf8("properties"), subtaskProps);
@@ -794,6 +786,13 @@ QString PlanWorkTool::invoke(QString argumentsJson, bool *ok)
             *ok = false;
         return QString::fromUtf8("Worker is missing.");
     }
+    if (!_owner->listedTools() || !_owner->listedPresets())
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8(
+            "Call list_tools and list_worker_presets first, then plan_work.");
+    }
 
     const QJsonArray raw = args.value(QString::fromUtf8("subtasks")).toArray();
     QList<WorkSubtask> items;
@@ -803,9 +802,7 @@ QString PlanWorkTool::invoke(QString argumentsJson, bool *ok)
         WorkSubtask item;
         item.name = obj.value(QString::fromUtf8("name")).toString();
         item.task = obj.value(QString::fromUtf8("task")).toString();
-        item.complexity = obj.value(QString::fromUtf8("complexity")).toString();
-        item.cannotSplit = obj.value(QString::fromUtf8("cannot_split")).toBool();
-        item.expectedParts = obj.value(QString::fromUtf8("expected_parts")).toInt();
+        item.how = obj.value(QString::fromUtf8("how")).toString();
         item.reason = obj.value(QString::fromUtf8("reason")).toString();
         items.append(item);
     }
@@ -823,23 +820,16 @@ QString PlanWorkTool::invoke(QString argumentsJson, bool *ok)
         _owner->setTitle(title);
 
     WorkerManager *manager = qobject_cast<WorkerManager *>(_owner->parent());
-    const bool managersAllowed = !manager || manager->canSpawnManagerUnder(_owner);
     QString report = QString::fromUtf8(
-        "Plan accepted. Now call delegate_task once per subtask in this turn.\n");
-    if (!managersAllowed)
-        report += QString::fromUtf8(
-            "Depth limit: type=manager is not allowed at your level, "
-            "so every subtask goes to an executor.\n");
+        "Plan accepted. Carry it out now, in this turn. "
+        "Children and tools only where you marked them; do the rest yourself. "
+        "Do not stop with a status message.\n");
     if (manager)
         report += manager->loadSummary() + QString::fromUtf8("\n");
     foreach (const WorkSubtask &item, _owner->workPlan())
     {
-        const bool atomic = (item.complexity.toLower() == QString::fromUtf8("simple")
-                             || item.cannotSplit);
-        report += QString::fromUtf8("- %1 -> type %2\n")
-                      .arg(item.name.trimmed(),
-                           (atomic || !managersAllowed) ? QString::fromUtf8("executor")
-                                                        : QString::fromUtf8("manager"));
+        report += QString::fromUtf8("- %1 -> %2\n")
+                      .arg(item.name.trimmed(), item.how);
     }
     if (ok)
         *ok = true;
@@ -867,14 +857,17 @@ QString DelegateTaskTool::name() const
 QString DelegateTaskTool::description() const
 {
     return QString::fromUtf8(
-        "Give work to a direct child. Managers call plan_work first; executors delegate "
-        "directly. simple -> executor, complex -> manager "
-        "(depth limits are in your first message). Prefer worker_id of a child you already "
-        "have, including COMPLETED children, whenever the new work is the same kind. Create "
-        "a new worker only for a new role. type=tester only if the user required testing or "
-        "a report recommended it; do not add a tester by default. Routine repeated work is "
-        "run_tool, not another executor. Pass preset_id to match modality AND purpose. "
-        "Several calls run in parallel; you continue after ALL children of the batch answer.");
+        "Optional. You decide whether a child is worth the tokens and time. "
+        "Use it only for a complex part that is cheaper as its own chat: "
+        "why=independent (large piece that does not need the other parts' text; "
+        "because says what it owns and returns), why=context (this part does not "
+        "fit one chat; pass because), why=other_modality (another model API; pass "
+        "preset_id), why=check (the user asked for an independent check; "
+        "check_only=true). A lookup, a list, or one piece stays here. "
+        "Prefer worker_id of a child you already have, including COMPLETED children, for "
+        "follow-ups of the same part. A repeated command is create_tool/run_tool, not "
+        "another executor. Pass preset_id to match modality AND purpose. Several calls "
+        "run in parallel; you continue after ALL children of the batch answer.");
 }
 
 //----------------------------------------------
@@ -884,7 +877,7 @@ QJsonObject DelegateTaskTool::parametersSchema() const
     QJsonObject type;
     type.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     type.insert(QString::fromUtf8("description"),
-                QString::fromUtf8("Worker type: manager, executor, or tester."));
+                QString::fromUtf8("Must be executor."));
 
     QJsonObject task;
     task.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
@@ -899,7 +892,27 @@ QJsonObject DelegateTaskTool::parametersSchema() const
     QJsonObject subtask;
     subtask.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     subtask.insert(QString::fromUtf8("description"),
-                   QString::fromUtf8("Name of the subtask from plan_work (required for managers)."));
+                   QString::fromUtf8("Optional label. Not required."));
+
+    QJsonObject why;
+    why.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    why.insert(QString::fromUtf8("description"),
+               QString::fromUtf8(
+                   "Required for a new child: other_modality, context, independent, or check. "
+                   "Omit only when reusing worker_id."));
+
+    QJsonObject because;
+    because.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    because.insert(QString::fromUtf8("description"),
+                   QString::fromUtf8(
+                       "For context or independent: what this part owns, what it must return, "
+                       "and why it does not fit this chat or does not need the other parts."));
+
+    QJsonObject checkOnly;
+    checkOnly.insert(QString::fromUtf8("type"), QString::fromUtf8("boolean"));
+    checkOnly.insert(QString::fromUtf8("description"),
+                     QString::fromUtf8(
+                         "True only for why=check. The child cannot edit files or spawn."));
 
     QJsonObject title;
     title.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
@@ -925,6 +938,9 @@ QJsonObject DelegateTaskTool::parametersSchema() const
     properties.insert(QString::fromUtf8("worker_id"), workerId);
     properties.insert(QString::fromUtf8("subtask"), subtask);
     properties.insert(QString::fromUtf8("preset_id"), presetId);
+    properties.insert(QString::fromUtf8("why"), why);
+    properties.insert(QString::fromUtf8("because"), because);
+    properties.insert(QString::fromUtf8("check_only"), checkOnly);
 
     QJsonArray required;
     required.append(QString::fromUtf8("type"));
@@ -956,15 +972,29 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
             *ok = false;
         return QString::fromUtf8("Worker manager is not available.");
     }
-
-    const QString typeName = args.value(QString::fromUtf8("type")).toString().trimmed().toLower();
-    if (!isKnownWorkerTypeName(typeName))
+    const QString blocked = _owner->openingBlockReason();
+    if (!blocked.isEmpty())
     {
         if (ok)
             *ok = false;
-        return QString::fromUtf8("Invalid worker type. Use manager, executor, or tester.");
+        return blocked;
     }
-    const WorkerType type = workerTypeFromString(typeName);
+
+    const QString typeName = args.value(QString::fromUtf8("type")).toString().trimmed().toLower();
+    if (typeName == QString::fromUtf8("tool"))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8(
+            "Tools are not children. Use create_tool and run_tool.");
+    }
+    if (!typeName.isEmpty() && !isKnownWorkerTypeName(typeName))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Invalid worker type. Use executor.");
+    }
+    const WorkerType type = WorkerTypeExecutor;
     const QString task = args.value(QString::fromUtf8("task")).toString();
     const QString workerId = args.value(QString::fromUtf8("worker_id")).toString();
     const QString subtaskName = args.value(QString::fromUtf8("subtask")).toString();
@@ -992,21 +1022,20 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
                 "Unknown preset_id=%1.\n%2")
                 .arg(presetId, AppSettings::instance()->workerPresetsSummary());
         }
-        if (preset.type != type)
-        {
-            if (ok)
-                *ok = false;
-            return QString::fromUtf8(
-                "preset_id=%1 is type=%2, but delegate_task type=%3. "
-                "Pick a preset whose type matches, or change type.")
-                .arg(presetId, workerTypeToString(preset.type), workerTypeToString(type));
-        }
         if (preset.type == WorkerTypeTool)
         {
             if (ok)
                 *ok = false;
             return QString::fromUtf8(
                 "Tool presets are for create_tool / run_tool, not delegate_task.");
+        }
+        if (normalizeWorkerType(preset.type) != type)
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "preset_id=%1 is type=%2, but delegate_task needs an executor.")
+                .arg(presetId, workerTypeToString(preset.type));
         }
         llmProfileId = preset.profileId.trimmed();
         if (llmProfileId.isEmpty())
@@ -1023,57 +1052,6 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
                 "preset_id=%1 points to unknown profileId=%2.")
                 .arg(presetId, llmProfileId);
         }
-    }
-
-    if (_owner->type() == WorkerTypeManager)
-    {
-        if (!_owner->hasWorkPlan())
-        {
-            if (ok)
-                *ok = false;
-            return QString::fromUtf8(
-                "Call plan_work first: architecture, then subtasks with complexity. "
-                "Do not spawn an executor for the whole assignment.");
-        }
-        WorkSubtask *item = _owner->findWorkSubtask(subtaskName, task);
-        if (!item)
-        {
-            if (ok)
-                *ok = false;
-            QString names;
-            foreach (const WorkSubtask &planned, _owner->workPlan())
-            {
-                if (!names.isEmpty())
-                    names += QString::fromUtf8(", ");
-                names += planned.name;
-            }
-            return QString::fromUtf8(
-                "subtask must match a plan_work item. Planned names: %1")
-                .arg(names);
-        }
-        if (type != WorkerTypeTester)
-        {
-            const bool atomic = (item->complexity.toLower() == QString::fromUtf8("simple")
-                                 || item->cannotSplit);
-            const bool managersAllowed = _manager && _manager->canSpawnManagerUnder(_owner);
-            if (type == WorkerTypeExecutor && !atomic && managersAllowed)
-            {
-                if (ok)
-                    *ok = false;
-                return QString::fromUtf8(
-                    "Subtask '%1' is still complex. Spawn type=manager so it can be split further.")
-                    .arg(item->name);
-            }
-            if (type == WorkerTypeManager && atomic)
-            {
-                if (ok)
-                    *ok = false;
-                return QString::fromUtf8(
-                    "Subtask '%1' is simple/atomic. Spawn type=executor, not manager.")
-                    .arg(item->name);
-            }
-        }
-        _owner->markSubtaskDelegated(item->name);
     }
 
     Worker *child = _owner->findChildForAssignment(type, workerId, task);
@@ -1098,6 +1076,9 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
                      workerTypeToString(type));
         }
         _owner->registerDelegated(child);
+        _owner->noteWorkAction();
+        _owner->markSubtaskDelegated(subtaskName);
+        _owner->markSubtaskDelegated(title);
         if (!title.isEmpty() && child->title().isEmpty())
             child->setTitle(title);
         child->markUsed();
@@ -1123,7 +1104,72 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
                  note);
     }
 
-    Worker *spawned = _manager->spawn(_owner, type, task, &error, llmProfileId);
+    QString why = args.value(QString::fromUtf8("why")).toString().trimmed().toLower();
+    const QString because = args.value(QString::fromUtf8("because")).toString().trimmed();
+    bool checkOnly = args.value(QString::fromUtf8("check_only")).toBool(false);
+    if (checkOnly && why.isEmpty())
+        why = QString::fromUtf8("check");
+    if (why == QString::fromUtf8("check"))
+        checkOnly = true;
+    if (why != QString::fromUtf8("other_modality")
+        && why != QString::fromUtf8("context")
+        && why != QString::fromUtf8("independent")
+        && why != QString::fromUtf8("check"))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8(
+            "A new child needs why=other_modality, context, independent, or check. "
+            "Do the work yourself when none of these apply. "
+            "Reuse worker_id for a follow-up of a child you already have.");
+    }
+    if ((why == QString::fromUtf8("context") || why == QString::fromUtf8("independent"))
+        && because.size() < 20)
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8(
+            "why=%1 needs because: what this part owns, what it must return, "
+            "and why it does not fit this chat or does not need the other parts.")
+            .arg(why);
+    }
+    if (why == QString::fromUtf8("other_modality"))
+    {
+        if (presetId.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "other_modality needs preset_id of the other model "
+                "(image, audio, speech, video, embeddings, decisions, ...).");
+        }
+        const LlmProfile childProfile = AppSettings::instance()->profileById(llmProfileId);
+        const WorkerTaskKind childKind = childProfile.id.isEmpty()
+                                         ? WorkerTaskKindLlm
+                                         : childProfile.modality;
+        if (childKind == _manager->modalityOf(_owner))
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "That preset has the same modality as you. "
+                "Use why=context or why=independent, or pick a preset of another modality.");
+        }
+    }
+    if (checkOnly && !presetId.isEmpty())
+    {
+        const LlmProfile childProfile = AppSettings::instance()->profileById(llmProfileId);
+        if (childProfile.id.isEmpty()
+            || workerTaskKindIsMediaExecutor(childProfile.modality))
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "check_only needs an LLM preset, not a media generator.");
+        }
+    }
+
+    Worker *spawned = _manager->spawn(_owner, type, task, &error, llmProfileId, checkOnly);
     if (!spawned)
     {
         if (ok)
@@ -1133,6 +1179,9 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
     spawned->setTitle(title);
 
     _owner->registerDelegated(spawned);
+    _owner->noteWorkAction();
+    _owner->markSubtaskDelegated(subtaskName);
+    _owner->markSubtaskDelegated(title);
     _manager->requestStart(spawned);
     if (ok)
         *ok = true;
@@ -1192,12 +1241,12 @@ QString CompleteTaskTool::name() const
 QString CompleteTaskTool::description() const
 {
     return QString::fromUtf8(
-        "Finish and send YOUR report to the parent. Testers must pass verified plus structured "
-        "evidence {command, output, artifact?, digest?} and must not have edited the project. "
-        "Executors may omit verification; a smoke check is optional. If tests are worth doing, "
-        "say so in result as a recommendation (whether to test, and what to watch) — do not "
-        "block on a tester. If the task was too large, ask the parent to replace you with a "
-        "manager. lessons format: lines CMD:/ERR:/FIX:/PATH:/TAGS:.");
+        "Report YOUR finished part to the parent. Only a child has this tool. "
+        "The top executor answers the user and does not call it. "
+        "Call it when your part is done, not to ask the parent to finish it. "
+        "A check-only executor must pass verified plus structured evidence "
+        "{command, output, artifact?, digest?} and must not have edited the project. "
+        "lessons format: lines CMD:/ERR:/FIX:/PATH:/TAGS:.");
 }
 
 //----------------------------------------------
@@ -1273,6 +1322,30 @@ QJsonObject CompleteTaskTool::parametersSchema() const
 
 //----------------------------------------------
 
+static bool reportHandsWorkUpward(const QString &result)
+{
+    const QString text = result.toLower();
+    const QStringList needles = QStringList()
+        << QString::fromUtf8("рекомендую родител")
+        << QString::fromUtf8("рекомендую пользовател")
+        << QString::fromUtf8("recommend the parent")
+        << QString::fromUtf8("recommend the user")
+        << QString::fromUtf8("ask the parent")
+        << QString::fromUtf8("ask the user to")
+        << QString::fromUtf8("the parent should")
+        << QString::fromUtf8("the user should")
+        << QString::fromUtf8("родитель должен")
+        << QString::fromUtf8("пользователь должен");
+    foreach (const QString &needle, needles)
+    {
+        if (text.contains(needle))
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
 QString CompleteTaskTool::invoke(QString argumentsJson, bool *ok)
 {
     QJsonObject args;
@@ -1288,6 +1361,13 @@ QString CompleteTaskTool::invoke(QString argumentsJson, bool *ok)
         if (ok)
             *ok = false;
         return QString::fromUtf8("Worker is missing.");
+    }
+    const QString blocked = _owner->openingBlockReason();
+    if (!blocked.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return blocked;
     }
 
     if (_owner->hasUnfinishedChildren())
@@ -1312,7 +1392,6 @@ QString CompleteTaskTool::invoke(QString argumentsJson, bool *ok)
     const QString lessons = args.value(QString::fromUtf8("lessons")).toString().trimmed();
     const bool hasVerified = args.contains(QString::fromUtf8("verified"));
     const bool verified = args.value(QString::fromUtf8("verified")).toBool();
-    const WorkerType type = _owner->type();
 
     QString evCommand;
     QString evOutput;
@@ -1336,20 +1415,33 @@ QString CompleteTaskTool::invoke(QString argumentsJson, bool *ok)
     }
     const bool evidenceOk = (evCommand.size() >= 3 && evOutput.size() >= 20);
 
-    // A: verification gate — fail-closed + structured evidence.
-    if (type == WorkerTypeTester)
+    // Сдача своей части — не просьба родителю или пользователю доделать её.
+    if (!_owner->isCheckOnly() && reportHandsWorkUpward(result))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8(
+            "REFUSED: your part is not finished. Report the outcome of the part "
+            "you were given. Do not tell the parent or the user to do the rest. "
+            "The top executor answers the user; a child only reports its own "
+            "finished part.");
+    }
+
+    // Независимая проверка закрывается только со структурированным свидетельством.
+    if (_owner->isCheckOnly())
     {
         if (!hasVerified || !evidenceOk)
         {
             if (ok)
                 *ok = false;
             return QString::fromUtf8(
-                "REFUSED (verification gate): tester must pass verified and structured "
-                "evidence {command, output} (output >= 20 chars). Optional artifact/digest.");
+                "REFUSED (verification gate): a check-only executor must pass verified "
+                "and structured evidence {command, output} (output >= 20 chars). "
+                "Optional artifact/digest.");
         }
     }
     bool success = true;
-    if (type == WorkerTypeTester || (type == WorkerTypeExecutor && hasVerified))
+    if (_owner->isCheckOnly() || hasVerified)
         success = verified;
 
     if (hasVerified || evidenceOk)
@@ -1648,9 +1740,12 @@ QString CreateToolTool::name() const
 QString CreateToolTool::description() const
 {
     return QString::fromUtf8(
-        "Create a shared reusable TOOL for one narrow, repeated job. Prefer this over a new "
-        "executor when the same kind of step will run again (build, lint, generate, convert, "
-        "batch edits). Pass preset_id to bind the model: match modality AND purpose from the "
+        "Optional. You decide whether a tool is worth the tokens and time. "
+        "Create one only for a narrow utilitarian job that will repeat enough to be "
+        "cheaper than doing it inline (fetch, parse, build, lint, generate, convert, "
+        "batch edits). Do not create a tool for a one-off step and do not spawn an "
+        "executor for a repetition. Pass preset_id to bind the model: match "
+        "modality AND purpose from the "
         "presets list (e.g. text-to-image vs object segmentation). Without preset_id the "
         "default Tool LLM profile is used (cannot generate images). Call list_tools first. "
         "Only the user can delete tools.");
@@ -1714,6 +1809,13 @@ QString CreateToolTool::invoke(QString argumentsJson, bool *ok)
             *ok = false;
         return QString::fromUtf8("Worker manager is missing.");
     }
+    const QString blocked = _owner->openingBlockReason();
+    if (!blocked.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return blocked;
+    }
     const QString name = args.value(QString::fromUtf8("name")).toString();
     const QString purpose = args.value(QString::fromUtf8("purpose")).toString();
     const QString presetId = args.value(QString::fromUtf8("preset_id")).toString().trimmed();
@@ -1763,6 +1865,7 @@ QString CreateToolTool::invoke(QString argumentsJson, bool *ok)
             " (no preset_id → default Tool LLM profile; cannot do image/speech/video)");
     }
 
+    _owner->noteWorkAction();
     Worker *tool = _manager->createTool(_owner, name, purpose, &error, llmProfileId);
     if (!tool)
     {
@@ -1783,7 +1886,15 @@ QString CreateToolTool::invoke(QString argumentsJson, bool *ok)
 ListToolsTool::ListToolsTool(WorkerManager *manager, QObject *parent)
     : AgentTool(parent)
     , _manager(manager)
+    , _owner(0)
 {
+}
+
+//----------------------------------------------
+
+void ListToolsTool::setOwner(Worker *owner)
+{
+    _owner = owner;
 }
 
 //----------------------------------------------
@@ -1798,7 +1909,9 @@ QString ListToolsTool::name() const
 QString ListToolsTool::description() const
 {
     return QString::fromUtf8(
-        "List shared tools: tool_id, name, busy/free, queue, purpose. Call before create_tool or a build/run.");
+        "List shared tools: tool_id, name, busy/free, queue, purpose. "
+        "Call this before plan_work. A repeated utilitarian step may become a tool "
+        "when you judge that cheaper; you decide.");
 }
 
 //----------------------------------------------
@@ -1821,9 +1934,66 @@ QString ListToolsTool::invoke(QString, bool *ok)
             *ok = false;
         return QString::fromUtf8("Worker manager is missing.");
     }
+    if (_owner)
+        _owner->noteListedTools();
     if (ok)
         *ok = true;
     return _manager->toolsSummary();
+}
+
+//----------------------------------------------
+
+ListWorkerPresetsTool::ListWorkerPresetsTool(WorkerManager *manager, Worker *owner,
+                                             QObject *parent)
+    : AgentTool(parent)
+    , _manager(manager)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString ListWorkerPresetsTool::name() const
+{
+    return QString::fromUtf8("list_worker_presets");
+}
+
+//----------------------------------------------
+
+QString ListWorkerPresetsTool::description() const
+{
+    return QString::fromUtf8(
+        "List the worker presets you can create: preset_id, type, modality, model, purpose. "
+        "Call this before plan_work, together with list_tools. "
+        "Creating a child or a tool is your decision and only worth it when it "
+        "saves tokens and time. Pass preset_id if you do.");
+}
+
+//----------------------------------------------
+
+QJsonObject ListWorkerPresetsTool::parametersSchema() const
+{
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), QJsonObject());
+    return schema;
+}
+
+//----------------------------------------------
+
+QString ListWorkerPresetsTool::invoke(QString, bool *ok)
+{
+    if (!_manager)
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Worker manager is missing.");
+    }
+    if (_owner)
+        _owner->noteListedPresets();
+    if (ok)
+        *ok = true;
+    return AppSettings::instance()->workerPresetsSummary();
 }
 
 //----------------------------------------------
@@ -1848,7 +2018,13 @@ QString RunToolTool::description() const
 {
     return QString::fromUtf8(
         "Run a shared tool and wait for its report. One caller at a time (others queue). "
-        "Prefer this over re-discovering build/run commands.");
+        "An llm tool gets a plain-language task. "
+        "An image, audio, video, speech or embedding tool is not a chat model. "
+        "request is one JSON object. The keys are that tool's params from list_tools "
+        "(the same list is on the preset line). Set required keys. Set any other key "
+        "only when the task asks for that setting. prompt or text is the content, "
+        "not an instruction to save a file. output_path is the new file. "
+        "reference_path is an existing file and only when params include it.");
 }
 
 //----------------------------------------------
@@ -1864,7 +2040,9 @@ QJsonObject RunToolTool::parametersSchema() const
     request.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     request.insert(QString::fromUtf8("description"),
                    QString::fromUtf8(
-                       "The run request: what exactly to do this time and what to report."));
+                       "For an llm tool: what to do. For an image/audio/video/speech/"
+                       "embedding tool: one JSON object whose keys are that tool's "
+                       "params from list_tools. Not a chat instruction."));
 
     QJsonObject properties;
     properties.insert(QString::fromUtf8("tool_id"), toolId);
@@ -1899,6 +2077,14 @@ QString RunToolTool::invoke(QString argumentsJson, bool *ok)
             *ok = false;
         return QString::fromUtf8("Worker manager is missing.");
     }
+    const QString blocked = _owner->openingBlockReason();
+    if (!blocked.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return blocked;
+    }
+    _owner->noteWorkAction();
     const QString toolId = args.value(QString::fromUtf8("tool_id")).toString();
     const QString request = args.value(QString::fromUtf8("request")).toString();
     Worker *tool = _manager->toolByIdOrName(toolId);
@@ -2221,6 +2407,14 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
             *ok = false;
         return QString::fromUtf8("Workspace or worker is missing.");
     }
+    const QString blocked = _owner->openingBlockReason();
+    if (!blocked.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return blocked;
+    }
+    _owner->noteWorkAction();
 
     const QString command = args.value(QString::fromUtf8("command")).toString().trimmed();
     if (command.isEmpty())
@@ -2531,6 +2725,22 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
         return report;
     }
     report = QString::fromUtf8("exit_code=%1\n%2").arg(code).arg(replyBody);
+    if (code != 0)
+    {
+        const QString lowered = output.toLower();
+        const bool notFound = (code == 9009)
+            || lowered.contains(QString::fromUtf8("is not recognized"))
+            || lowered.contains(QString::fromUtf8("не является внутренней"))
+            || lowered.contains(QString::fromUtf8("command not found"))
+            || lowered.contains(QString::fromUtf8("not recognized as the name"));
+        if (notFound)
+        {
+            report += QString::fromUtf8(
+                "\nThe program is not on PATH. Look for it on the machine and "
+                "rerun by full path before you decide it is absent. "
+                "Do not hand the rest of your part to someone else.");
+        }
+    }
     if (ok)
         *ok = (code == 0);
     return report;

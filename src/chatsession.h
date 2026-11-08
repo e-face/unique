@@ -27,6 +27,7 @@ struct ChatSnapshot
         : maximized(false)
         , minimized(false)
         , autoTitle(true)
+        , checkOnly(false)
     {
     }
 
@@ -37,6 +38,7 @@ struct ChatSnapshot
     bool    minimized;
     bool    autoTitle;
     QString workerType;
+    bool    checkOnly;
     QString parentId;
     QString toolName;
     QString toolPurpose;

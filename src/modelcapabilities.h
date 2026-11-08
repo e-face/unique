@@ -39,6 +39,10 @@ struct ModelCapabilities
     bool        supportsN;
     QStringList outputFormats;
     QString     source; // "openrouter_images" | "openrouter_models" | "heuristic"
+    // Имена и допустимые значения из каталога провайдера. Пусто, если API их не отдал.
+    QString     providerParams;
+    // Путь запроса генерации, если каталог его сообщил. Пусто — стандартный.
+    QString     requestEndpoint;
 
     bool acceptsText() const;
     bool acceptsImage() const;
@@ -49,6 +53,15 @@ struct ModelCapabilities
     bool allowsImageReference() const;
     QString summary() const;
 };
+
+//----------------------------------------------
+
+/**
+ * @brief Какие поля JSON исполнитель должен уметь заполнить для этой модальности.
+ *
+ * Пустая строка — это не медиа-модель (обычный LLM).
+ */
+QString mediaParamsLine(WorkerTaskKind kind, const ModelCapabilities &caps);
 
 //----------------------------------------------
 

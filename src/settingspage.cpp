@@ -22,6 +22,8 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QItemSelectionModel>
+#include <QJsonDocument>
+#include <QJsonParseError>
 #include <QMessageBox>
 #include <QTextEdit>
 #include <QVariant>
@@ -153,6 +155,7 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _profileCapHint(0)
     , _profileCapModelButton(0)
     , _addProfileButton(0)
+    , _copyProfileButton(0)
     , _editProfileButton(0)
     , _removeProfileButton(0)
     , _profilePreview(0)
@@ -161,6 +164,7 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _presetProfileCombo(0)
     , _rootPresetCombo(0)
     , _addPresetButton(0)
+    , _copyPresetButton(0)
     , _editPresetButton(0)
     , _removePresetButton(0)
     , _presetPreview(0)
@@ -393,6 +397,8 @@ void SettingsPage::retranslateUi()
             tr("опц. путь JSON: data.credits или balance_infos.0.total_balance"));
     if (_addProfileButton)
         _addProfileButton->setText(tr("Добавить"));
+    if (_copyProfileButton)
+        _copyProfileButton->setText(tr("Копировать"));
     if (_editProfileButton)
         _editProfileButton->setText(tr("Редактировать"));
     if (_removeProfileButton)
@@ -454,6 +460,8 @@ void SettingsPage::retranslateUi()
         _workersBox->setTitle(tr("Воркеры"));
     if (_addPresetButton)
         _addPresetButton->setText(tr("Добавить"));
+    if (_copyPresetButton)
+        _copyPresetButton->setText(tr("Копировать"));
     if (_editPresetButton)
         _editPresetButton->setText(tr("Редактировать"));
     if (_removePresetButton)
@@ -472,18 +480,14 @@ void SettingsPage::retranslateUi()
             QString text;
             switch (type)
             {
-            case WorkerTypeExecutor:
-                text = tr("Исполнитель");
-                break;
-            case WorkerTypeTester:
-                text = tr("Тестировщик");
-                break;
             case WorkerTypeTool:
                 text = tr("Инструмент");
                 break;
+            case WorkerTypeExecutor:
             case WorkerTypeManager:
+            case WorkerTypeTester:
             default:
-                text = tr("Менеджер");
+                text = tr("Исполнитель");
                 break;
             }
             _presetTypeCombo->setItemText(i, text);
@@ -492,15 +496,15 @@ void SettingsPage::retranslateUi()
     if (_rootPresetCombo)
     {
         _rootPresetCombo->setToolTip(
-            tr("Пресет главного менеджера при создании проекта и очистке сеанса. "
-               "Можно выбрать только пресет с ролью «Менеджер»."));
+            tr("Пресет корневого исполнителя при создании проекта и очистке сеанса. "
+               "Можно выбрать только пресет исполнителя."));
     }
     if (_rootForm && _rootPresetCombo)
-        setFormLabelText(_rootForm, _rootPresetCombo, tr("Пресет главного менеджера:"));
+        setFormLabelText(_rootForm, _rootPresetCombo, tr("Пресет корневого исполнителя:"));
 
     if (_maxDepthSpin)
-        _maxDepthSpin->setToolTip(tr("Главный чат — уровень 0. Менеджер на уровне N-1 "
-                                       "может создавать только исполнителей и тестировщиков."));
+        _maxDepthSpin->setToolTip(tr("Главный чат — уровень 0. "
+                                       "На максимальной глубине исполнитель уже не создаёт детей."));
     if (_maxConcurrentSpin)
         _maxConcurrentSpin->setToolTip(tr("Сколько воркеров одновременно обращаются к модели. "
                                           "Остальные стоят в очереди и стартуют, когда "
@@ -795,8 +799,12 @@ QWidget *SettingsPage::buildApiBox()
         tr("Только просмотр. Изменение — двойной щелчок или «Редактировать»."));
 
     _addProfileButton = new QPushButton(tr("Добавить"), box);
+    _copyProfileButton = new QPushButton(tr("Копировать"), box);
     _editProfileButton = new QPushButton(tr("Редактировать"), box);
     _removeProfileButton = new QPushButton(tr("Удалить"), box);
+    _copyProfileButton->setEnabled(false);
+    _copyProfileButton->setToolTip(
+        tr("Новый профиль с адресом, моделью, токеном и остальными параметрами выбранного."));
     _editProfileButton->setEnabled(false);
     _removeProfileButton->setEnabled(false);
 
@@ -805,11 +813,13 @@ QWidget *SettingsPage::buildApiBox()
     connect(_profileList, &QListWidget::itemDoubleClicked,
             this, &SettingsPage::sltEditProfileItem);
     connect(_addProfileButton, SIGNAL(clicked()), this, SLOT(sltAddProfile()));
+    connect(_copyProfileButton, SIGNAL(clicked()), this, SLOT(sltCopyProfile()));
     connect(_editProfileButton, SIGNAL(clicked()), this, SLOT(sltEditProfile()));
     connect(_removeProfileButton, SIGNAL(clicked()), this, SLOT(sltRemoveProfile()));
 
     QHBoxLayout *buttons = new QHBoxLayout();
     buttons->addWidget(_addProfileButton);
+    buttons->addWidget(_copyProfileButton);
     buttons->addWidget(_editProfileButton);
     buttons->addWidget(_removeProfileButton);
     buttons->addStretch();
@@ -849,8 +859,12 @@ QWidget *SettingsPage::buildWorkersBox()
         tr("Только просмотр. Изменение — двойной щелчок или «Редактировать»."));
 
     _addPresetButton = new QPushButton(tr("Добавить"), box);
+    _copyPresetButton = new QPushButton(tr("Копировать"), box);
     _editPresetButton = new QPushButton(tr("Редактировать"), box);
     _removePresetButton = new QPushButton(tr("Удалить"), box);
+    _copyPresetButton->setEnabled(false);
+    _copyPresetButton->setToolTip(
+        tr("Новый воркер с типом и профилем модели выбранного."));
     _editPresetButton->setEnabled(false);
     _removePresetButton->setEnabled(false);
 
@@ -859,11 +873,13 @@ QWidget *SettingsPage::buildWorkersBox()
     connect(_presetList, &QListWidget::itemDoubleClicked,
             this, &SettingsPage::sltEditPresetItem);
     connect(_addPresetButton, SIGNAL(clicked()), this, SLOT(sltAddPreset()));
+    connect(_copyPresetButton, SIGNAL(clicked()), this, SLOT(sltCopyPreset()));
     connect(_editPresetButton, SIGNAL(clicked()), this, SLOT(sltEditPreset()));
     connect(_removePresetButton, SIGNAL(clicked()), this, SLOT(sltRemovePreset()));
 
     QHBoxLayout *presetButtons = new QHBoxLayout();
     presetButtons->addWidget(_addPresetButton);
+    presetButtons->addWidget(_copyPresetButton);
     presetButtons->addWidget(_editPresetButton);
     presetButtons->addWidget(_removePresetButton);
     presetButtons->addStretch();
@@ -882,12 +898,12 @@ QWidget *SettingsPage::buildWorkersBox()
         _rootPresetCombo = new QComboBox(box);
         _rootPresetCombo->setMinimumWidth(280);
         _rootPresetCombo->setToolTip(
-            tr("Пресет главного менеджера при создании проекта и очистке сеанса. "
-               "Можно выбрать только пресет с ролью «Менеджер»."));
+            tr("Пресет корневого исполнителя при создании проекта и очистке сеанса. "
+               "Можно выбрать только пресет исполнителя."));
         connect(_rootPresetCombo, SIGNAL(currentIndexChanged(int)),
                 this, SLOT(sltRootPresetChanged()));
         _rootForm = new QFormLayout();
-        _rootForm->addRow(tr("Пресет главного менеджера:"), _rootPresetCombo);
+        _rootForm->addRow(tr("Пресет корневого исполнителя:"), _rootPresetCombo);
         layout->addLayout(_rootForm);
     }
 
@@ -898,8 +914,8 @@ QWidget *SettingsPage::buildWorkersBox()
 
     _maxDepthSpin = new QSpinBox(box);
     _maxDepthSpin->setRange(1, 8);
-    _maxDepthSpin->setToolTip(tr("Главный чат — уровень 0. Менеджер на уровне N-1 "
-                                 "может создавать только исполнителей и тестировщиков."));
+    _maxDepthSpin->setToolTip(tr("Главный чат — уровень 0. "
+                                 "На максимальной глубине исполнитель уже не создаёт детей."));
     connect(_maxDepthSpin, SIGNAL(valueChanged(int)), this, SLOT(sltWorkerLimitsChanged()));
 
     _maxConcurrentSpin = new QSpinBox(box);
@@ -945,18 +961,14 @@ QString SettingsPage::presetListLabel(const WorkerPreset &preset) const
     QString typeName;
     switch (preset.type)
     {
-    case WorkerTypeExecutor:
-        typeName = tr("Исполнитель");
-        break;
-    case WorkerTypeTester:
-        typeName = tr("Тестировщик");
-        break;
     case WorkerTypeTool:
         typeName = tr("Инструмент");
         break;
+    case WorkerTypeExecutor:
     case WorkerTypeManager:
+    case WorkerTypeTester:
     default:
-        typeName = tr("Менеджер");
+        typeName = tr("Исполнитель");
         break;
     }
     const LlmProfile profile = AppSettings::instance()->profileById(preset.profileId);
@@ -1063,7 +1075,7 @@ void SettingsPage::fillRootPresetCombo()
     _rootPresetCombo->clear();
     foreach (const WorkerPreset &preset, s->workerPresets(_kind))
     {
-        if (preset.type != WorkerTypeManager)
+        if (preset.type != WorkerTypeExecutor)
             continue;
         _rootPresetCombo->addItem(presetListLabel(preset), preset.id);
     }
@@ -1115,12 +1127,33 @@ void SettingsPage::sltAddPreset()
     }
 
     WorkerPreset preset;
-    preset.type = WorkerTypeManager;
+    preset.type = WorkerTypeExecutor;
     preset.profileId = profiles.first().id;
     if (!runPresetDialog(&preset, true))
         return;
     loadPresets();
     selectOnlyId(_presetList, preset.id);
+    refreshPresetPreview();
+    updatePresetActionButtons();
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltCopyPreset()
+{
+    const QStringList ids = selectedPresetIds();
+    if (ids.size() != 1)
+        return;
+    const WorkerPreset source = AppSettings::instance()->workerPresetById(_kind, ids.first());
+    if (source.id.isEmpty())
+        return;
+    WorkerPreset copy;
+    copy.type = source.type;
+    copy.profileId = source.profileId;
+    if (!runPresetDialog(&copy, true))
+        return;
+    loadPresets();
+    selectOnlyId(_presetList, copy.id);
     refreshPresetPreview();
     updatePresetActionButtons();
 }
@@ -1187,6 +1220,37 @@ void SettingsPage::sltAddProfile()
     if (profile.name.trimmed().isEmpty())
         profile.name = tr("Новый профиль");
     const QString id = AppSettings::instance()->addProfile(profile);
+    loadProfiles();
+    selectOnlyId(_profileList, id);
+    refreshProfilePreview();
+    updateProfileActionButtons();
+    emit profilesChanged();
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltCopyProfile()
+{
+    if (_kind != SettingsKindDefaults)
+        return;
+    const QStringList ids = selectedProfileIds();
+    if (ids.size() != 1)
+        return;
+    LlmProfile copy = AppSettings::instance()->profileById(ids.first());
+    if (copy.id.isEmpty())
+        return;
+    copy.id.clear();
+    const QString sourceName = copy.name.trimmed().isEmpty()
+                               ? tr("Профиль")
+                               : copy.name.trimmed();
+    const QString suffix = tr(" (копия)");
+    if (!sourceName.endsWith(suffix))
+        copy.name = sourceName + suffix;
+    if (!runProfileDialog(&copy, true))
+        return;
+    if (copy.name.trimmed().isEmpty())
+        copy.name = sourceName + suffix;
+    const QString id = AppSettings::instance()->addProfile(copy);
     loadProfiles();
     selectOnlyId(_profileList, id);
     refreshProfilePreview();
@@ -1436,15 +1500,13 @@ QString SettingsPage::workerTypeTitle(WorkerType type) const
 {
     switch (type)
     {
-    case WorkerTypeExecutor:
-        return tr("Исполнитель");
-    case WorkerTypeTester:
-        return tr("Тестировщик");
     case WorkerTypeTool:
         return tr("Инструмент");
+    case WorkerTypeExecutor:
     case WorkerTypeManager:
+    case WorkerTypeTester:
     default:
-        return tr("Менеджер");
+        return tr("Исполнитель");
     }
 }
 
@@ -1523,6 +1585,14 @@ QString SettingsPage::profilePreviewHtml(const LlmProfile &profile) const
     html += previewField(tr("Назначение модели"), purpose, muted);
     html += previewField(tr("URL баланса"), balanceUrl, muted);
     html += previewField(tr("JSON путь баланса"), balancePath, muted);
+    if (!profile.requestPath.trimmed().isEmpty())
+        html += previewField(tr("Путь запроса"), profile.requestPath.trimmed(), muted);
+    if (!profile.taskPath.trimmed().isEmpty())
+        html += previewField(tr("Путь статуса задачи"), profile.taskPath.trimmed(), muted);
+    if (!profile.catalogUrl.trimmed().isEmpty())
+        html += previewField(tr("Каталог моделей"), profile.catalogUrl.trimmed(), muted);
+    if (!profile.extraBody.trimmed().isEmpty())
+        html += previewField(tr("Доп. поля запроса"), profile.extraBody.trimmed(), muted);
     html += previewField(tr("Лимит вызовов функций"),
                          QString::number(profile.maxToolIterations), muted);
     html += previewField(tr("Потолок контекста"), cap, muted);
@@ -1664,6 +1734,8 @@ void SettingsPage::updateProfileActionButtons()
     const int count = selectedProfileIds().size();
     if (_addProfileButton)
         _addProfileButton->setEnabled(true);
+    if (_copyProfileButton)
+        _copyProfileButton->setEnabled(count == 1);
     if (_editProfileButton)
         _editProfileButton->setEnabled(count == 1);
     if (_removeProfileButton)
@@ -1677,6 +1749,8 @@ void SettingsPage::updatePresetActionButtons()
     const int count = selectedPresetIds().size();
     if (_addPresetButton)
         _addPresetButton->setEnabled(true);
+    if (_copyPresetButton)
+        _copyPresetButton->setEnabled(count == 1);
     if (_editPresetButton)
         _editPresetButton->setEnabled(count == 1);
     if (_removePresetButton)
@@ -1797,6 +1871,27 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
     balancePathEdit->setPlaceholderText(
         tr("опц. путь JSON: data.credits или balance_infos.0.total_balance"));
 
+    QLineEdit *requestPathEdit = new QLineEdit(&dialog);
+    requestPathEdit->setPlaceholderText(
+        tr("пусто = стандартный путь класса задач; иначе путь от адреса API или полный URL"));
+    requestPathEdit->setToolTip(
+        tr("Куда слать запрос генерации. Нужно, если у провайдера нестандартный путь."));
+    QLineEdit *taskPathEdit = new QLineEdit(&dialog);
+    taskPathEdit->setPlaceholderText(
+        tr("пусто = ссылка из ответа или /tasks/{id}; шаблон с {id}"));
+    taskPathEdit->setToolTip(
+        tr("Опрос асинхронной задачи. {id} заменяется на идентификатор из ответа."));
+    QLineEdit *catalogUrlEdit = new QLineEdit(&dialog);
+    catalogUrlEdit->setPlaceholderText(
+        tr("пусто = /models; каталог со схемой параметров моделей"));
+    catalogUrlEdit->setToolTip(
+        tr("Откуда брать допустимые параметры модели и их значения для воркеров."));
+    QLineEdit *extraBodyEdit = new QLineEdit(&dialog);
+    extraBodyEdit->setPlaceholderText(
+        tr("JSON-объект, добавляется в каждый запрос генерации: {\"ключ\": значение}"));
+    extraBodyEdit->setToolTip(
+        tr("Постоянные поля запроса для этой модели. Поля из задачи воркера имеют приоритет."));
+
     QSpinBox *toolSpin = new QSpinBox(&dialog);
     toolSpin->setMinimum(2);
     toolSpin->setMaximum(10000);
@@ -1865,6 +1960,10 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
         purposeEdit->setText(source.purpose);
         balanceUrlEdit->setText(source.balanceUrl);
         balancePathEdit->setText(source.balanceJsonPath);
+        requestPathEdit->setText(source.requestPath);
+        taskPathEdit->setText(source.taskPath);
+        catalogUrlEdit->setText(source.catalogUrl);
+        extraBodyEdit->setText(source.extraBody);
         toolSpin->setValue(qMax(2, source.maxToolIterations));
         capSpin->setValue(source.contextCap);
         requestCatalog();
@@ -1899,6 +1998,38 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
     });
 
     QFormLayout *form = new QFormLayout();
+    if (isNew)
+    {
+        QComboBox *sourceCombo = new QComboBox(&dialog);
+        sourceCombo->addItem(tr("Не копировать"), QString());
+        foreach (const LlmProfile &existing, AppSettings::instance()->profiles())
+        {
+            QString title = existing.name.trimmed();
+            if (title.isEmpty())
+                title = existing.model.trimmed();
+            if (title.isEmpty())
+                title = existing.id;
+            sourceCombo->addItem(title, existing.id);
+        }
+        connect(sourceCombo,
+                static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
+                &dialog, [&](int) {
+            const QString sourceId = sourceCombo->currentData().toString().trimmed();
+            if (sourceId.isEmpty())
+                return;
+            LlmProfile source = AppSettings::instance()->profileById(sourceId);
+            if (source.id.isEmpty())
+                return;
+            source.id = profile->id;
+            const QString sourceName = source.name.trimmed().isEmpty()
+                                       ? tr("Профиль")
+                                       : source.name.trimmed();
+            const QString suffix = tr(" (копия)");
+            source.name = sourceName.endsWith(suffix) ? sourceName : sourceName + suffix;
+            applyProfile(source);
+        });
+        form->addRow(tr("На основе:"), sourceCombo);
+    }
     form->addRow(tr("Имя профиля:"), nameEdit);
     form->addRow(tr("Адрес API:"), urlEdit);
     form->addRow(tr("Модель:"), modelEdit);
@@ -1907,6 +2038,10 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
     form->addRow(tr("Назначение модели:"), purposeEdit);
     form->addRow(tr("URL баланса:"), balanceUrlEdit);
     form->addRow(tr("JSON путь баланса:"), balancePathEdit);
+    form->addRow(tr("Путь запроса:"), requestPathEdit);
+    form->addRow(tr("Путь статуса задачи:"), taskPathEdit);
+    form->addRow(tr("Каталог моделей:"), catalogUrlEdit);
+    form->addRow(tr("Доп. поля запроса:"), extraBodyEdit);
     form->addRow(tr("Лимит вызовов функций:"), toolSpin);
 
     QHBoxLayout *capRow = new QHBoxLayout();
@@ -1919,6 +2054,19 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        const QString extra = extraBodyEdit->text().trimmed();
+        if (!extra.isEmpty())
+        {
+            QJsonParseError pe;
+            const QJsonDocument doc = QJsonDocument::fromJson(extra.toUtf8(), &pe);
+            if (!doc.isObject())
+            {
+                QMessageBox::warning(&dialog, tr("Доп. поля запроса"),
+                                     tr("Нужен JSON-объект вида {\"ключ\": значение}.\n%1")
+                                         .arg(pe.errorString()));
+                return;
+            }
+        }
         profile->name = nameEdit->text().trimmed();
         profile->baseUrl = urlEdit->text().trimmed();
         profile->model = modelEdit->text().trimmed();
@@ -1927,6 +2075,10 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
         profile->purpose = purposeEdit->text().trimmed();
         profile->balanceUrl = balanceUrlEdit->text().trimmed();
         profile->balanceJsonPath = balancePathEdit->text().trimmed();
+        profile->requestPath = requestPathEdit->text().trimmed();
+        profile->taskPath = taskPathEdit->text().trimmed();
+        profile->catalogUrl = catalogUrlEdit->text().trimmed();
+        profile->extraBody = extra;
         profile->maxToolIterations = toolSpin->value();
         profile->contextCap = AppSettings::normalizeProfileContextCap(capSpin->value());
         dialog.accept();
@@ -1954,12 +2106,10 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
 
     QDialog dialog(this);
     dialog.setWindowTitle(isNew ? tr("Новый воркер") : tr("Воркер"));
-    dialog.resize(480, 160);
+    dialog.resize(480, 220);
 
     QComboBox *typeCombo = new QComboBox(&dialog);
-    typeCombo->addItem(tr("Менеджер"), int(WorkerTypeManager));
     typeCombo->addItem(tr("Исполнитель"), int(WorkerTypeExecutor));
-    typeCombo->addItem(tr("Тестировщик"), int(WorkerTypeTester));
     typeCombo->addItem(tr("Инструмент"), int(WorkerTypeTool));
     int typeIndex = typeCombo->findData(int(preset->type));
     if (typeIndex < 0)
@@ -1977,6 +2127,37 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
     }
 
     QFormLayout *form = new QFormLayout();
+    if (isNew)
+    {
+        QComboBox *sourceCombo = new QComboBox(&dialog);
+        sourceCombo->addItem(tr("Не копировать"), QString());
+        foreach (const WorkerPreset &existing,
+                 AppSettings::instance()->workerPresets(_kind))
+            sourceCombo->addItem(presetListLabel(existing), existing.id);
+        connect(sourceCombo,
+                static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
+                &dialog, [&](int) {
+            const QString sourceId = sourceCombo->currentData().toString().trimmed();
+            if (sourceId.isEmpty())
+                return;
+            const WorkerPreset source =
+                AppSettings::instance()->workerPresetById(_kind, sourceId);
+            if (source.id.isEmpty())
+                return;
+            int index = typeCombo->findData(int(source.type));
+            if (index < 0)
+                index = 0;
+            typeCombo->setCurrentIndex(index);
+            int profileIndex = profileCombo->findData(source.profileId);
+            if (profileIndex < 0)
+            {
+                profileCombo->insertItem(0, tr("профиль не найден"), source.profileId);
+                profileIndex = 0;
+            }
+            profileCombo->setCurrentIndex(profileIndex);
+        });
+        form->addRow(tr("На основе:"), sourceCombo);
+    }
     form->addRow(tr("Тип воркера:"), typeCombo);
     form->addRow(tr("Профиль модели:"), profileCombo);
 

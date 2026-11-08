@@ -16,6 +16,22 @@
 
 //----------------------------------------------
 
+static bool refuseUntilPlanned(Worker *owner, bool *ok, QString *error)
+{
+    if (!owner)
+        return false;
+    const QString block = owner->openingBlockReason();
+    if (block.isEmpty())
+        return false;
+    if (ok)
+        *ok = false;
+    if (error)
+        *error = block;
+    return true;
+}
+
+//----------------------------------------------
+
 static QString nextFileContextId()
 {
     static int seq = 0;
@@ -341,6 +357,10 @@ QString CreateFileAgentTool::invoke(QString argumentsJson, bool *ok)
 {
     QJsonObject args;
     QString error;
+    if (refuseUntilPlanned(_owner, ok, &error))
+        return error;
+    if (_owner)
+        _owner->noteWorkAction();
     if (!parseArgs(argumentsJson, &args, &error))
     {
         if (ok)
@@ -485,6 +505,10 @@ QString WriteFileAgentTool::invoke(QString argumentsJson, bool *ok)
 {
     QJsonObject args;
     QString error;
+    if (refuseUntilPlanned(_owner, ok, &error))
+        return error;
+    if (_owner)
+        _owner->noteWorkAction();
     if (!parseArgs(argumentsJson, &args, &error))
     {
         if (ok)
@@ -835,6 +859,10 @@ QString DeleteFileAgentTool::invoke(QString argumentsJson, bool *ok)
 {
     QJsonObject args;
     QString error;
+    if (refuseUntilPlanned(_owner, ok, &error))
+        return error;
+    if (_owner)
+        _owner->noteWorkAction();
     if (!parseArgs(argumentsJson, &args, &error))
     {
         if (ok)
@@ -940,6 +968,10 @@ QString RenameFileAgentTool::invoke(QString argumentsJson, bool *ok)
 {
     QJsonObject args;
     QString error;
+    if (refuseUntilPlanned(_owner, ok, &error))
+        return error;
+    if (_owner)
+        _owner->noteWorkAction();
     if (!parseArgs(argumentsJson, &args, &error))
     {
         if (ok)

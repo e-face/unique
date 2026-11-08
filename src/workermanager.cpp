@@ -5,6 +5,7 @@
 #include "modalitytools.h"
 #include "modelcapabilities.h"
 #include "projectfiletools.h"
+#include "settingstools.h"
 #include "projectworkspace.h"
 #include "worker.h"
 #include "workertools.h"
@@ -160,29 +161,38 @@ QString WorkerManager::limitsSummaryFor(Worker *worker) const
         "Worker tree limits: your depth is %1 of max %2 (root = 0). ")
                        .arg(depth)
                        .arg(limit);
-    if (worker->type() == WorkerTypeManager || worker->type() == WorkerTypeExecutor)
+    if (worker->isRoot())
+    {
+        text += QString::fromUtf8(
+            "You are the top executor: you answer the user. "
+            "There is no parent and no complete_task. ");
+    }
+    else
+    {
+        text += QString::fromUtf8(
+            "You report your finished part to your parent with complete_task. "
+            "You do not answer the user. ");
+    }
+    if (worker->isCheckOnly())
+    {
+        text += QString::fromUtf8(
+            "You only check. You cannot edit files and you cannot spawn children. ");
+    }
+    else if (worker->canSpawnChildren())
     {
         if (!canSpawnLeafUnder(worker))
         {
             text += QString::fromUtf8(
                 "You are at the maximum depth and CANNOT spawn any child workers; "
-                "answer with what you can determine yourself. ");
-        }
-        else if (!canSpawnManagerUnder(worker))
-        {
-            text += QString::fromUtf8(
-                "You are at the LAST manager level: type=manager is forbidden here. "
-                "Split the work yourself into executor-sized pieces and give each to "
-                "type=executor. Do not create a tester unless the user required tests "
-                "or a worker recommended them. ");
+                "finish the task yourself. ");
         }
         else
         {
             text += QString::fromUtf8(
-                "Child managers are allowed (they would be at depth %1); "
-                "managers deeper than %2 are impossible, so plan the split accordingly. ")
-                        .arg(depth + 1)
-                        .arg(limit - 1);
+                "First call list_tools, then list_worker_presets, then plan_work. "
+                "Save tokens and time. Do the work yourself unless you judge a "
+                "child or a tool cheaper for this task. Depth of a child would be %1. ")
+                    .arg(depth + 1);
         }
     }
     text += QString::fromUtf8(
@@ -346,10 +356,9 @@ Worker *WorkerManager::createRoot(ChatSession *session)
 {
     const WorkerPreset preset = AppSettings::instance()->rootWorkerPreset();
     QString profileId;
-    // Главный менеджер — только роль Manager.
-    if (!preset.id.isEmpty() && preset.type == WorkerTypeManager)
+    if (!preset.id.isEmpty() && preset.type == WorkerTypeExecutor)
         profileId = preset.profileId.trimmed();
-    Worker *worker = createWorker(WorkerTypeManager,
+    Worker *worker = createWorker(WorkerTypeExecutor,
                                   session ? session->id() : QString(), session,
                                   0, QString(), profileId);
     emit treeChanged();
@@ -394,10 +403,11 @@ Worker *WorkerManager::createWorker(WorkerType type, QString id, ChatSession *se
 Worker *WorkerManager::createTool(Worker *creator, QString name, QString purpose, QString *error,
                                   QString llmProfileId)
 {
-    if (!creator || creator->type() != WorkerTypeManager)
+    if (!creator || creator->isTool() || creator->isCheckOnly()
+        || creator->type() != WorkerTypeExecutor)
     {
         if (error)
-            *error = QString::fromUtf8("Only managers can create tools.");
+            *error = QString::fromUtf8("Only an executor can create tools.");
         return 0;
     }
     const QString cleanName = name.simplified();
@@ -494,6 +504,7 @@ QString WorkerManager::toolsSummary() const
     if (list.isEmpty())
         return QString::fromUtf8("No tools exist yet.");
     QString text = QString::fromUtf8("Available tools (%1):").arg(list.size());
+    bool anyMedia = false;
     foreach (Worker *tool, list)
     {
         QString status = toolBusy(tool) ? QString::fromUtf8("busy") : QString::fromUtf8("free");
@@ -517,6 +528,14 @@ QString WorkerManager::toolsSummary() const
             modelPurpose = QString::fromUtf8("-");
         else if (modelPurpose.size() > 120)
             modelPurpose = modelPurpose.left(117) + QString::fromUtf8("...");
+        const ModelCapabilities caps =
+            ModelCapabilityService::instance()->capabilitiesFor(profile);
+        const QString params = mediaParamsLine(modality, caps);
+        if (!params.isEmpty())
+            anyMedia = true;
+        QString detail = purpose;
+        if (!params.isEmpty())
+            detail = QString::fromUtf8("params: %1 | %2").arg(params, purpose);
         text += QString::fromUtf8(
                     "\n- tool_id=%1 name=\"%2\" [%3] modality=%4 profile=\"%5\" model=%6 "
                     "model_purpose=\"%7\" caps={%8}: %9")
@@ -525,8 +544,18 @@ QString WorkerManager::toolsSummary() const
                          profile.model.trimmed().isEmpty() ? QString::fromUtf8("?")
                                                            : profile.model.trimmed(),
                          modelPurpose,
-                         ModelCapabilityService::instance()->capabilitiesFor(profile).summary(),
-                         purpose);
+                         caps.summary(),
+                         detail);
+    }
+    if (anyMedia)
+    {
+        text += QString::fromUtf8(
+            "\nMedia tools are not chat. run_tool request is one JSON object "
+            "using that tool's params. Values in parentheses come from the "
+            "provider catalog. Set every required key. Set an optional key only "
+            "when the task asks for it, and only with a listed value. "
+            "prompt/text is the content, not an instruction to save a file. "
+            "output_path is the new file and is not sent to the provider.");
     }
     return text;
 }
@@ -741,15 +770,13 @@ bool WorkerManager::destroyTool(QString id)
 bool WorkerManager::canSpawn(WorkerType parentType, WorkerType childType) const
 {
     Q_UNUSED(childType);
-    if (parentType == WorkerTypeManager || parentType == WorkerTypeExecutor)
-        return true;
-    return false;
+    return normalizeWorkerType(parentType) == WorkerTypeExecutor;
 }
 
 //----------------------------------------------
 
 Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QString *error,
-                             QString llmProfileId)
+                             QString llmProfileId, bool checkOnly)
 {
     if (!parent)
     {
@@ -761,8 +788,7 @@ Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QStr
     {
         if (error)
             *error = QString::fromUtf8(
-                "This worker cannot create children (only a manager or an executor "
-                "may delegate tasks).");
+                "This worker cannot create children.");
         return 0;
     }
     if (type == WorkerTypeTool)
@@ -770,7 +796,7 @@ Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QStr
         if (error)
             *error = QString::fromUtf8(
                 "Tools are not children: use create_tool to make a shared tool and run_tool "
-                "to run it. delegate_task accepts only manager, executor or tester.");
+                "to run it. delegate_task accepts only an executor.");
         return 0;
     }
     if (!canSpawn(parent->type(), type))
@@ -840,16 +866,6 @@ Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QStr
                          .arg(int(parent->subtreeMsLimit() / 60000));
         return 0;
     }
-    if (type == WorkerTypeManager && !canSpawnManagerUnder(parent))
-    {
-        if (error)
-            *error = QString::fromUtf8(
-                "Depth limit: a manager at depth %1 would exceed the maximum manager depth "
-                "(%2). Use type=executor for this subtask instead and split it yourself.")
-                         .arg(parent->depth() + 1)
-                         .arg(maxDepth() - 1);
-        return 0;
-    }
     QString trimmed = task.trimmed();
     if (trimmed.isEmpty())
     {
@@ -858,14 +874,16 @@ Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QStr
         return 0;
     }
     // CONTEXT HANDOFF уходит в injectContext при startTask (не в текст задания).
-    if (type == WorkerTypeTester)
+    if (checkOnly)
     {
         const QString files = changedFilesForChildren(parent);
         if (!files.isEmpty() && !trimmed.contains(QString::fromUtf8("Files changed")))
             trimmed += QString::fromUtf8("\n\n") + files;
     }
 
-    Worker *child = createWorker(type, QString(), 0, parent, trimmed, llmProfileId);
+    Worker *child = createWorker(WorkerTypeExecutor, QString(), 0, parent, trimmed, llmProfileId);
+    if (checkOnly)
+        child->setCheckOnly(true);
     ++_spawnCount;
     emit treeChanged();
     return child;
@@ -944,11 +962,11 @@ Worker *WorkerManager::addGroupMember(Worker *chief, QString presetId, QString *
             *error = QString::fromUtf8("Chief worker is missing.");
         return 0;
     }
-    if (chief->type() != WorkerTypeManager && !chief->isRoot())
+    if (chief->type() != WorkerTypeExecutor || chief->isCheckOnly())
     {
         if (error)
             *error = QString::fromUtf8(
-                "Only a manager can add group members.");
+                "Only an executor can add group members.");
         return 0;
     }
     if (chief->isGroupInterlocutor())
@@ -2769,31 +2787,27 @@ static void addLlmRoleTools(WorkerManager *manager, Agent *agent, Worker *worker
     switch (worker->type())
     {
     case WorkerTypeManager:
-        agent->addTool(new ListChildWorkersTool(worker, agent));
-        agent->addTool(new GetChildResultTool(worker, agent));
-        agent->addTool(new PlanWorkTool(worker, agent));
-        agent->addTool(new DelegateTaskTool(manager, worker, agent));
-        agent->addTool(new DismissChildWorkerTool(manager, worker, agent));
-        agent->addTool(new AddGroupMemberTool(manager, worker, agent));
-        agent->addTool(new ListToolsTool(manager, agent));
-        agent->addTool(new CreateToolTool(manager, worker, agent));
+    case WorkerTypeTester:
+    case WorkerTypeExecutor:
+        if (!worker->isCheckOnly())
+        {
+            agent->addTool(new ListChildWorkersTool(worker, agent));
+            agent->addTool(new GetChildResultTool(worker, agent));
+            agent->addTool(new DelegateTaskTool(manager, worker, agent));
+            agent->addTool(new DismissChildWorkerTool(manager, worker, agent));
+            agent->addTool(new AddGroupMemberTool(manager, worker, agent));
+            agent->addTool(new CreateToolTool(manager, worker, agent));
+            agent->addTool(new PlanWorkTool(worker, agent));
+            agent->addTool(new ListWorkerPresetsTool(manager, worker, agent));
+        }
+        {
+            ListToolsTool *listTools = new ListToolsTool(manager, agent);
+            listTools->setOwner(worker);
+            agent->addTool(listTools);
+        }
         agent->addTool(new RunToolTool(manager, worker, agent));
         if (!worker->isRoot())
             agent->addTool(new CompleteTaskTool(worker, agent));
-        break;
-    case WorkerTypeExecutor:
-        agent->addTool(new ListChildWorkersTool(worker, agent));
-        agent->addTool(new GetChildResultTool(worker, agent));
-        agent->addTool(new DelegateTaskTool(manager, worker, agent));
-        agent->addTool(new DismissChildWorkerTool(manager, worker, agent));
-        agent->addTool(new ListToolsTool(manager, agent));
-        agent->addTool(new RunToolTool(manager, worker, agent));
-        agent->addTool(new CompleteTaskTool(worker, agent));
-        break;
-    case WorkerTypeTester:
-        agent->addTool(new ListToolsTool(manager, agent));
-        agent->addTool(new RunToolTool(manager, worker, agent));
-        agent->addTool(new CompleteTaskTool(worker, agent));
         break;
     case WorkerTypeTool:
         agent->addTool(new CompleteTaskTool(worker, agent));
@@ -2818,6 +2832,101 @@ WorkerTaskKind WorkerManager::modalityOf(Worker *worker) const
 
 //----------------------------------------------
 
+static bool imagePathIsReference(const QString &task)
+{
+    const QString low = task.toLower();
+    return low.contains(QString::fromUtf8("reference"))
+        || low.contains(QString::fromUtf8("референс"))
+        || low.contains(QString::fromUtf8("на основе"))
+        || low.contains(QString::fromUtf8("по образц"))
+        || low.contains(QString::fromUtf8("исходн"))
+        || low.contains(QString::fromUtf8("input image"));
+}
+
+//----------------------------------------------
+
+static QString imagePromptWithoutSaveClause(const QString &task, const QString &outputPath)
+{
+    const QStringList parts = task.split(QRegExp(QString::fromUtf8("[\\n.!?]+")),
+                                         QString::SkipEmptyParts);
+    QStringList keep;
+    foreach (const QString &part, parts)
+    {
+        const QString piece = part.trimmed();
+        if (piece.isEmpty())
+            continue;
+        const QString low = piece.toLower();
+        const bool namesFile = !outputPath.isEmpty()
+                               && low.contains(outputPath.toLower());
+        const bool saveTalk = low.contains(QString::fromUtf8("сохран"))
+                              || low.contains(QString::fromUtf8("save"))
+                              || low.contains(QString::fromUtf8("запиш"))
+                              || low.contains(QString::fromUtf8("положи"))
+                              || low.contains(QString::fromUtf8("output"));
+        if (namesFile && saveTalk)
+            continue;
+        keep.append(piece);
+    }
+    QString text = keep.isEmpty() ? task.trimmed() : keep.join(QString::fromUtf8(". "));
+    QRegExp lead(QString::fromUtf8(
+                     "^\\s*(сгенерируй\\s+картинк\\w*|сгенерируй\\s+изображени\\w*"
+                     "|нарисуй|generate\\s+an?\\s+image|draw)\\s*[:\\-—]?\\s*"),
+                 Qt::CaseInsensitive);
+    text.remove(lead);
+    return text.trimmed();
+}
+
+//----------------------------------------------
+
+static QString mediaFileInTask(const QString &task, const QString &extensions)
+{
+    QRegExp hint(QString::fromUtf8("(\\S+\\.(%1))").arg(extensions));
+    hint.setCaseSensitivity(Qt::CaseInsensitive);
+    if (hint.indexIn(task) < 0)
+        return QString();
+    return hint.cap(1);
+}
+
+//----------------------------------------------
+
+static bool takeMediaJson(const QString &task, QJsonObject *args)
+{
+    if (!args)
+        return false;
+    const QJsonDocument doc = QJsonDocument::fromJson(task.toUtf8());
+    if (!doc.isObject())
+        return false;
+    *args = doc.object();
+    return true;
+}
+
+//----------------------------------------------
+
+static void ensureMediaPrompt(QJsonObject *args)
+{
+    if (!args)
+        return;
+    if (!args->value(QString::fromUtf8("prompt")).toString().trimmed().isEmpty())
+        return;
+    const QString text = args->value(QString::fromUtf8("text")).toString().trimmed();
+    if (!text.isEmpty())
+        args->insert(QString::fromUtf8("prompt"), text);
+}
+
+//----------------------------------------------
+
+static bool taskAsksToTranscribe(const QString &task)
+{
+    const QString low = task.toLower();
+    return low.contains(QString::fromUtf8("транскриб"))
+        || low.contains(QString::fromUtf8("распозна"))
+        || low.contains(QString::fromUtf8("расшифр"))
+        || low.contains(QString::fromUtf8("speech to text"))
+        || low.contains(QString::fromUtf8("transcribe"));
+}
+
+//----------------------------------------------
+
 QString WorkerManager::runMediaExecutor(Worker *worker, bool *ok)
 {
     if (ok)
@@ -2836,56 +2945,117 @@ QString WorkerManager::runMediaExecutor(Worker *worker, bool *ok)
     case WorkerTaskKindImageGeneration:
     {
         toolName = QString::fromUtf8("generate_image");
-        // JSON brief: {"prompt":"...","reference_path":"...","n":1}
-        // иначе весь текст — prompt; путь к картинке в тексте → reference_path.
-        const QJsonDocument brief = QJsonDocument::fromJson(task.toUtf8());
-        if (brief.isObject())
-        {
-            args = brief.object();
-            const QString p = args.value(QString::fromUtf8("prompt")).toString().trimmed();
-            if (p.isEmpty())
-                args.insert(QString::fromUtf8("prompt"), task);
-        }
+        // JSON с полями из params (prompt, output_path, size, …).
+        // В обычном тексте имя файла — куда сохранить, не входная картинка.
+        if (takeMediaJson(task, &args))
+            ensureMediaPrompt(&args);
         else
         {
-            args.insert(QString::fromUtf8("prompt"), task);
             QRegExp imgHint(QString::fromUtf8(
                 "(\\S+\\.(png|jpe?g|webp|gif|bmp))"));
             imgHint.setCaseSensitivity(Qt::CaseInsensitive);
+            QString fileName;
             if (imgHint.indexIn(task) >= 0)
-                args.insert(QString::fromUtf8("reference_path"), imgHint.cap(1));
+                fileName = imgHint.cap(1);
+            QString saveName;
+            if (!fileName.isEmpty() && imagePathIsReference(task))
+                args.insert(QString::fromUtf8("reference_path"), fileName);
+            else if (!fileName.isEmpty())
+            {
+                saveName = fileName;
+                args.insert(QString::fromUtf8("output_path"), fileName);
+            }
+            const QString prompt = imagePromptWithoutSaveClause(task, saveName);
+            args.insert(QString::fromUtf8("prompt"),
+                        prompt.isEmpty() ? task : prompt);
         }
         break;
     }
     case WorkerTaskKindSpeech:
     {
-        // Если в задаче есть путь к аудио — STT, иначе TTS.
-        QRegExp pathHint(QString::fromUtf8(
-            "(\\S+\\.(wav|mp3|m4a|ogg|flac|webm|aac))"));
-        pathHint.setCaseSensitivity(Qt::CaseInsensitive);
-        if (pathHint.indexIn(task) >= 0)
+        QJsonObject given;
+        if (takeMediaJson(task, &given))
+        {
+            const QString path = given.value(QString::fromUtf8("path")).toString().trimmed();
+            const QString text = given.value(QString::fromUtf8("text")).toString().trimmed();
+            const QString prompt = given.value(QString::fromUtf8("prompt")).toString().trimmed();
+            const bool transcribe = given.value(QString::fromUtf8("transcribe")).toBool()
+                || taskAsksToTranscribe(task)
+                || (!path.isEmpty() && text.isEmpty() && prompt.isEmpty());
+            if (transcribe && !path.isEmpty())
+            {
+                toolName = QString::fromUtf8("speech_to_text");
+                args.insert(QString::fromUtf8("path"), path);
+                break;
+            }
+            toolName = QString::fromUtf8("text_to_speech");
+            args = buildTextToSpeechToolArgs(task, 0);
+            break;
+        }
+        // Имя файла — куда сохранить речь. Распознавание только если об этом сказано.
+        const QString fileName = mediaFileInTask(
+            task, QString::fromUtf8("wav|mp3|m4a|ogg|flac|webm|aac"));
+        if (!fileName.isEmpty() && taskAsksToTranscribe(task))
         {
             toolName = QString::fromUtf8("speech_to_text");
-            args.insert(QString::fromUtf8("path"), pathHint.cap(1));
+            args.insert(QString::fromUtf8("path"), fileName);
         }
         else
         {
             toolName = QString::fromUtf8("text_to_speech");
             args = buildTextToSpeechToolArgs(task, 0);
+            if (!fileName.isEmpty()
+                && args.value(QString::fromUtf8("output_path")).toString().trimmed().isEmpty())
+                args.insert(QString::fromUtf8("output_path"), fileName);
         }
         break;
     }
     case WorkerTaskKindAudioGeneration:
+    {
         toolName = QString::fromUtf8("generate_audio");
-        args.insert(QString::fromUtf8("prompt"), task);
+        if (takeMediaJson(task, &args))
+        {
+            ensureMediaPrompt(&args);
+            break;
+        }
+        const QString fileName = mediaFileInTask(
+            task, QString::fromUtf8("mp3|wav|m4a|ogg|flac"));
+        if (!fileName.isEmpty() && !imagePathIsReference(task))
+            args.insert(QString::fromUtf8("output_path"), fileName);
+        const QString prompt = imagePromptWithoutSaveClause(task, fileName);
+        args.insert(QString::fromUtf8("prompt"), prompt.isEmpty() ? task : prompt);
         break;
+    }
     case WorkerTaskKindVideoGeneration:
+    {
         toolName = QString::fromUtf8("generate_video");
-        args.insert(QString::fromUtf8("prompt"), task);
+        if (takeMediaJson(task, &args))
+        {
+            ensureMediaPrompt(&args);
+            break;
+        }
+        const QString fileName = mediaFileInTask(
+            task, QString::fromUtf8("mp4|webm|mov"));
+        if (!fileName.isEmpty() && !imagePathIsReference(task))
+            args.insert(QString::fromUtf8("output_path"), fileName);
+        const QString prompt = imagePromptWithoutSaveClause(task, fileName);
+        args.insert(QString::fromUtf8("prompt"), prompt.isEmpty() ? task : prompt);
         break;
+    }
     case WorkerTaskKindEmbedding:
         toolName = QString::fromUtf8("embed_texts");
-        args.insert(QString::fromUtf8("text"), task);
+        if (takeMediaJson(task, &args))
+        {
+            if (args.value(QString::fromUtf8("text")).toString().trimmed().isEmpty())
+            {
+                const QString prompt =
+                    args.value(QString::fromUtf8("prompt")).toString().trimmed();
+                if (!prompt.isEmpty())
+                    args.insert(QString::fromUtf8("text"), prompt);
+            }
+        }
+        else
+            args.insert(QString::fromUtf8("text"), task);
         break;
     default:
         return QString::fromUtf8("Not a media-executor modality (%1).")
@@ -2915,7 +3085,16 @@ void WorkerManager::installTools(Worker *worker)
 
     const WorkerTaskKind modality = modalityOf(worker);
 
-    if (workerTaskKindIsMediaExecutor(modality))
+    if (worker->isCheckOnly())
+    {
+        addReadOnlyFileTools(agent, _workspace);
+        agent->addTool(new RunCommandAgentTool(_workspace, worker, agent));
+        agent->addTool(new RequestPermissionTool(worker, agent));
+        agent->addTool(new ListToolsTool(this, agent));
+        agent->addTool(new RunToolTool(this, worker, agent));
+        agent->addTool(new CompleteTaskTool(worker, agent));
+    }
+    else if (workerTaskKindIsMediaExecutor(modality))
     {
         addReadOnlyFileTools(agent, _workspace);
         addModalityTools(agent, _workspace, worker, modality);
@@ -2928,35 +3107,37 @@ void WorkerManager::installTools(Worker *worker)
         addModalityTools(agent, _workspace, worker, modality);
         agent->addTool(new CompleteTaskTool(worker, agent));
         agent->addTool(new RequestPermissionTool(worker, agent));
-        if (worker->type() == WorkerTypeManager && !worker->isGroupInterlocutor())
+        if (!worker->isGroupInterlocutor() && !worker->isTool())
         {
             agent->addTool(new ListChildWorkersTool(worker, agent));
             agent->addTool(new GetChildResultTool(worker, agent));
-            agent->addTool(new PlanWorkTool(worker, agent));
             agent->addTool(new DelegateTaskTool(this, worker, agent));
             agent->addTool(new DismissChildWorkerTool(this, worker, agent));
+            agent->addTool(new CreateToolTool(this, worker, agent));
+            agent->addTool(new PlanWorkTool(worker, agent));
+            agent->addTool(new ListWorkerPresetsTool(this, worker, agent));
+            {
+                ListToolsTool *listTools = new ListToolsTool(this, agent);
+                listTools->setOwner(worker);
+                agent->addTool(listTools);
+            }
+            agent->addTool(new RunToolTool(this, worker, agent));
         }
     }
     else
     {
-        // Менеджер только читает (планирует). Тестировщик читает и запускает
-        // проверки, но не правит файлы. Пишет код исполнитель и инструмент.
-        if (worker->type() == WorkerTypeTester)
-        {
-            addReadOnlyFileTools(agent, _workspace);
-            agent->addTool(new RunCommandAgentTool(_workspace, worker, agent));
-            agent->addTool(new RequestPermissionTool(worker, agent));
-        }
-        else if (worker->type() == WorkerTypeManager)
-        {
-            addReadOnlyFileTools(agent, _workspace);
-            agent->addTool(new RequestPermissionTool(worker, agent));
-        }
-        else
-        {
-            addFileAndShellTools(agent, _workspace, worker);
-        }
+        // Исполнитель и делает работу, и при необходимости зовёт детей.
+        addFileAndShellTools(agent, _workspace, worker);
         addLlmRoleTools(this, agent, worker);
+    }
+
+    // Настройки читаются и правятся только с подтверждения пользователя.
+    // Медиа-воркер не ведёт чат и эти инструменты не вызывает.
+    if (!workerTaskKindIsMediaExecutor(modality))
+    {
+        agent->addTool(new ReadSettingsTool(worker, agent));
+        if (!worker->isCheckOnly())
+            agent->addTool(new EditSettingsTool(worker, agent));
     }
 
     const LlmProfile profile = AppSettings::instance()->profileForWorker(
@@ -3131,12 +3312,24 @@ QString WorkerManager::promptFor(Worker *worker) const
     const QString verificationDepth = locale->model(
         QString::fromUtf8("verification_depth"),
         QString::fromUtf8(
-            "\nTESTING POLICY: A tester is not part of the default loop. Create one only when "
-            "the user explicitly required testing, or a worker's report recommends tests and "
-            "says what to check. A manager may spawn a tester on their own only in an extreme "
-            "case, and never runs tests themselves. Executors do no testing or one smoke check, "
-            "and may only recommend tests to the parent. Testers only run checks and never edit "
-            "the project."));
+            "\nCHECKING: Check the outcome the assignment actually asked for. "
+            "A note that describes the remaining work does not count. "
+            "Delegate why=check check_only=true only when the user explicitly asked "
+            "for an independent check. That child does not edit the project."));
+    if (worker->isCheckOnly())
+    {
+        QString base = locale->model(
+            QString::fromUtf8("check_only"),
+            QString::fromUtf8(
+                "You are an EXECUTOR doing an independent check requested by the user. "
+                "You do not create, edit, delete, or rename project files, and you do not "
+                "fix failures. Report what you ran, what passed, what failed, and where. "
+                "You cannot spawn children or create tools."));
+        base += verificationDepth;
+        base += locale->model(QString::fromUtf8("sequence_suffix"));
+        base += internetSearchRule(locale);
+        return base;
+    }
     QString base;
     if (worker->isGroupInterlocutor())
     {
@@ -3148,34 +3341,20 @@ QString WorkerManager::promptFor(Worker *worker) const
         base += internetSearchRule(locale);
         return base;
     }
+    if (!worker->isTool() && workerTaskKindIsMediaExecutor(modalityOf(worker)))
+    {
+        base = locale->model(
+            QString::fromUtf8("media_executor"),
+            QString::fromUtf8(
+                "You are an EXECUTOR for one media result (image, audio, speech, "
+                "video, or embeddings). Produce that result with your generation tool. "
+                "You do not spawn children and you do not create tools. "
+                "A revision of the same artifact is a new assignment on this same worker."));
+        base += locale->model(QString::fromUtf8("sequence_suffix"));
+        return base;
+    }
     switch (type)
     {
-    case WorkerTypeExecutor:
-        base = locale->model(QString::fromUtf8("executor"),
-                             QString::fromUtf8(
-                                 "You are an EXECUTOR. Do the concrete task you were given and "
-                                 "do not widen it.\n"
-                                 "DEFAULT OPERATING MODEL (follow this unless the user, the "
-                                 "workspace card, or your parent assignment already defined a "
-                                 "different worker structure, roles, or duties — those explicit "
-                                 "instructions win):\n"
-                                 "- Produce the change. Testing is none, or one smoke check that "
-                                 "the result is not obviously broken. Do not write test suites "
-                                 "and do not do QA.\n"
-                                 "- If tests look useful, say so only as a recommendation in "
-                                 "complete_task: whether to test, and what to pay attention to. "
-                                 "Create a tester only when the user required testing or a report "
-                                 "recommended it.\n"
-                                 "- If the task is too large for one pass, split it with "
-                                 "delegate_task: executor for a concrete piece, manager only when "
-                                 "that piece itself needs a team. Reuse a child via worker_id "
-                                 "when the work is the same kind. The app waits until every child "
-                                 "of the batch reports, then you continue. Do not complete_task "
-                                 "while children are still working.\n"
-                                 "- Routine repeated steps: run_tool an existing tool instead of "
-                                 "redoing the procedure. If the same step will repeat, ask the "
-                                 "parent to create_tool."));
-        break;
     case WorkerTypeTool:
     {
         const QString toolFallback = QString::fromUtf8(
@@ -3189,43 +3368,63 @@ QString WorkerManager::promptFor(Worker *worker) const
                             : worker->toolPurpose());
         break;
     }
-    case WorkerTypeTester:
-        base = locale->model(QString::fromUtf8("tester"),
-                             QString::fromUtf8(
-                                 "You are a TESTER. You only test. You do not create, edit, "
-                                 "delete, or rename project files, and you do not fix failures.\n"
-                                 "Report what you ran, what passed, what failed, and where. "
-                                 "The parent decides the fix.\n"
-                                 "You exist only because the user required testing or a worker "
-                                 "recommended it."));
-        break;
     case WorkerTypeManager:
+    case WorkerTypeTester:
+    case WorkerTypeExecutor:
     default:
-        base = locale->model(QString::fromUtf8("manager"),
-                             QString::fromUtf8(
-                                 "You are a MANAGER. You do not implement the task and you do "
-                                 "not test anything.\n"
-                                 "DEFAULT OPERATING MODEL (follow this unless the user, the "
-                                 "workspace card, or your parent assignment already defined a "
-                                 "different worker structure, roles, or duties — those explicit "
-                                 "instructions win):\n"
-                                 "- Loop: minimal research to split the work -> plan_work -> "
-                                 "delegate_task -> summarize the children's reports -> repeat "
-                                 "only if the outcome is still incomplete.\n"
-                                 "- Research is a few reads. Do not edit files, do not build, "
-                                 "do not run tests, and do not take over an executor's job.\n"
-                                 "- Split so each child is worth reusing: the same worker should "
-                                 "take follow-ups of the same kind via worker_id, including "
-                                 "completed children. Do not create a new worker for every tiny "
-                                 "change.\n"
-                                 "- Routine, same-shaped steps (build, lint, generate, convert, "
-                                 "batch edits) are tools: create_tool once, then run_tool. Do not "
-                                 "spawn an executor for each repetition.\n"
-                                 "- Do not create a tester unless the user explicitly required "
-                                 "testing, or a worker's report recommends tests and names what "
-                                 "to check. Spawning a tester on your own is only an extreme "
-                                 "case. You never test yourself."));
+    {
+        const QString shared = QString::fromUtf8(
+            "Before any other action, in order: list_tools, list_worker_presets, "
+            "plan_work. In the plan and in the work, spend as few tokens and as "
+            "little time as the task allows.\n"
+            "Default is how=self: you do the work in this chat. A lookup, a list, "
+            "one piece, and a step that will not repeat stay here.\n"
+            "Split into child workers or tools only for a complex task where the "
+            "split is worth it. You decide. Do not split a task just because it "
+            "has several sentences or a repeated-looking step.\n"
+            "how=delegate — a child, only when that part would not fit this chat, "
+            "needs another model API, or is a large piece that does not need the "
+            "other parts' text. Pass why (context, other_modality, independent, "
+            "or check). Do not also do a part you delegated. A revision of the "
+            "same result reuses worker_id. why=check and check_only=true only "
+            "when the user asked for an independent check.\n"
+            "how=tool — create_tool, only when the same utilitarian step will "
+            "repeat enough that a tool is cheaper than doing it inline. "
+            "Do not spawn a worker per repetition.\n"
+            "Then carry the plan out to the end. A status message does not finish "
+            "the task and does not end the turn.\n"
+            "If something you need is not in the obvious place, look for it "
+            "before you stop. A description of the remaining work is not the outcome.\n");
+        if (worker->isRoot())
+        {
+            base = locale->model(
+                QString::fromUtf8("executor_root"),
+                QString::fromUtf8(
+                    "You are the TOP executor. Nobody is above you. "
+                    "You answer the user in this chat. You have no parent and you "
+                    "do not call complete_task.\n")
+                    + shared
+                    + QString::fromUtf8(
+                        "When the work is done, your reply in this chat is the report for "
+                        "the user: what was asked, what you did, and the outcome. "
+                        "Do not end the turn without that reply. "
+                        "Do not tell the user to finish the rest."));
+        }
+        else
+        {
+            base = locale->model(
+                QString::fromUtf8("executor"),
+                QString::fromUtf8(
+                    "You are an EXECUTOR for one part of a larger assignment. "
+                    "You report that part to your parent with complete_task, and "
+                    "only after the part is actually done. You do not address the user.\n")
+                    + shared
+                    + QString::fromUtf8(
+                        "Do not tell the parent to do your part. "
+                        "The top executor is the one who answers the user."));
+        }
         break;
+    }
     }
     base += locale->model(QString::fromUtf8("communication_suffix"));
     base += verificationDepth;
@@ -3321,7 +3520,8 @@ QString WorkerManager::startupContextFor(Worker *worker) const
         {
             text += QString::fromUtf8(
                 "\nYou are a Decisions worker: compare options with propose_decision "
-                "(question, options, chosen, rationale), then complete_task.");
+                "(question, options, chosen, rationale). A child then reports with "
+                "complete_task. The top executor answers the user.");
         }
         text += QString::fromUtf8("\n");
         text += AppSettings::instance()->workerPresetsSummary();

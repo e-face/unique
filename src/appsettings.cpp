@@ -1,6 +1,7 @@
 #include "appsettings.h"
 //----------------------------------------------
 #include "applocale.h"
+#include "modelcapabilities.h"
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QJsonArray>
@@ -9,8 +10,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QSettings>
 #include <QSet>
+#include <QSettings>
 #include <QTimer>
 #include <QtGlobal>
 #include <QUuid>
@@ -89,6 +90,7 @@ AppSettings::AppSettings(QObject *parent)
     , _persistDefaultsPending(false)
     , _persistProjectPending(false)
     , _showForwardedContext(true)
+    , _autoApprovePermissions(false)
     , _uiLanguage(QString::fromUtf8("ru"))
     , _mainWindowGeometry()
     , _mainWindowState()
@@ -472,6 +474,15 @@ void AppSettings::loadWorkspaceIni(QSettings *settings, WorkspaceSettings *bundl
     loadWorkerPresets(settings, bundle);
     bundle->rootWorkerPresetId =
         settings->value(QString::fromUtf8("workers/rootPresetId")).toString().trimmed();
+    bundle->hiddenWorkerPresetIds.clear();
+    const QStringList hidden =
+        settings->value(QString::fromUtf8("workers/hiddenPresetIds")).toStringList();
+    foreach (const QString &id, hidden)
+    {
+        const QString clean = id.trimmed();
+        if (!clean.isEmpty())
+            bundle->hiddenWorkerPresetIds.insert(clean);
+    }
     ensureRootWorkerPresetId(bundle);
 }
 
@@ -495,6 +506,8 @@ void AppSettings::saveWorkspaceIni(QSettings *settings, const WorkspaceSettings 
     settings->remove(QString::fromUtf8("llmProfiles"));
     saveWorkerPresets(settings, bundle);
     settings->setValue(QString::fromUtf8("workers/rootPresetId"), bundle.rootWorkerPresetId);
+    settings->setValue(QString::fromUtf8("workers/hiddenPresetIds"),
+                       QStringList(bundle.hiddenWorkerPresetIds.toList()));
     savePermissions(settings, bundle);
 }
 
@@ -539,6 +552,8 @@ void AppSettings::loadProjectWorkspace()
     _project.profiles.clear();
     ensureWorkerPresetsSeeded(&_project);
     ensureRootWorkerPresetId(&_project);
+    if (copyMissingDefaultPresets(&_project))
+        saveProjectWorkspace();
 }
 
 //----------------------------------------------
@@ -682,6 +697,8 @@ void AppSettings::load()
     _projectUsage.clear();
     _showForwardedContext = settings.value(QString::fromUtf8("ui/showForwardedContext"),
                                            true).toBool();
+    _autoApprovePermissions = settings.value(QString::fromUtf8("ui/autoApprovePermissions"),
+                                             false).toBool();
     _uiLanguage = settings.value(QString::fromUtf8("ui/language"),
                                  QString::fromUtf8("ru")).toString().trimmed().toLower();
     if (_uiLanguage.isEmpty())
@@ -715,6 +732,7 @@ void AppSettings::save() const
     settings.setValue(QString::fromUtf8("ui/chatAssistantColor"), _chatAssistantColor.name());
     settings.setValue(QString::fromUtf8("ui/chatOtherColor"), _chatOtherColor.name());
     settings.setValue(QString::fromUtf8("ui/showForwardedContext"), _showForwardedContext);
+    settings.setValue(QString::fromUtf8("ui/autoApprovePermissions"), _autoApprovePermissions);
     settings.setValue(QString::fromUtf8("ui/language"), _uiLanguage);
     if (!_mainWindowGeometry.isEmpty())
         settings.setValue(QString::fromUtf8("ui/mainWindowGeometry"),
@@ -1267,6 +1285,26 @@ void AppSettings::setShowForwardedContext(bool enabled)
 
 //----------------------------------------------
 
+bool AppSettings::autoApprovePermissions() const
+{
+    return _autoApprovePermissions;
+}
+
+//----------------------------------------------
+
+void AppSettings::setAutoApprovePermissions(bool enabled)
+{
+    if (_autoApprovePermissions == enabled)
+        return;
+    _autoApprovePermissions = enabled;
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    settings.setValue(QString::fromUtf8("ui/autoApprovePermissions"), _autoApprovePermissions);
+    settings.sync();
+    emit displayOptionsChanged();
+}
+
+//----------------------------------------------
+
 QString AppSettings::uiLanguage() const
 {
     return _uiLanguage;
@@ -1785,6 +1823,10 @@ bool AppSettings::profilesEqual(const LlmProfile &a, const LlmProfile &b)
            && a.purpose == b.purpose
            && a.balanceUrl == b.balanceUrl
            && a.balanceJsonPath == b.balanceJsonPath
+           && a.requestPath == b.requestPath
+           && a.taskPath == b.taskPath
+           && a.catalogUrl == b.catalogUrl
+           && a.extraBody == b.extraBody
            && a.maxToolIterations == b.maxToolIterations
            && a.contextCap == b.contextCap;
 }
@@ -2144,6 +2186,10 @@ void AppSettings::writeProfileFile(const LlmProfile &profile) const
     file.setValue(QString::fromUtf8("purpose"), profile.purpose);
     file.setValue(QString::fromUtf8("balanceUrl"), profile.balanceUrl);
     file.setValue(QString::fromUtf8("balanceJsonPath"), profile.balanceJsonPath);
+    file.setValue(QString::fromUtf8("requestPath"), profile.requestPath);
+    file.setValue(QString::fromUtf8("taskPath"), profile.taskPath);
+    file.setValue(QString::fromUtf8("catalogUrl"), profile.catalogUrl);
+    file.setValue(QString::fromUtf8("extraBody"), profile.extraBody);
     file.setValue(QString::fromUtf8("maxToolIterations"), profile.maxToolIterations);
     file.setValue(QString::fromUtf8("contextCap"), profile.contextCap);
     file.sync();
@@ -2287,6 +2333,10 @@ void AppSettings::loadProfiles()
             profile.purpose = file.value(QString::fromUtf8("purpose")).toString();
             profile.balanceUrl = file.value(QString::fromUtf8("balanceUrl")).toString();
             profile.balanceJsonPath = file.value(QString::fromUtf8("balanceJsonPath")).toString();
+            profile.requestPath = file.value(QString::fromUtf8("requestPath")).toString();
+            profile.taskPath = file.value(QString::fromUtf8("taskPath")).toString();
+            profile.catalogUrl = file.value(QString::fromUtf8("catalogUrl")).toString();
+            profile.extraBody = file.value(QString::fromUtf8("extraBody")).toString();
             profile.maxToolIterations =
                 qBound(kMinRoleToolIterations,
                        file.value(QString::fromUtf8("maxToolIterations"),
@@ -2506,11 +2556,14 @@ LlmProfile AppSettings::profileForWorkerType(WorkerType type) const
 
 LlmProfile AppSettings::profileForWorkerType(SettingsKind kind, WorkerType type) const
 {
+    const WorkerType lookup = (type == WorkerTypeManager || type == WorkerTypeTester)
+                              ? WorkerTypeExecutor
+                              : type;
     const WorkspaceSettings &bundle = ws(kind);
     // Профиль роли берётся из первого пресета этого типа.
     foreach (const WorkerPreset &preset, bundle.workerPresets)
     {
-        if (preset.type != type)
+        if (preset.type != lookup)
             continue;
         const LlmProfile fromPreset = profileById(preset.profileId);
         if (!fromPreset.id.isEmpty())
@@ -2611,16 +2664,12 @@ void AppSettings::ensureWorkerPresetsSeeded(WorkspaceSettings *bundle)
 {
     if (!bundle || !bundle->workerPresets.isEmpty())
         return;
-    static const WorkerType types[4] = {
-        WorkerTypeManager, WorkerTypeExecutor, WorkerTypeTester, WorkerTypeTool
+    static const WorkerType types[2] = {
+        WorkerTypeExecutor, WorkerTypeTool
     };
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 2; ++i)
     {
-        int row = 0;
-        if (types[i] == WorkerTypeExecutor || types[i] == WorkerTypeTool)
-            row = 1;
-        else if (types[i] == WorkerTypeTester)
-            row = 2;
+        const int row = 1;
 
         WorkerPreset preset;
         preset.id = QUuid::createUuid().toString().remove(QChar('{')).remove(QChar('}'));
@@ -2653,25 +2702,58 @@ void AppSettings::ensureRootWorkerPresetId(WorkspaceSettings *bundle)
 {
     if (!bundle)
         return;
-    // Главный менеджер — только пресет с ролью Manager.
+    // Корень — пресет исполнителя.
     if (!bundle->rootWorkerPresetId.trimmed().isEmpty())
     {
         foreach (const WorkerPreset &preset, bundle->workerPresets)
         {
             if (preset.id == bundle->rootWorkerPresetId
-                && preset.type == WorkerTypeManager)
+                && preset.type == WorkerTypeExecutor)
                 return;
         }
     }
     foreach (const WorkerPreset &preset, bundle->workerPresets)
     {
-        if (preset.type == WorkerTypeManager)
+        if (preset.type == WorkerTypeExecutor)
         {
             bundle->rootWorkerPresetId = preset.id;
             return;
         }
     }
     bundle->rootWorkerPresetId.clear();
+}
+
+//----------------------------------------------
+
+bool AppSettings::copyMissingDefaultPresets(WorkspaceSettings *bundle)
+{
+    if (!bundle)
+        return false;
+    bool changed = false;
+    foreach (const WorkerPreset &src, _defaults.workerPresets)
+    {
+        if (src.id.trimmed().isEmpty() || src.profileId.trimmed().isEmpty())
+            continue;
+        if (bundle->hiddenWorkerPresetIds.contains(src.id))
+            continue;
+        bool have = false;
+        foreach (const WorkerPreset &existing, bundle->workerPresets)
+        {
+            if (existing.id == src.id
+                || (existing.type == src.type && existing.profileId == src.profileId))
+            {
+                have = true;
+                break;
+            }
+        }
+        if (have)
+            continue;
+        bundle->workerPresets.append(src);
+        changed = true;
+    }
+    if (changed)
+        ensureRootWorkerPresetId(bundle);
+    return changed;
 }
 
 //----------------------------------------------
@@ -2762,6 +2844,9 @@ QString AppSettings::addWorkerPreset(SettingsKind kind, WorkerPreset preset, QSt
         preset.id = QUuid::createUuid().toString().remove(QChar('{')).remove(QChar('}'));
     bundle.workerPresets.append(preset);
     ensureRootWorkerPresetId(&bundle);
+    if (kind == SettingsKindDefaults && _projectOpen
+        && copyMissingDefaultPresets(&_project))
+        schedulePersist(SettingsKindProject);
     schedulePersist(kind);
     scheduleWorkerPresetsSignal();
     return preset.id;
@@ -2984,6 +3069,17 @@ void AppSettings::removeWorkerPreset(SettingsKind kind, QString id)
     {
         if (bundle.workerPresets.at(i).id == id)
         {
+            if (kind == SettingsKindProject)
+            {
+                foreach (const WorkerPreset &src, _defaults.workerPresets)
+                {
+                    if (src.id == id)
+                    {
+                        bundle.hiddenWorkerPresetIds.insert(id);
+                        break;
+                    }
+                }
+            }
             bundle.workerPresets.removeAt(i);
             ensureRootWorkerPresetId(&bundle);
             schedulePersist(kind);
@@ -3025,7 +3121,7 @@ void AppSettings::setRootWorkerPresetId(SettingsKind kind, QString presetId)
     bool found = false;
     foreach (const WorkerPreset &preset, bundle.workerPresets)
     {
-        if (preset.id == id && preset.type == WorkerTypeManager)
+        if (preset.id == id && preset.type == WorkerTypeExecutor)
         {
             found = true;
             break;
@@ -3053,12 +3149,12 @@ WorkerPreset AppSettings::rootWorkerPreset(SettingsKind kind) const
     const WorkspaceSettings &bundle = ws(kind);
     foreach (const WorkerPreset &preset, bundle.workerPresets)
     {
-        if (preset.id == bundle.rootWorkerPresetId && preset.type == WorkerTypeManager)
+        if (preset.id == bundle.rootWorkerPresetId && preset.type == WorkerTypeExecutor)
             return preset;
     }
     foreach (const WorkerPreset &preset, bundle.workerPresets)
     {
-        if (preset.type == WorkerTypeManager)
+        if (preset.type == WorkerTypeExecutor)
             return preset;
     }
     return WorkerPreset();
@@ -3093,6 +3189,7 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
         "MODEL FIT: cheapest/fastest adequate model for routine edits and simple checks; "
         "stronger models for architecture, hard bugs, ambiguous design, group deep-dives. "
         "Prefer a fitting preset over the default type profile.");
+    bool anyMedia = false;
     foreach (const WorkerPreset &preset, bundle.workerPresets)
     {
         const LlmProfile profile = profileById(preset.profileId);
@@ -3110,12 +3207,33 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
         const WorkerTaskKind modality = profile.id.isEmpty()
                                         ? preset.taskKind
                                         : profile.modality;
+        LlmProfile probe = profile;
+        if (probe.id.isEmpty())
+            probe.modality = modality;
+        const QString params = mediaParamsLine(
+            modality,
+            ModelCapabilityService::instance()->cachedOrHeuristic(probe));
+        if (!params.isEmpty())
+            anyMedia = true;
         lines << QString::fromUtf8(
                      "- preset_id=%1 type=%2 modality=%3 profile=\"%4\" "
-                     "model=%5 purpose=\"%6\"")
+                     "model=%5 purpose=\"%6\"%7")
                      .arg(preset.id, workerTypeToString(preset.type),
                           workerTaskKindToString(modality), profileName, model,
-                          purpose);
+                          purpose,
+                          params.isEmpty()
+                              ? QString()
+                              : QString::fromUtf8(" params: %1").arg(params));
+    }
+    if (anyMedia)
+    {
+        lines << QString::fromUtf8(
+            "A media preset is not a chat model. Its task is one JSON object "
+            "using that preset's params. Values in parentheses come from the "
+            "provider catalog. Set every required key. Set an optional key only "
+            "when the task asks for it, and only with a listed value. "
+            "prompt/text is the content, not an instruction to save a file. "
+            "output_path is the new file and is not sent to the provider.");
     }
     return lines.join(QChar('\n'));
 }

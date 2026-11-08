@@ -7,6 +7,7 @@
 //----------------------------------------------
 #include <QAbstractTextDocumentLayout>
 #include <QApplication>
+#include <QCheckBox>
 #include <QColor>
 #include <QDesktopServices>
 #include <QEvent>
@@ -391,6 +392,7 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     , _messagesLayout(0)
     , _input(0)
     , _sendButton(0)
+    , _autoApproveBox(0)
     , _stopButton(0)
     , _interruptButton(0)
     , _reportButton(0)
@@ -490,15 +492,29 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     _input->installEventFilter(this);
 
     _sendButton = new QPushButton(tr("Отправить"), this);
+    _autoApproveBox = new QCheckBox(tr("Автоподтверждение"), this);
+    _autoApproveBox->setToolTip(
+        tr("Одобрять запросы подтверждения от моделей без вопроса"));
+    _autoApproveBox->setChecked(AppSettings::instance()->autoApprovePermissions());
     _stopButton = new QPushButton(tr("Стоп"), this);
     _stopButton->setEnabled(false);
     _stopButton->setToolTip(tr("Остановить работу во всех чатах"));
     connect(_sendButton, SIGNAL(clicked()), this, SLOT(sltSend()));
     connect(_stopButton, SIGNAL(clicked()), this, SIGNAL(stopRequested()));
+    connect(_autoApproveBox, SIGNAL(toggled(bool)),
+            this, SLOT(sltAutoApproveToggled(bool)));
+    connect(AppSettings::instance(), SIGNAL(displayOptionsChanged()),
+            this, SLOT(sltDisplayOptionsChanged()));
+
+    QHBoxLayout *stopRow = new QHBoxLayout();
+    stopRow->setContentsMargins(0, 0, 0, 0);
+    stopRow->setSpacing(8);
+    stopRow->addWidget(_autoApproveBox);
+    stopRow->addWidget(_stopButton);
 
     QVBoxLayout *buttons = new QVBoxLayout();
     buttons->addWidget(_sendButton);
-    buttons->addWidget(_stopButton);
+    buttons->addLayout(stopRow);
     buttons->addStretch();
 
     QHBoxLayout *inputRow = new QHBoxLayout();
@@ -581,6 +597,12 @@ void ConversationWidget::retranslateUi()
     }
     if (_sendButton)
         _sendButton->setText(tr("Отправить"));
+    if (_autoApproveBox)
+    {
+        _autoApproveBox->setText(tr("Автоподтверждение"));
+        _autoApproveBox->setToolTip(
+            tr("Одобрять запросы подтверждения от моделей без вопроса"));
+    }
     if (_stopButton)
     {
         _stopButton->setText(tr("Стоп"));
@@ -718,7 +740,11 @@ static bool looksLikeInjectedStartupContext(const QString &text)
     // Старые чаты без hide_in_ui: служебный префикс воркера.
     return text.startsWith(QString::fromUtf8("Worker tree limits:"))
            || text.startsWith(QString::fromUtf8("You are a shared tool outside"))
-           || text.contains(QString::fromUtf8("Available worker presets (pick preset_id"));
+           || text.contains(QString::fromUtf8("Available worker presets (pick preset_id"))
+           || text.startsWith(QString::fromUtf8("Before any other action call"))
+           || text.startsWith(QString::fromUtf8("You stopped in the middle"))
+           || text.startsWith(QString::fromUtf8("Previous model request failed"))
+           || text.startsWith(QString::fromUtf8("You still have not called complete_task"));
 }
 
 //----------------------------------------------
@@ -1715,10 +1741,37 @@ void ConversationWidget::sltToolCallFinished(const QString &name, const QString 
 void ConversationWidget::sltNotice(const QString &text)
 {
     const QString kind = QString::fromUtf8("notice");
+    if (!_displayLog.isEmpty())
+    {
+        const ChatDisplayItem &last = _displayLog.last();
+        if (last.kind == kind && last.text == text)
+            return;
+    }
     const QString title = titleForKind(kind);
     recordDisplay(kind, title, text, kind);
     addPlainBubble(title, text, QString::fromUtf8("noticeMsg"), false,
                    false, false, kind);
+}
+
+//----------------------------------------------
+
+void ConversationWidget::sltAutoApproveToggled(bool checked)
+{
+    AppSettings::instance()->setAutoApprovePermissions(checked);
+}
+
+//----------------------------------------------
+
+void ConversationWidget::sltDisplayOptionsChanged()
+{
+    if (!_autoApproveBox)
+        return;
+    const bool on = AppSettings::instance()->autoApprovePermissions();
+    if (_autoApproveBox->isChecked() == on)
+        return;
+    _autoApproveBox->blockSignals(true);
+    _autoApproveBox->setChecked(on);
+    _autoApproveBox->blockSignals(false);
 }
 
 //----------------------------------------------
@@ -1904,4 +1957,14 @@ void ConversationWidget::setContextRowVisible(bool visible)
         _compactButton->setVisible(visible);
     if (_interruptButton)
         _interruptButton->setVisible(visible);
+}
+
+//----------------------------------------------
+
+void ConversationWidget::setContextMeterVisible(bool visible)
+{
+    if (_contextBar)
+        _contextBar->setVisible(visible);
+    if (_compactButton)
+        _compactButton->setVisible(visible);
 }

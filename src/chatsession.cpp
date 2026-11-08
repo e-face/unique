@@ -245,6 +245,7 @@ ChatSnapshot ChatSession::snapshot(bool sealing) const
     if (_worker)
     {
         shot.workerType = workerTypeToString(_worker->type());
+        shot.checkOnly = _worker->isCheckOnly();
         shot.parentId = _worker->parentWorker() ? _worker->parentWorker()->id() : QString();
         shot.toolName = _worker->toolName();
         shot.toolPurpose = _worker->toolPurpose();
@@ -549,6 +550,8 @@ QJsonObject ChatStore::snapshotMetaToJson(const ChatSnapshot &shot)
     object.insert(QString::fromUtf8("minimized"), shot.minimized);
     object.insert(QString::fromUtf8("autoTitle"), shot.autoTitle);
     object.insert(QString::fromUtf8("workerType"), shot.workerType);
+    if (shot.checkOnly)
+        object.insert(QString::fromUtf8("checkOnly"), true);
     object.insert(QString::fromUtf8("parentId"), shot.parentId);
     if (!shot.toolName.isEmpty())
         object.insert(QString::fromUtf8("toolName"), shot.toolName);
@@ -599,6 +602,7 @@ ChatSnapshot ChatStore::snapshotMetaFromJson(const QJsonObject &object)
     shot.minimized = object.value(QString::fromUtf8("minimized")).toBool();
     shot.autoTitle = object.value(QString::fromUtf8("autoTitle")).toBool(true);
     shot.workerType = object.value(QString::fromUtf8("workerType")).toString();
+    shot.checkOnly = object.value(QString::fromUtf8("checkOnly")).toBool(false);
     shot.parentId = object.value(QString::fromUtf8("parentId")).toString();
     shot.toolName = object.value(QString::fromUtf8("toolName")).toString();
     shot.toolPurpose = object.value(QString::fromUtf8("toolPurpose")).toString();

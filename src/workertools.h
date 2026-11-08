@@ -30,7 +30,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Архитектура и список подзадач; обязателен до delegate_task у менеджера.
+ * @brief Свой план исполнителя: что сделать самому, что отдать, что вынести в инструмент.
  */
 class PlanWorkTool : public AgentTool
 {
@@ -106,7 +106,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Создать инструмент: общий многоразовый исполнитель (только менеджер).
+ * @brief Создать инструмент: общий многоразовый специалист. Вызывает исполнитель.
  */
 class CreateToolTool : public AgentTool
 {
@@ -133,6 +133,8 @@ class ListToolsTool : public AgentTool
 public:
     explicit ListToolsTool(WorkerManager *manager, QObject *parent = 0);
 
+    void setOwner(Worker *owner);
+
     virtual QString     name() const;
     virtual QString     description() const;
     virtual QJsonObject parametersSchema() const;
@@ -140,6 +142,27 @@ public:
 
 private:
     WorkerManager *_manager;
+    Worker        *_owner;
+};
+
+//----------------------------------------------
+
+/**
+ * @brief Пресеты воркеров, которых исполнитель может создать.
+ */
+class ListWorkerPresetsTool : public AgentTool
+{
+public:
+    ListWorkerPresetsTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    WorkerManager *_manager;
+    Worker        *_owner;
 };
 
 //----------------------------------------------

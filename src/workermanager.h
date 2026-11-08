@@ -132,7 +132,7 @@ public:
                          Worker *parent = 0, QString task = QString(),
                          QString llmProfileId = QString());
     Worker *spawn(Worker *parent, WorkerType type, QString task, QString *error,
-                  QString llmProfileId = QString());
+                  QString llmProfileId = QString(), bool checkOnly = false);
     /**
      * @brief Добавить собеседника в группу главного (создаёт группу при необходимости).
      */

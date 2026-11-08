@@ -1,7 +1,9 @@
 #include "composerinput.h"
 //----------------------------------------------
 #include "applocale.h"
+#include "appsettings.h"
 //----------------------------------------------
+#include <QCheckBox>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
@@ -127,6 +129,7 @@ ComposerInput::ComposerInput(QWidget *parent)
     , _capsHint(0)
     , _plusButton(0)
     , _schemaButton(0)
+    , _autoApproveBox(0)
     , _stopButton(0)
     , _sendButton(0)
     , _dropHighlight(false)
@@ -188,6 +191,15 @@ ComposerInput::ComposerInput(QWidget *parent)
     _capsHint->setObjectName(QString::fromUtf8("composerCapsHint"));
     _capsHint->hide();
 
+    _autoApproveBox = new QCheckBox(this);
+    _autoApproveBox->setObjectName(QString::fromUtf8("composerAutoApprove"));
+    _autoApproveBox->setCursor(Qt::PointingHandCursor);
+    _autoApproveBox->setChecked(AppSettings::instance()->autoApprovePermissions());
+    connect(_autoApproveBox, SIGNAL(toggled(bool)),
+            this, SLOT(sltAutoApproveToggled(bool)));
+    connect(AppSettings::instance(), SIGNAL(displayOptionsChanged()),
+            this, SLOT(sltDisplayOptionsChanged()));
+
     _stopButton = new QPushButton(this);
     _stopButton->setObjectName(QString::fromUtf8("composerStop"));
     _stopButton->setCursor(Qt::PointingHandCursor);
@@ -209,6 +221,7 @@ ComposerInput::ComposerInput(QWidget *parent)
     toolbar->addWidget(_plusButton, 0, Qt::AlignVCenter);
     toolbar->addWidget(_schemaButton, 0, Qt::AlignVCenter);
     toolbar->addStretch(1);
+    toolbar->addWidget(_autoApproveBox, 0, Qt::AlignVCenter);
     toolbar->addWidget(_stopButton, 0, Qt::AlignVCenter);
     toolbar->addWidget(_sendButton, 0, Qt::AlignVCenter);
 
@@ -265,6 +278,11 @@ void ComposerInput::retranslateUi()
     {
         _schemaButton->setText(L("composer.schema"));
         _schemaButton->setToolTip(L("composer.schemaTip"));
+    }
+    if (_autoApproveBox)
+    {
+        _autoApproveBox->setText(L("composer.autoApprove"));
+        _autoApproveBox->setToolTip(L("composer.autoApproveTip"));
     }
     if (_stopButton)
     {
@@ -391,6 +409,12 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
         "  font-size:16px; font-weight:bold; padding:0; }"
         "QPushButton#composerSend:hover { background:%4; }"
         "QPushButton#composerSend:disabled { background:%5; color:%1; }"
+        "QCheckBox#composerAutoApprove {"
+        "  background:transparent; color:%3; spacing:6px; }"
+        "QCheckBox#composerAutoApprove::indicator {"
+        "  width:15px; height:15px; border:1px solid %2; border-radius:3px; background:%1; }"
+        "QCheckBox#composerAutoApprove::indicator:checked {"
+        "  background:%4; border:1px solid %4; }"
         "QPushButton#composerStop {"
         "  background:transparent; color:%3; border:1px solid %2; border-radius:12px;"
         "  padding:4px 10px; }"
@@ -401,6 +425,27 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
     // Чипы: заливка как у поля ввода, чтобы полоса вложений не отличалась.
     setProperty("chipFill", input);
     update();
+}
+
+//----------------------------------------------
+
+void ComposerInput::sltAutoApproveToggled(bool checked)
+{
+    AppSettings::instance()->setAutoApprovePermissions(checked);
+}
+
+//----------------------------------------------
+
+void ComposerInput::sltDisplayOptionsChanged()
+{
+    if (!_autoApproveBox)
+        return;
+    const bool on = AppSettings::instance()->autoApprovePermissions();
+    if (_autoApproveBox->isChecked() == on)
+        return;
+    _autoApproveBox->blockSignals(true);
+    _autoApproveBox->setChecked(on);
+    _autoApproveBox->blockSignals(false);
 }
 
 //----------------------------------------------

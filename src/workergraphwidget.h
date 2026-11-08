@@ -21,7 +21,8 @@ class QWheelEvent;
 //----------------------------------------------
 
 /**
- * @brief Дерево воркеров: состояние, связи, клик открывает чат.
+ * @brief Дерево воркеров: состояние, связи.
+ *        Короткий клик открывает чат, сдвиг мыши двигает схему.
  */
 class WorkerGraphWidget : public QGraphicsView
 {
@@ -50,12 +51,13 @@ signals:
 
 protected:
     virtual void mousePressEvent(QMouseEvent *event);
+    virtual void mouseMoveEvent(QMouseEvent *event);
+    virtual void mouseReleaseEvent(QMouseEvent *event);
     virtual void contextMenuEvent(QContextMenuEvent *event);
     virtual void wheelEvent(QWheelEvent *event);
     virtual void keyPressEvent(QKeyEvent *event);
 
 private slots:
-    void sltSelectionChanged();
     void sltLocaleChanged();
 
 private:
@@ -73,6 +75,10 @@ private:
     QHash<Worker *, SchemaNodeItem *> _laidOut;
     qreal                   _zoom;
     bool                    _rebuilding;
+    bool                    _pressing;
+    bool                    _dragged;
+    QPoint                  _pressPos;
+    QString                 _pressWorkerId;
 };
 
 #endif // WORKERGRAPHWIDGET_H

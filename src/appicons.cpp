@@ -95,14 +95,12 @@ QIcon AppIcons::forWorkerType(WorkerType type)
 {
     switch (type)
     {
-    case WorkerTypeExecutor:
-        return executor();
-    case WorkerTypeTester:
-        return tester();
     case WorkerTypeTool:
         return tool();
     case WorkerTypeManager:
+    case WorkerTypeTester:
+    case WorkerTypeExecutor:
     default:
-        return manager();
+        return executor();
     }
 }

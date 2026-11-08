@@ -84,6 +84,89 @@ QString ModelCapabilities::summary() const
 
 //----------------------------------------------
 
+static QString withLocalOutput(WorkerTaskKind kind, QString providerLine)
+{
+    const bool savesFile = kind == WorkerTaskKindImageGeneration
+                           || kind == WorkerTaskKindSpeech
+                           || kind == WorkerTaskKindAudioGeneration
+                           || kind == WorkerTaskKindVideoGeneration;
+    if (!savesFile)
+        return providerLine;
+    if (!providerLine.isEmpty())
+        providerLine += QString::fromUtf8(", ");
+    providerLine += QString::fromUtf8("output_path (local file, not sent to the provider)");
+    return providerLine;
+}
+
+//----------------------------------------------
+
+QString mediaParamsLine(WorkerTaskKind kind, const ModelCapabilities &caps)
+{
+    if (!caps.providerParams.trimmed().isEmpty()
+        && kind != WorkerTaskKindLlm
+        && kind != WorkerTaskKindDecisions
+        && kind != WorkerTaskKindOther)
+        return withLocalOutput(kind, caps.providerParams.trimmed());
+
+    switch (kind)
+    {
+    case WorkerTaskKindImageGeneration:
+    {
+        QStringList keys;
+        keys << QString::fromUtf8("prompt (required)");
+        keys << QString::fromUtf8("output_path");
+        if (caps.requiresImageReference())
+        {
+            const int maxRefs = caps.inputReferencesMax > 0
+                                ? caps.inputReferencesMax
+                                : caps.inputReferencesMin;
+            keys << QString::fromUtf8("reference_path (required, %1..%2)")
+                        .arg(caps.inputReferencesMin)
+                        .arg(maxRefs);
+        }
+        else if (caps.allowsImageReference())
+            keys << QString::fromUtf8("reference_path (optional)");
+        if (caps.supportsSize)
+            keys << QString::fromUtf8("size");
+        if (caps.supportsN && caps.nMax > 0)
+        {
+            keys << QString::fromUtf8("n (%1..%2)")
+                        .arg(caps.nMin > 0 ? caps.nMin : 1)
+                        .arg(caps.nMax);
+        }
+        else if (caps.supportsN)
+            keys << QString::fromUtf8("n");
+        if (!caps.outputFormats.isEmpty())
+        {
+            keys << QString::fromUtf8("output_format (%1)")
+                        .arg(caps.outputFormats.join(QString::fromUtf8("|")));
+        }
+        return keys.join(QString::fromUtf8(", "));
+    }
+    case WorkerTaskKindSpeech:
+        if (caps.acceptsAudio() && !caps.acceptsText())
+            return QString::fromUtf8("path (required, existing audio to transcribe)");
+        if (caps.acceptsText() && caps.outputModalities.contains(QString::fromUtf8("audio")))
+        {
+            return QString::fromUtf8(
+                "text (required, words to speak), voice, format, output_path, instructions");
+        }
+        return QString::fromUtf8(
+            "text (required, words to speak), voice, format, output_path, instructions; "
+            "or path (existing audio) to transcribe");
+    case WorkerTaskKindAudioGeneration:
+        return QString::fromUtf8("prompt (required), duration (seconds), output_path");
+    case WorkerTaskKindVideoGeneration:
+        return QString::fromUtf8("prompt (required), seconds, size, output_path");
+    case WorkerTaskKindEmbedding:
+        return QString::fromUtf8("text (required)");
+    default:
+        return QString();
+    }
+}
+
+//----------------------------------------------
+
 ModelCapabilityService::ModelCapabilityService()
 {
 }
@@ -104,7 +187,8 @@ static QString cacheKey(const LlmProfile &profile)
 {
     return profile.baseUrl.trimmed().toLower() + QChar('|')
            + profile.model.trimmed().toLower() + QChar('|')
-           + workerTaskKindToString(profile.modality);
+           + workerTaskKindToString(profile.modality) + QChar('|')
+           + profile.catalogUrl.trimmed().toLower();
 }
 
 //----------------------------------------------
@@ -405,6 +489,272 @@ static void applyModelModalities(ModelCapabilities *caps, const QJsonObject &obj
 
 //----------------------------------------------
 
+static QString jsonScalarText(const QJsonValue &value)
+{
+    if (value.isString())
+        return value.toString().trimmed();
+    if (value.isBool())
+        return value.toBool() ? QString::fromUtf8("true") : QString::fromUtf8("false");
+    if (value.isDouble())
+    {
+        const double n = value.toDouble();
+        if (n == static_cast<double>(static_cast<int>(n)))
+            return QString::number(static_cast<int>(n));
+        return QString::number(n);
+    }
+    return QString();
+}
+
+//----------------------------------------------
+
+static QString joinEnumValues(const QJsonArray &values)
+{
+    QStringList parts;
+    for (int i = 0; i < values.size() && parts.size() < 8; ++i)
+    {
+        const QString text = jsonScalarText(values.at(i));
+        if (!text.isEmpty())
+            parts << text;
+    }
+    if (parts.isEmpty())
+        return QString();
+    QString line = parts.join(QString::fromUtf8("|"));
+    if (values.size() > parts.size())
+        line += QString::fromUtf8("+%1").arg(values.size() - parts.size());
+    return line;
+}
+
+//----------------------------------------------
+
+static QString schemaFieldLine(const QString &name, const QJsonObject &prop, bool required)
+{
+    QStringList bits;
+    bits << (required ? QString::fromUtf8("required") : QString::fromUtf8("optional"));
+    const QString enums = joinEnumValues(prop.value(QString::fromUtf8("enum")).toArray());
+    if (!enums.isEmpty())
+        bits << enums;
+    else
+    {
+        const QString itemEnums = joinEnumValues(
+            prop.value(QString::fromUtf8("items")).toObject()
+                .value(QString::fromUtf8("enum")).toArray());
+        if (!itemEnums.isEmpty())
+            bits << itemEnums;
+    }
+    if (prop.contains(QString::fromUtf8("minimum"))
+        || prop.contains(QString::fromUtf8("maximum")))
+    {
+        const QString minText = jsonScalarText(prop.value(QString::fromUtf8("minimum")));
+        const QString maxText = jsonScalarText(prop.value(QString::fromUtf8("maximum")));
+        if (!minText.isEmpty() || !maxText.isEmpty())
+            bits << QString::fromUtf8("%1..%2").arg(minText, maxText);
+    }
+    if (prop.contains(QString::fromUtf8("minItems"))
+        || prop.contains(QString::fromUtf8("maxItems")))
+    {
+        const int minItems = prop.value(QString::fromUtf8("minItems")).toInt(0);
+        const int maxItems = prop.value(QString::fromUtf8("maxItems")).toInt(0);
+        if (maxItems > 0)
+            bits << QString::fromUtf8("%1..%2 items").arg(minItems).arg(maxItems);
+    }
+    const QString def = jsonScalarText(prop.value(QString::fromUtf8("default")));
+    if (!def.isEmpty() && def.size() <= 24)
+        bits << QString::fromUtf8("default %1").arg(def);
+    return QString::fromUtf8("%1 (%2)").arg(name, bits.join(QString::fromUtf8(", ")));
+}
+
+//----------------------------------------------
+
+static void noteSchemaProperty(ModelCapabilities *caps, const QString &name,
+                               const QJsonObject &prop)
+{
+    if (!caps)
+        return;
+    if (name == QString::fromUtf8("size") || name == QString::fromUtf8("aspect_ratio"))
+        caps->supportsSize = true;
+    if (name == QString::fromUtf8("n"))
+    {
+        if (prop.contains(QString::fromUtf8("minimum")))
+            caps->nMin = prop.value(QString::fromUtf8("minimum")).toInt(caps->nMin);
+        if (prop.contains(QString::fromUtf8("maximum")))
+            caps->nMax = prop.value(QString::fromUtf8("maximum")).toInt(caps->nMax);
+        caps->supportsN = caps->nMax > 1;
+    }
+    if (name == QString::fromUtf8("output_format"))
+    {
+        const QJsonArray values = prop.value(QString::fromUtf8("enum")).toArray();
+        for (int i = 0; i < values.size(); ++i)
+        {
+            const QString text = jsonScalarText(values.at(i));
+            if (!text.isEmpty() && !caps->outputFormats.contains(text))
+                caps->outputFormats.append(text);
+        }
+    }
+    if (name == QString::fromUtf8("image_urls")
+        || name == QString::fromUtf8("input_references"))
+    {
+        const int minItems = prop.value(QString::fromUtf8("minItems")).toInt(0);
+        int maxItems = prop.value(QString::fromUtf8("maxItems")).toInt(0);
+        if (maxItems <= 0)
+            maxItems = 1;
+        if (minItems > caps->inputReferencesMin)
+            caps->inputReferencesMin = minItems;
+        if (maxItems > caps->inputReferencesMax)
+            caps->inputReferencesMax = maxItems;
+        if (!caps->inputModalities.contains(QString::fromUtf8("image")))
+            caps->inputModalities.append(QString::fromUtf8("image"));
+    }
+}
+
+//----------------------------------------------
+
+static QString schemaParamsLine(const QJsonObject &schema, ModelCapabilities *caps)
+{
+    const QJsonObject props = schema.value(QString::fromUtf8("properties")).toObject();
+    if (props.isEmpty())
+        return QString();
+    QStringList requiredNames;
+    const QJsonArray required = schema.value(QString::fromUtf8("required")).toArray();
+    for (int i = 0; i < required.size(); ++i)
+        requiredNames << required.at(i).toString();
+
+    QStringList requiredLines;
+    QStringList optionalLines;
+    foreach (const QString &name, props.keys())
+    {
+        if (name == QString::fromUtf8("model"))
+            continue;
+        const QJsonObject prop = props.value(name).toObject();
+        noteSchemaProperty(caps, name, prop);
+        const bool isRequired = requiredNames.contains(name);
+        const QString line = schemaFieldLine(name, prop, isRequired);
+        if (isRequired)
+            requiredLines << line;
+        else
+            optionalLines << line;
+    }
+    requiredLines << optionalLines;
+    return requiredLines.join(QString::fromUtf8(", "));
+}
+
+//----------------------------------------------
+
+static QString supportedDescriptorLine(const QString &name, const QJsonValue &value)
+{
+    if (value.isBool())
+        return value.toBool() ? name : QString();
+    if (value.isArray())
+    {
+        const QString enums = joinEnumValues(value.toArray());
+        if (enums.isEmpty())
+            return name;
+        return QString::fromUtf8("%1 (%2)").arg(name, enums);
+    }
+    if (!value.isObject())
+        return name;
+    const QJsonObject obj = value.toObject();
+    const QString type = obj.value(QString::fromUtf8("type")).toString();
+    const QString enums = joinEnumValues(obj.value(QString::fromUtf8("values")).toArray());
+    if (!enums.isEmpty() || type == QString::fromUtf8("enum"))
+    {
+        if (enums.isEmpty())
+            return name;
+        return QString::fromUtf8("%1 (%2)").arg(name, enums);
+    }
+    if (type == QString::fromUtf8("range")
+        || obj.contains(QString::fromUtf8("min"))
+        || obj.contains(QString::fromUtf8("max")))
+    {
+        const QString minText = jsonScalarText(obj.value(QString::fromUtf8("min")));
+        const QString maxText = jsonScalarText(obj.value(QString::fromUtf8("max")));
+        if (minText.isEmpty() && maxText.isEmpty())
+            return name;
+        return QString::fromUtf8("%1 (%2..%3)").arg(name, minText, maxText);
+    }
+    if (type == QString::fromUtf8("boolean"))
+        return name;
+    const QJsonArray legacy = obj.value(QString::fromUtf8("values")).toArray();
+    const QString legacyEnums = joinEnumValues(legacy);
+    if (!legacyEnums.isEmpty())
+        return QString::fromUtf8("%1 (%2)").arg(name, legacyEnums);
+    return name;
+}
+
+//----------------------------------------------
+
+static QString supportedParamsLine(const QJsonValue &paramsVal)
+{
+    if (!paramsVal.isObject())
+        return QString();
+    const QJsonObject params = paramsVal.toObject();
+    QStringList lines;
+    foreach (const QString &name, params.keys())
+    {
+        const QString line = supportedDescriptorLine(name, params.value(name));
+        if (!line.isEmpty())
+            lines << line;
+    }
+    return lines.join(QString::fromUtf8(", "));
+}
+
+//----------------------------------------------
+
+static QJsonObject parameterSchemaObject(const QJsonObject &model)
+{
+    const QJsonValue params = model.value(QString::fromUtf8("parameters"));
+    if (!params.isObject())
+        return QJsonObject();
+    const QJsonObject obj = params.toObject();
+    const QJsonValue input = obj.value(QString::fromUtf8("input_schema"));
+    if (input.isObject())
+        return input.toObject();
+    if (obj.contains(QString::fromUtf8("properties")))
+        return obj;
+    return QJsonObject();
+}
+
+//----------------------------------------------
+
+static void applySupportedParameters(ModelCapabilities *caps, const QJsonValue &paramsVal);
+
+//----------------------------------------------
+
+static QString catalogRequestEndpoint(const QJsonObject &model)
+{
+    // Каталог может сообщить путь запроса рядом со схемой параметров.
+    const QJsonObject params = model.value(QString::fromUtf8("parameters")).toObject();
+    QString endpoint = params.value(QString::fromUtf8("endpoint")).toString().trimmed();
+    if (endpoint.isEmpty())
+        endpoint = params.value(QString::fromUtf8("path")).toString().trimmed();
+    if (endpoint.isEmpty())
+        endpoint = model.value(QString::fromUtf8("endpoint")).toString().trimmed();
+    if (endpoint.isEmpty())
+        endpoint = model.value(QString::fromUtf8("request_path")).toString().trimmed();
+    return endpoint;
+}
+
+//----------------------------------------------
+
+static void applyProviderCatalog(ModelCapabilities *caps, const QJsonObject &model)
+{
+    if (!caps)
+        return;
+    applySupportedParameters(caps, model.value(QString::fromUtf8("supported_parameters")));
+    const QString endpoint = catalogRequestEndpoint(model);
+    if (!endpoint.isEmpty())
+        caps->requestEndpoint = endpoint;
+    const QString schemaLine = schemaParamsLine(parameterSchemaObject(model), caps);
+    const QString supportedLine =
+        supportedParamsLine(model.value(QString::fromUtf8("supported_parameters")));
+    QString line = !schemaLine.isEmpty() ? schemaLine : supportedLine;
+    if (line.size() > 700)
+        line = line.left(697) + QString::fromUtf8("...");
+    if (!line.isEmpty())
+        caps->providerParams = line;
+}
+
+//----------------------------------------------
+
 static void applySupportedParameters(ModelCapabilities *caps, const QJsonValue &paramsVal)
 {
     if (!caps)
@@ -467,7 +817,7 @@ static ModelCapabilities parseImagesModelObject(const QJsonObject &obj)
     ModelCapabilities caps;
     caps.source = QString::fromUtf8("openrouter_images");
     applyModelModalities(&caps, obj);
-    applySupportedParameters(&caps, obj.value(QString::fromUtf8("supported_parameters")));
+    applyProviderCatalog(&caps, obj);
     if (caps.inputModalities.isEmpty())
         caps.inputModalities << QString::fromUtf8("text");
     if (caps.outputModalities.isEmpty())
@@ -483,7 +833,7 @@ static ModelCapabilities parseLlmModelObject(const QJsonObject &obj)
     ModelCapabilities caps;
     caps.source = QString::fromUtf8("provider_models");
     applyModelModalities(&caps, obj);
-    applySupportedParameters(&caps, obj.value(QString::fromUtf8("supported_parameters")));
+    applyProviderCatalog(&caps, obj);
     // Если провайдер отдал только id без modalities — не помечаем known,
     // чтобы сработали OpenRouter enrich / эвристика.
     const bool hadModalities = !caps.inputModalities.isEmpty()
@@ -492,8 +842,14 @@ static ModelCapabilities parseLlmModelObject(const QJsonObject &obj)
                                || obj.contains(QString::fromUtf8("output_modalities"))
                                || obj.contains(QString::fromUtf8("architecture"))
                                || obj.contains(QString::fromUtf8("modalities"));
-    if (!hadModalities)
+    if (!hadModalities && caps.providerParams.isEmpty())
         return ModelCapabilities();
+    if (!hadModalities)
+    {
+        caps.known = true;
+        caps.source = QString::fromUtf8("provider_parameters");
+        return caps;
+    }
 
     if (caps.inputModalities.isEmpty())
         caps.inputModalities << QString::fromUtf8("text");
@@ -536,6 +892,10 @@ static void mergeMissingModalities(ModelCapabilities *dest, const ModelCapabilit
         dest->inputReferencesMin = src.inputReferencesMin;
     if (src.inputReferencesMax > dest->inputReferencesMax)
         dest->inputReferencesMax = src.inputReferencesMax;
+    if (dest->providerParams.isEmpty() && !src.providerParams.isEmpty())
+        dest->providerParams = src.providerParams;
+    if (dest->requestEndpoint.isEmpty() && !src.requestEndpoint.isEmpty())
+        dest->requestEndpoint = src.requestEndpoint;
 }
 
 //----------------------------------------------
@@ -585,27 +945,55 @@ ModelCapabilities ModelCapabilityService::fetchOpenRouterImages(const LlmProfile
 
 //----------------------------------------------
 
+static QJsonObject modelObjectFromCatalog(const QByteArray &body, const QString &modelId)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (!doc.isObject())
+        return QJsonObject();
+    const QJsonArray data = doc.object().value(QString::fromUtf8("data")).toArray();
+    for (int i = 0; i < data.size(); ++i)
+    {
+        const QJsonObject obj = data.at(i).toObject();
+        if (modelIdMatches(obj.value(QString::fromUtf8("id")).toString(), modelId))
+            return obj;
+    }
+    return QJsonObject();
+}
+
+//----------------------------------------------
+
+static QString catalogUrlFor(const LlmProfile &profile)
+{
+    const QString custom = profile.catalogUrl.trimmed();
+    if (custom.isEmpty())
+        return joinApi(profile.baseUrl, QString::fromUtf8("/models"));
+    if (custom.startsWith(QString::fromUtf8("http://"), Qt::CaseInsensitive)
+        || custom.startsWith(QString::fromUtf8("https://"), Qt::CaseInsensitive))
+        return custom;
+    return joinApi(profile.baseUrl, custom);
+}
+
+//----------------------------------------------
+
 ModelCapabilities ModelCapabilityService::fetchOpenRouterModels(const LlmProfile &profile) const
 {
     ModelCapabilities empty;
     int status = 0;
     QString error;
-    const QString url = joinApi(profile.baseUrl, QString::fromUtf8("/models"));
+    const QString url = catalogUrlFor(profile);
     const QByteArray body = httpGetSync(url, profile.apiKey, &status, &error);
-    if (body.isEmpty())
-        return empty;
-
-    const QJsonDocument doc = QJsonDocument::fromJson(body);
-    if (!doc.isObject())
-        return empty;
-    const QJsonArray data = doc.object().value(QString::fromUtf8("data")).toArray();
-    for (int i = 0; i < data.size(); ++i)
+    QJsonObject found = modelObjectFromCatalog(body, profile.model);
+    if (found.isEmpty() && !profile.catalogUrl.trimmed().isEmpty())
     {
-        const QJsonObject obj = data.at(i).toObject();
-        if (modelIdMatches(obj.value(QString::fromUtf8("id")).toString(), profile.model))
-            return parseLlmModelObject(obj);
+        // Свой каталог не знает модель — обычный /models хотя бы даст modalities.
+        const QString plain = joinApi(profile.baseUrl, QString::fromUtf8("/models"));
+        if (plain != url)
+            found = modelObjectFromCatalog(httpGetSync(plain, profile.apiKey, &status, &error),
+                                           profile.model);
     }
-    return empty;
+    if (found.isEmpty())
+        return empty;
+    return parseLlmModelObject(found);
 }
 
 //----------------------------------------------
@@ -669,8 +1057,32 @@ ModelCapabilities ModelCapabilityService::capabilitiesFor(const LlmProfile &prof
         if (profile.modality == WorkerTaskKindImageGeneration
             || profile.modality == WorkerTaskKindVideoGeneration)
             caps = fetchOpenRouterImages(profile);
-        if (!caps.known)
-            caps = fetchOpenRouterModels(profile);
+        if (!caps.known || caps.providerParams.isEmpty())
+        {
+            const ModelCapabilities listed = fetchOpenRouterModels(profile);
+            if (!caps.known)
+                caps = listed;
+            else if (!listed.providerParams.isEmpty())
+            {
+                caps.providerParams = listed.providerParams;
+                if (caps.requestEndpoint.isEmpty())
+                    caps.requestEndpoint = listed.requestEndpoint;
+                if (!caps.supportsSize && listed.supportsSize)
+                    caps.supportsSize = true;
+                if (!caps.supportsN && listed.supportsN)
+                {
+                    caps.supportsN = true;
+                    caps.nMin = listed.nMin;
+                    caps.nMax = listed.nMax;
+                }
+                if (caps.outputFormats.isEmpty())
+                    caps.outputFormats = listed.outputFormats;
+                if (listed.inputReferencesMax > caps.inputReferencesMax)
+                    caps.inputReferencesMax = listed.inputReferencesMax;
+                if (listed.inputReferencesMin > caps.inputReferencesMin)
+                    caps.inputReferencesMin = listed.inputReferencesMin;
+            }
+        }
     }
     else if (!profile.baseUrl.trimmed().isEmpty())
     {

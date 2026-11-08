@@ -75,6 +75,7 @@ private slots:
     void sltProfileSelected();
     void sltProfileFieldChanged();
     void sltAddProfile();
+    void sltCopyProfile();
     void sltRemoveProfile();
     void sltEditProfile();
     void sltEditProfileItem(QListWidgetItem *item);
@@ -84,6 +85,7 @@ private slots:
     void sltPresetSelected();
     void sltPresetFieldChanged();
     void sltAddPreset();
+    void sltCopyPreset();
     void sltRemovePreset();
     void sltEditPreset();
     void sltEditPresetItem(QListWidgetItem *item);
@@ -159,6 +161,7 @@ private:
     QLabel      *_profileCapHint;
     QPushButton *_profileCapModelButton;
     QPushButton *_addProfileButton;
+    QPushButton *_copyProfileButton;
     QPushButton *_editProfileButton;
     QPushButton *_removeProfileButton;
     QTextEdit   *_profilePreview;
@@ -167,6 +170,7 @@ private:
     QComboBox   *_presetProfileCombo;
     QComboBox   *_rootPresetCombo;
     QPushButton *_addPresetButton;
+    QPushButton *_copyPresetButton;
     QPushButton *_editPresetButton;
     QPushButton *_removePresetButton;
     QTextEdit   *_presetPreview;

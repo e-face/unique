@@ -8,6 +8,7 @@
 #include <QString>
 #include <QStringList>
 
+class QCheckBox;
 class QEvent;
 class QHBoxLayout;
 class QLabel;
@@ -65,6 +66,8 @@ protected:
 
 private slots:
     void sltRemoveChip();
+    void sltAutoApproveToggled(bool checked);
+    void sltDisplayOptionsChanged();
 
 private:
     void rebuildChips(const QStringList &relativePaths, const QList<QPixmap> &thumbs);
@@ -81,6 +84,7 @@ private:
     QLabel         *_capsHint;
     QToolButton    *_plusButton;
     QPushButton    *_schemaButton;
+    QCheckBox      *_autoApproveBox;
     QPushButton    *_stopButton;
     QPushButton    *_sendButton;
     bool            _dropHighlight;
