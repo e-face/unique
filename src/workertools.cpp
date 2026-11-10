@@ -691,6 +691,10 @@ QString PlanWorkTool::description() const
 {
     return QString::fromUtf8(
         "Record YOUR plan, then carry it out. Call list_tools and list_worker_presets first. "
+        "If a needed detail is not in the assignment, the project files, or the settings, "
+        "call ask_user and wait; do not put a guess into the plan. "
+        "If a model profile or a program setting is wrong, call read_settings and "
+        "edit_settings and wait for confirmation before planning around it. "
         "Save tokens and time. Default every part to how=self and do it yourself. "
         "how=delegate or how=tool only for a complex task where you judge that a child "
         "or a tool will cost less than doing the work here. You decide; a short or "
@@ -834,6 +838,94 @@ QString PlanWorkTool::invoke(QString argumentsJson, bool *ok)
     if (ok)
         *ok = true;
     return report;
+}
+
+//----------------------------------------------
+
+AskUserTool::AskUserTool(Worker *owner, QObject *parent)
+    : AgentTool(parent)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString AskUserTool::name() const
+{
+    return QString::fromUtf8("ask_user");
+}
+
+//----------------------------------------------
+
+QString AskUserTool::description() const
+{
+    return QString::fromUtf8(
+        "Ask the user one question and wait for the answer. Call this before plan_work "
+        "or any other work when a detail is not in the assignment, the project files, "
+        "or the settings. Do not invent, guess, or pick a plausible default. "
+        "Put several unknowns in one question as a list. An empty answer or a cancel "
+        "means the detail is still unknown: stop that part, do not fill it in yourself. "
+        "A child uses this for missing facts too; the report still goes to the parent "
+        "with complete_task.");
+}
+
+//----------------------------------------------
+
+QJsonObject AskUserTool::parametersSchema() const
+{
+    QJsonObject question;
+    question.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    question.insert(QString::fromUtf8("description"),
+                    QString::fromUtf8("One concrete question in the user's language. "
+                                      "List every unknown detail in this single question."));
+    QJsonObject properties;
+    properties.insert(QString::fromUtf8("question"), question);
+    QJsonArray required;
+    required.append(QString::fromUtf8("question"));
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), properties);
+    schema.insert(QString::fromUtf8("required"), required);
+    return schema;
+}
+
+//----------------------------------------------
+
+QString AskUserTool::invoke(QString argumentsJson, bool *ok)
+{
+    QJsonObject args;
+    QString error;
+    if (!parseObject(argumentsJson, &args, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (!_owner)
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Worker is missing.");
+    }
+    const QString question = args.value(QString::fromUtf8("question")).toString().trimmed();
+    if (question.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("question is empty.");
+    }
+    QString answer;
+    if (!_owner->askUserQuestion(question, &answer))
+    {
+        if (ok)
+            *ok = true;
+        return QString::fromUtf8(
+            "The user did not answer. The missing detail is still unknown. "
+            "Do not invent it. Stop this part or ask again with ask_user.");
+    }
+    if (ok)
+        *ok = true;
+    return answer;
 }
 
 //----------------------------------------------
@@ -2024,7 +2116,9 @@ QString RunToolTool::description() const
         "(the same list is on the preset line). Set required keys. Set any other key "
         "only when the task asks for that setting. prompt or text is the content, "
         "not an instruction to save a file. output_path is the new file. "
-        "reference_path is an existing file and only when params include it.");
+        "reference_image, reference_audio and reference_video are existing "
+        "project files of that kind. Pass one only when params list that "
+        "category. reference_path means reference_image.");
 }
 
 //----------------------------------------------

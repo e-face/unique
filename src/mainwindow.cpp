@@ -623,6 +623,7 @@ void MainWindow::sltResetWorkspace()
         box.setText(tr("Не удалось убрать папку ___project___.\n"
                        "Закройте программы, которые держат файлы проекта, и повторите."));
         box.setStandardButtons(QMessageBox::Ok);
+        box.setButtonText(QMessageBox::Ok, tr("ОК"));
         AppSettings *s = AppSettings::instance();
         box.setStyleSheet(QString::fromUtf8(
                               "QMessageBox { background:%1; color:%2; }"
@@ -879,6 +880,7 @@ void MainWindow::openProjectAt(QString workspace)
                        "Папка удалена или в ней нет ___project___.")
                         .arg(QDir::toNativeSeparators(path)));
         box.setStandardButtons(QMessageBox::Ok);
+        box.setButtonText(QMessageBox::Ok, tr("ОК"));
         AppSettings *s = AppSettings::instance();
         box.setStyleSheet(QString::fromUtf8(
                               "QMessageBox { background:%1; color:%2; }"
@@ -923,6 +925,7 @@ void MainWindow::sltOpenProject()
         box.setWindowTitle(tr("Открыть проект"));
         box.setText(tr("Выберите папку ___project___ или каталог, в котором она уже есть."));
         box.setStandardButtons(QMessageBox::Ok);
+        box.setButtonText(QMessageBox::Ok, tr("ОК"));
         AppSettings *s = AppSettings::instance();
         box.setStyleSheet(QString::fromUtf8(
                               "QMessageBox { background:%1; color:%2; }"
@@ -1055,6 +1058,7 @@ void MainWindow::performProjectSwitch()
             box.setText(tr("Не удалось убрать папку ___project___.\n"
                            "Закройте программы, которые держат файлы проекта, и повторите."));
             box.setStandardButtons(QMessageBox::Ok);
+            box.setButtonText(QMessageBox::Ok, tr("ОК"));
             AppSettings *s = AppSettings::instance();
             box.setStyleSheet(QString::fromUtf8(
                                   "QMessageBox { background:%1; color:%2; }"
@@ -2057,13 +2061,20 @@ void MainWindow::sltConsoleInputRequested(const QString &transcript)
     if (!worker || !worker->session())
         return;
     focusWorkerSession(worker);
+    const bool askingUser = worker->isAskingUser();
     if (worker->session()->widget())
-        worker->session()->widget()->showConsoleInput(transcript);
+    {
+        if (askingUser)
+            worker->session()->widget()->showUserQuestion(transcript);
+        else
+            worker->session()->widget()->showConsoleInput(transcript);
+    }
     QString journalText = transcript;
     if (journalText.size() > 500)
         journalText = journalText.right(500);
     if (_journal)
-        _journal->addTransient(workerWindowTitle(worker), tr("Команда ждёт ввод"),
+        _journal->addTransient(workerWindowTitle(worker),
+                               askingUser ? tr("Уточнение") : tr("Команда ждёт ввод"),
                                journalText, QString::fromUtf8("noticeMsg"), worker->id());
 }
 
@@ -2317,10 +2328,10 @@ static QString formatWorkLong(qint64 ms)
     const int minutes = int((total % 3600) / 60);
     const int seconds = int(total % 60);
     if (hours > 0)
-        return QString::fromUtf8("%1 ч %2 мин %3 с").arg(hours).arg(minutes).arg(seconds);
+        return QObject::tr("%1 ч %2 мин %3 с").arg(hours).arg(minutes).arg(seconds);
     if (minutes > 0)
-        return QString::fromUtf8("%1 мин %2 с").arg(minutes).arg(seconds);
-    return QString::fromUtf8("%1 с").arg(seconds);
+        return QObject::tr("%1 мин %2 с").arg(minutes).arg(seconds);
+    return QObject::tr("%1 с").arg(seconds);
 }
 
 //----------------------------------------------
@@ -2404,6 +2415,8 @@ void MainWindow::sltShowStatistics()
     }
 
     QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
+    if (QPushButton *ok = buttons->button(QDialogButtonBox::Ok))
+        ok->setText(tr("Закрыть"));
     QPushButton *resetProject = buttons->addButton(tr("Обнулить проект"),
                                                    QDialogButtonBox::ResetRole);
     QPushButton *resetGlobal = buttons->addButton(tr("Обнулить общую"),
@@ -2500,6 +2513,70 @@ void MainWindow::sltComposerSend()
     const LlmProfile profile = profileForComposerTarget();
     const ModelCapabilities caps =
         ModelCapabilityService::instance()->capabilitiesFor(profile);
+
+    if (workerTaskKindIsMediaExecutor(profile.modality))
+    {
+        const QStringList accepted = referenceCategoriesFor(profile.modality, caps);
+        QJsonObject task;
+        if (!text.isEmpty())
+            task.insert(QString::fromUtf8("prompt"), text);
+        QStringList images;
+        QStringList audios;
+        QStringList videos;
+        foreach (const QString &path, _composerAttachments)
+        {
+            QString category;
+            const QString lower = path.toLower();
+            const bool webm = lower.endsWith(QString::fromUtf8(".webm"));
+            if (isImageAttachmentPath(path))
+                category = QString::fromUtf8("image");
+            else if (isAudioAttachmentPath(path)
+                     && !(webm && accepted.contains(QString::fromUtf8("video"))
+                          && !accepted.contains(QString::fromUtf8("audio"))))
+                category = QString::fromUtf8("audio");
+            else if (lower.endsWith(QString::fromUtf8(".mp4"))
+                     || webm
+                     || lower.endsWith(QString::fromUtf8(".mov"))
+                     || lower.endsWith(QString::fromUtf8(".mkv"))
+                     || lower.endsWith(QString::fromUtf8(".avi")))
+                category = QString::fromUtf8("video");
+            if (category.isEmpty() || !accepted.contains(category))
+            {
+                if (statusBar())
+                {
+                    statusBar()->showMessage(
+                        tr("Файл не подходит как референс для этой модели: %1").arg(path));
+                }
+                continue;
+            }
+            if (category == QString::fromUtf8("image"))
+                images << path;
+            else if (category == QString::fromUtf8("audio"))
+                audios << path;
+            else
+                videos << path;
+        }
+        if (images.size() == 1)
+            task.insert(QString::fromUtf8("reference_image"), images.first());
+        else if (images.size() > 1)
+            task.insert(QString::fromUtf8("reference_images"), QJsonArray::fromStringList(images));
+        if (audios.size() == 1)
+            task.insert(QString::fromUtf8("reference_audio"), audios.first());
+        else if (audios.size() > 1)
+            task.insert(QString::fromUtf8("reference_audios"), QJsonArray::fromStringList(audios));
+        if (videos.size() == 1)
+            task.insert(QString::fromUtf8("reference_video"), videos.first());
+        else if (videos.size() > 1)
+            task.insert(QString::fromUtf8("reference_videos"), QJsonArray::fromStringList(videos));
+        if (task.isEmpty())
+            return;
+        _composer->clear();
+        _composerAttachments.clear();
+        updateComposerAttachmentsUi();
+        sendRootComposerMessage(
+            QString::fromUtf8(QJsonDocument(task).toJson(QJsonDocument::Compact)));
+        return;
+    }
 
     // LLM-чат: картинки → image_url; аудио → input_audio; текст → text;
     // PDF/file → file; иначе путь для инструментов.
@@ -2739,16 +2816,35 @@ void MainWindow::sltComposerAttachPlus()
     const ModelCapabilities caps =
         ModelCapabilityService::instance()->cachedOrHeuristic(profile);
     QStringList filters;
-    if (caps.acceptsImage() || caps.allowsImageReference()
-        || profile.modality == WorkerTaskKindImageGeneration
-        || profile.modality == WorkerTaskKindVideoGeneration)
-        filters << tr("Изображения (*.png *.jpg *.jpeg *.webp *.gif *.bmp)");
-    if (caps.acceptsAudio() || profile.modality == WorkerTaskKindSpeech
-        || profile.modality == WorkerTaskKindAudioGeneration)
-        filters << tr("Аудио (*.wav *.mp3 *.m4a *.ogg *.flac *.aac *.webm)");
-    if (caps.acceptsVideo() || profile.modality == WorkerTaskKindVideoGeneration)
-        filters << tr("Видео (*.mp4 *.webm *.mov *.mkv *.avi)");
-    filters << tr("Все файлы (*.*)");
+    if (workerTaskKindIsMediaExecutor(profile.modality))
+    {
+        const QStringList accepted = referenceCategoriesFor(profile.modality, caps);
+        if (accepted.isEmpty())
+        {
+            if (statusBar())
+                statusBar()->showMessage(tr("Эта модель не принимает референсные файлы."));
+            return;
+        }
+        if (accepted.contains(QString::fromUtf8("image")))
+            filters << tr("Изображения (*.png *.jpg *.jpeg *.webp *.gif *.bmp)");
+        if (accepted.contains(QString::fromUtf8("audio")))
+            filters << tr("Аудио (*.wav *.mp3 *.m4a *.ogg *.flac *.aac *.webm)");
+        if (accepted.contains(QString::fromUtf8("video")))
+            filters << tr("Видео (*.mp4 *.webm *.mov *.mkv *.avi)");
+    }
+    else
+    {
+        if (caps.acceptsImage() || caps.allowsImageReference()
+            || profile.modality == WorkerTaskKindImageGeneration
+            || profile.modality == WorkerTaskKindVideoGeneration)
+            filters << tr("Изображения (*.png *.jpg *.jpeg *.webp *.gif *.bmp)");
+        if (caps.acceptsAudio() || profile.modality == WorkerTaskKindSpeech
+            || profile.modality == WorkerTaskKindAudioGeneration)
+            filters << tr("Аудио (*.wav *.mp3 *.m4a *.ogg *.flac *.aac *.webm)");
+        if (caps.acceptsVideo() || profile.modality == WorkerTaskKindVideoGeneration)
+            filters << tr("Видео (*.mp4 *.webm *.mov *.mkv *.avi)");
+        filters << tr("Все файлы (*.*)");
+    }
     if (filters.isEmpty())
         filters << tr("Все файлы (*.*)");
 
@@ -3648,11 +3744,6 @@ void MainWindow::retranslateUi()
             if (pi >= 0)
                 _tabs->setTabText(pi, L("menu.project.settings"));
         }
-    }
-    if (_graph && _workers)
-    {
-        _graph->rebuild(_workers);
-        _graphDirty = false;
     }
     foreach (ChatSession *session, _sessions)
     {
@@ -5129,7 +5220,12 @@ void MainWindow::restoreSessionContent(ChatSession *session)
     if (!worker)
         return;
     if (worker->isWaitingConsoleInput())
-        widget->showConsoleInput(worker->consoleInputTranscript());
+    {
+        if (worker->isAskingUser())
+            widget->showUserQuestion(worker->consoleInputTranscript());
+        else
+            widget->showConsoleInput(worker->consoleInputTranscript());
+    }
     else if (worker->isWaitingSubtreeBudget())
         widget->showSubtreeBudgetRequest(worker->subtreeBudgetPromptText());
     else if (worker->state() == WorkerStateWaitingApproval)
@@ -5191,8 +5287,22 @@ void MainWindow::updateComposerState()
                            caps.inputModalities.isEmpty()
                                ? QString::fromUtf8("text")
                                : caps.inputModalities.join(QString::fromUtf8(" + ")));
-    if (caps.requiresImageReference())
-        tip += tr("\nНужна референс-картинка");
+    const QStringList refCats = referenceCategoriesFor(profile.modality, caps);
+    if (!refCats.isEmpty())
+    {
+        QStringList labels;
+        foreach (const QString &cat, refCats)
+        {
+            if (cat == QString::fromUtf8("image"))
+                labels << tr("изображение");
+            else if (cat == QString::fromUtf8("audio"))
+                labels << tr("Аудио");
+            else if (cat == QString::fromUtf8("video"))
+                labels << tr("Видео");
+        }
+        if (!labels.isEmpty())
+            tip += tr("\nРеференсы: %1").arg(labels.join(QString::fromUtf8(", ")));
+    }
     _composerBar->setCapsHint(hint, tip);
 
     updateComposerAttachmentsUi();

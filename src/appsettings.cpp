@@ -2825,7 +2825,7 @@ QString AppSettings::addWorkerPreset(SettingsKind kind, WorkerPreset preset, QSt
     if (preset.profileId.trimmed().isEmpty())
     {
         if (error)
-            *error = QString::fromUtf8("Не выбран профиль модели.");
+            *error = tr("Не выбран профиль модели.");
         return QString();
     }
     syncPresetTaskKind(&preset);
@@ -2835,8 +2835,7 @@ QString AppSettings::addWorkerPreset(SettingsKind kind, WorkerPreset preset, QSt
             && existing.profileId == preset.profileId)
         {
             if (error)
-                *error = QString::fromUtf8(
-                    "Такая комбинация тип+профиль уже есть.");
+                *error = tr("Такая комбинация тип+профиль уже есть.");
             return QString();
         }
     }
@@ -2876,7 +2875,7 @@ void AppSettings::updateWorkerPreset(SettingsKind kind, const WorkerPreset &pres
     if (index < 0)
     {
         if (error)
-            *error = QString::fromUtf8("Пресет не найден.");
+            *error = tr("Пресет не найден.");
         return;
     }
     WorkerPreset next = preset;
@@ -2891,8 +2890,7 @@ void AppSettings::updateWorkerPreset(SettingsKind kind, const WorkerPreset &pres
             && existing.profileId == next.profileId)
         {
             if (error)
-                *error = QString::fromUtf8(
-                    "Такая комбинация тип+профиль уже есть.");
+                *error = tr("Такая комбинация тип+профиль уже есть.");
             return;
         }
     }
@@ -3173,22 +3171,28 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
 {
     const WorkspaceSettings &bundle = ws(kind);
     if (bundle.workerPresets.isEmpty())
-        return QString::fromUtf8("No worker presets configured.");
+    {
+        return AppLocale::instance()->model(
+            QString::fromUtf8("no_presets"),
+            QString::fromUtf8("No worker presets configured."));
+    }
     QStringList lines;
-    lines << QString::fromUtf8(
-        "Available worker presets (pick preset_id in delegate_task / add_group_member):\n"
-        "modality / task_kind: inherited from the linked model profile "
-        "(llm | image_generation | speech | audio_generation | video_generation | "
-        "embedding | decisions | other) — pick a preset whose modality matches the "
-        "subtask (image → image_generation, ASR/TTS → speech, music/SFX → "
-        "audio_generation, video → video_generation, vectors → embedding, "
-        "structured choices → decisions, coding/agents → llm).\n"
-        "purpose: short human note on WHAT this model is for (e.g. text-to-image generation "
-        "vs object segmentation on an image). Prefer the preset whose purpose best matches "
-        "the subtask — do not treat all image_generation models as interchangeable.\n"
-        "MODEL FIT: cheapest/fastest adequate model for routine edits and simple checks; "
-        "stronger models for architecture, hard bugs, ambiguous design, group deep-dives. "
-        "Prefer a fitting preset over the default type profile.");
+    lines << AppLocale::instance()->model(
+        QString::fromUtf8("presets_header"),
+        QString::fromUtf8(
+            "Available worker presets (pick preset_id in delegate_task / add_group_member):\n"
+            "modality / task_kind: inherited from the linked model profile "
+            "(llm | image_generation | speech | audio_generation | video_generation | "
+            "embedding | decisions | other) — pick a preset whose modality matches the "
+            "subtask (image → image_generation, ASR/TTS → speech, music/SFX → "
+            "audio_generation, video → video_generation, vectors → embedding, "
+            "structured choices → decisions, coding/agents → llm).\n"
+            "purpose: short human note on WHAT this model is for (e.g. text-to-image generation "
+            "vs object segmentation on an image). Prefer the preset whose purpose best matches "
+            "the subtask — do not treat all image_generation models as interchangeable.\n"
+            "MODEL FIT: cheapest/fastest adequate model for routine edits and simple checks; "
+            "stronger models for architecture, hard bugs, ambiguous design, group deep-dives. "
+            "Prefer a fitting preset over the default type profile."));
     bool anyMedia = false;
     foreach (const WorkerPreset &preset, bundle.workerPresets)
     {
@@ -3233,7 +3237,10 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
             "provider catalog. Set every required key. Set an optional key only "
             "when the task asks for it, and only with a listed value. "
             "prompt/text is the content, not an instruction to save a file. "
-            "output_path is the new file and is not sent to the provider.");
+            "output_path is the new file and is not sent to the provider. "
+            "reference_image, reference_audio and reference_video are existing "
+            "project files of that kind. Pass one only when params list that "
+            "category. reference_path means reference_image.");
     }
     return lines.join(QChar('\n'));
 }

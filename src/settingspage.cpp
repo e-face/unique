@@ -1120,9 +1120,11 @@ void SettingsPage::sltAddPreset()
     const QList<LlmProfile> profiles = AppSettings::instance()->profiles();
     if (profiles.isEmpty())
     {
-        QMessageBox::warning(
-            this, tr("Воркеры"),
-            tr("Сначала добавьте хотя бы один профиль модели в настройках программы."));
+        QMessageBox box(QMessageBox::Warning, tr("Воркеры"),
+                        tr("Сначала добавьте хотя бы один профиль модели в настройках программы."),
+                        QMessageBox::Ok, this);
+        box.setButtonText(QMessageBox::Ok, tr("ОК"));
+        box.exec();
         return;
     }
 
@@ -1181,10 +1183,12 @@ void SettingsPage::sltRemovePreset()
         text = tr("Удалить выбранные воркеры (%1)?\n\n%2")
                    .arg(ids.size())
                    .arg(labels.join(QString::fromUtf8("\n")));
-    const int answer = QMessageBox::question(
-        this, tr("Удаление воркеров"), text,
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (answer != QMessageBox::Yes)
+    QMessageBox box(QMessageBox::Question, tr("Удаление воркеров"), text,
+                    QMessageBox::Yes | QMessageBox::No, this);
+    box.setDefaultButton(QMessageBox::No);
+    box.setButtonText(QMessageBox::Yes, tr("Да"));
+    box.setButtonText(QMessageBox::No, tr("Нет"));
+    if (box.exec() != QMessageBox::Yes)
         return;
 
     foreach (const QString &id, ids)
@@ -1353,6 +1357,10 @@ bool SettingsPage::pickModelProfilePreset(LlmProfile *outProfile)
 
     QDialogButtonBox *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    if (QPushButton *ok = buttons->button(QDialogButtonBox::Ok))
+        ok->setText(tr("ОК"));
+    if (QPushButton *cancel = buttons->button(QDialogButtonBox::Cancel))
+        cancel->setText(tr("Отмена"));
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
@@ -1440,10 +1448,12 @@ void SettingsPage::sltRemoveProfile()
     if (ids.size() >= s->profiles().size())
         text += tr("\n\nПоследний профиль удалить нельзя.");
 
-    const int answer = QMessageBox::question(
-        this, tr("Удаление профиля модели"), text,
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (answer != QMessageBox::Yes)
+    QMessageBox box(QMessageBox::Question, tr("Удаление профиля модели"), text,
+                    QMessageBox::Yes | QMessageBox::No, this);
+    box.setDefaultButton(QMessageBox::No);
+    box.setButtonText(QMessageBox::Yes, tr("Да"));
+    box.setButtonText(QMessageBox::No, tr("Нет"));
+    if (box.exec() != QMessageBox::Yes)
         return;
 
     foreach (const QString &id, ids)
@@ -2052,6 +2062,10 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
 
     QDialogButtonBox *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    if (QPushButton *ok = buttons->button(QDialogButtonBox::Ok))
+        ok->setText(tr("ОК"));
+    if (QPushButton *cancel = buttons->button(QDialogButtonBox::Cancel))
+        cancel->setText(tr("Отмена"));
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
         const QString extra = extraBodyEdit->text().trimmed();
@@ -2061,9 +2075,12 @@ bool SettingsPage::runProfileDialog(LlmProfile *profile, bool isNew)
             const QJsonDocument doc = QJsonDocument::fromJson(extra.toUtf8(), &pe);
             if (!doc.isObject())
             {
-                QMessageBox::warning(&dialog, tr("Доп. поля запроса"),
-                                     tr("Нужен JSON-объект вида {\"ключ\": значение}.\n%1")
-                                         .arg(pe.errorString()));
+                QMessageBox box(QMessageBox::Warning, tr("Доп. поля запроса"),
+                                tr("Нужен JSON-объект вида {\"ключ\": значение}.\n%1")
+                                    .arg(pe.errorString()),
+                                QMessageBox::Ok, &dialog);
+                box.setButtonText(QMessageBox::Ok, tr("ОК"));
+                box.exec();
                 return;
             }
         }
@@ -2163,6 +2180,10 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
 
     QDialogButtonBox *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    if (QPushButton *ok = buttons->button(QDialogButtonBox::Ok))
+        ok->setText(tr("ОК"));
+    if (QPushButton *cancel = buttons->button(QDialogButtonBox::Cancel))
+        cancel->setText(tr("Отмена"));
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
         WorkerPreset trial = *preset;
@@ -2174,7 +2195,10 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
             const QString id = AppSettings::instance()->addWorkerPreset(_kind, trial, &error);
             if (id.isEmpty())
             {
-                QMessageBox::warning(&dialog, tr("Воркеры"), error);
+                QMessageBox box(QMessageBox::Warning, tr("Воркеры"), error,
+                                QMessageBox::Ok, &dialog);
+                box.setButtonText(QMessageBox::Ok, tr("ОК"));
+                box.exec();
                 return;
             }
             trial.id = id;
@@ -2184,7 +2208,10 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
             AppSettings::instance()->updateWorkerPreset(_kind, trial, &error);
             if (!error.isEmpty())
             {
-                QMessageBox::warning(&dialog, tr("Воркеры"), error);
+                QMessageBox box(QMessageBox::Warning, tr("Воркеры"), error,
+                                QMessageBox::Ok, &dialog);
+                box.setButtonText(QMessageBox::Ok, tr("ОК"));
+                box.exec();
                 return;
             }
         }

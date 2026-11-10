@@ -1,5 +1,6 @@
 #include "modelprofilepresets.h"
 //----------------------------------------------
+#include <QObject>
 
 //----------------------------------------------
 
@@ -245,14 +246,14 @@ QList<ModelProfilePreset> knownModelProfilePresets()
                        QString::fromUtf8("https://YOUR_RESOURCE.openai.azure.com/openai/v1"),
                        QString::fromUtf8("gpt-4o"),
                        QString(), QString(),
-                       QString::fromUtf8("Подставьте свой resource и имя deployment."));
+                       QObject::tr("Подставьте свой resource и имя deployment."));
     list << makePreset(QString::fromUtf8("Cloudflare"), QString::fromUtf8("Workers AI"),
                        WorkerTaskKindLlm,
                        QString::fromUtf8(
                            "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1"),
                        QString::fromUtf8("@cf/meta/llama-3.1-70b-instruct"),
                        QString(), QString(),
-                       QString::fromUtf8("Подставьте ACCOUNT_ID."));
+                       QObject::tr("Подставьте ACCOUNT_ID."));
     list << makePreset(QString::fromUtf8("Hugging Face"), QString::fromUtf8("Router"),
                        WorkerTaskKindLlm,
                        QString::fromUtf8("https://router.huggingface.co/v1"),
@@ -356,13 +357,13 @@ QList<ModelProfilePreset> knownModelProfilePresets()
                        QString::fromUtf8("https://api.openai.com/v1"),
                        QString::fromUtf8("gpt-audio"),
                        QString(), QString(),
-                       QString::fromUtf8("Проверьте endpoint /audio/generations у провайдера."));
+                       QObject::tr("Проверьте endpoint /audio/generations у провайдера."));
     list << makePreset(QString::fromUtf8("OpenRouter"), QString::fromUtf8("Audio gen (via OR)"),
                        WorkerTaskKindAudioGeneration,
                        QString::fromUtf8("https://openrouter.ai/api/v1"),
                        QString::fromUtf8("openai/gpt-audio"),
                        QString(), QString(),
-                       QString::fromUtf8("Зависит от поддержки провайдера на OpenRouter."));
+                       QObject::tr("Зависит от поддержки провайдера на OpenRouter."));
 
     // --- Video generation ---
     list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("Sora 2"),
@@ -370,13 +371,13 @@ QList<ModelProfilePreset> knownModelProfilePresets()
                        QString::fromUtf8("https://api.openai.com/v1"),
                        QString::fromUtf8("sora-2"),
                        QString(), QString(),
-                       QString::fromUtf8("Часто async job; ответ может быть id/status."));
+                       QObject::tr("Часто async job; ответ может быть id/status."));
     list << makePreset(QString::fromUtf8("OpenRouter"), QString::fromUtf8("Video gen (via OR)"),
                        WorkerTaskKindVideoGeneration,
                        QString::fromUtf8("https://openrouter.ai/api/v1"),
                        QString::fromUtf8("openai/sora"),
                        QString(), QString(),
-                       QString::fromUtf8("Уточните model id в каталоге OpenRouter."));
+                       QObject::tr("Уточните model id в каталоге OpenRouter."));
 
     // --- Decisions (LLM chat + propose_decision) ---
     list << makePreset(QString::fromUtf8("OpenAI"), QString::fromUtf8("GPT-4.1 mini (decisions)"),

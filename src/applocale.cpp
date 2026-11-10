@@ -2,11 +2,8 @@
 //----------------------------------------------
 #include "appsettings.h"
 //----------------------------------------------
-#include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
-#include <QEvent>
-#include <QWidget>
 #include <QFile>
 #include <QFileInfo>
 #include <QTextStream>
@@ -244,14 +241,7 @@ void AppLocale::loadLegacyTranslator(const QString &dir)
         translation.replace(QString::fromUtf8("\\n"), QString::fromUtf8("\n"));
         source.replace(QString::fromUtf8("\x01"), QString::fromUtf8("\\"));
         translation.replace(QString::fromUtf8("\x01"), QString::fromUtf8("\\"));
-        // Не source.trimmed(): ключи tr() часто с хвостовым пробелом
-        // («модель: », «ждёт: », «, ») — иначе lookup не находит перевод.
-        while (!source.isEmpty()
-               && (source.at(0) == QLatin1Char(' ')
-                   || source.at(0) == QLatin1Char('\t')))
-            source = source.mid(1);
-        if (translation.startsWith(QLatin1Char(' ')))
-            translation = translation.mid(1);
+        // Пробелы по краям — часть ключа tr() (« с», « · собеседник», «, »).
         if (!source.isEmpty() && !translation.isEmpty())
             map.insert(source, translation);
     }
@@ -275,12 +265,9 @@ void AppLocale::installLegacyTranslator()
         app->installTranslator(&_legacyTranslator);
         _legacyInstalled = true;
     }
-    QWidgetList widgets = QApplication::allWidgets();
-    foreach (QWidget *widget, widgets)
-    {
-        QEvent languageEvent(QEvent::LanguageChange);
-        QCoreApplication::sendEvent(widget, &languageEvent);
-    }
+    // Не рассылаем LanguageChange каждому виджету: пузыри чата — это тоже
+    // виджеты, и полный обход заново пересчитывает всю ленту. Тексты
+    // обновляют retranslateUi по сигналу languageChanged.
 }
 
 //----------------------------------------------

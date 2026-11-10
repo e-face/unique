@@ -47,6 +47,25 @@ private:
 };
 
 //----------------------------------------------
+
+/**
+ * @brief Спросить пользователя о недостающей детали и дождаться ответа.
+ */
+class AskUserTool : public AgentTool
+{
+public:
+    explicit AskUserTool(Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    Worker *_owner;
+};
+
+//----------------------------------------------
 /**
  * @brief Список прямых дочерних воркеров владельца.
  */

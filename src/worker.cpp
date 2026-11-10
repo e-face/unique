@@ -39,6 +39,7 @@ Worker::Worker(QObject *parent)
     , _parentReportNudged(false)
     , _continueRetry(false)
     , _permissionLoopActive(false)
+    , _askingUser(false)
     , _consoleInputLoopActive(false)
     , _consoleInputSent(false)
     , _resumeContinueChat(false)
@@ -1740,7 +1741,8 @@ void Worker::onChildrenAnswered()
 
 //----------------------------------------------
 
-QString Worker::askPermission(QString action, bool offerAlways, QString alwaysKey)
+QString Worker::askPermission(QString action, bool offerAlways, QString alwaysKey,
+                              bool forceDialog)
 {
     QString key = alwaysKey.trimmed();
     if (key.isEmpty())
@@ -1748,7 +1750,8 @@ QString Worker::askPermission(QString action, bool offerAlways, QString alwaysKe
     if (offerAlways && !key.isEmpty()
         && AppSettings::instance()->isCommandAlwaysAllowed(key))
         return QString::fromUtf8("approved: always");
-    if (AppSettings::instance()->autoApprovePermissions())
+    // Правка настроек и профилей всегда спрашивает, даже при автоподтверждении.
+    if (!forceDialog && AppSettings::instance()->autoApprovePermissions())
         return QString::fromUtf8("approved");
 
     _permissionResult.clear();
@@ -1767,6 +1770,27 @@ QString Worker::askPermission(QString action, bool offerAlways, QString alwaysKe
     if (_state == WorkerStateWaitingApproval)
         setState(WorkerStateRunning);
     return _permissionResult;
+}
+
+//----------------------------------------------
+
+bool Worker::askUserQuestion(QString question, QString *answer)
+{
+    _askingUser = true;
+    const bool sent = askConsoleInput(question, answer);
+    _askingUser = false;
+    if (!sent || !answer)
+        return false;
+    if (answer->trimmed().isEmpty())
+        return false;
+    return true;
+}
+
+//----------------------------------------------
+
+bool Worker::isAskingUser() const
+{
+    return _askingUser;
 }
 
 //----------------------------------------------

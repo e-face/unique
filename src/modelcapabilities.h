@@ -43,6 +43,12 @@ struct ModelCapabilities
     QString     providerParams;
     // Путь запроса генерации, если каталог его сообщил. Пусто — стандартный.
     QString     requestEndpoint;
+    // Категории референсных файлов, которые каталог (или эвристика) разрешил: image, audio, video.
+    QStringList referenceModalities;
+    QHash<QString, int> referenceMin;
+    QHash<QString, int> referenceMax;
+    // Имя поля запроса из каталога для этой категории. Пусто — общее поле инструмента.
+    QHash<QString, QString> referenceField;
 
     bool acceptsText() const;
     bool acceptsImage() const;
@@ -62,6 +68,13 @@ struct ModelCapabilities
  * Пустая строка — это не медиа-модель (обычный LLM).
  */
 QString mediaParamsLine(WorkerTaskKind kind, const ModelCapabilities &caps);
+
+/**
+ * @brief Какие референсные файлы можно передать этой медиа-модели: image, audio, video.
+ *
+ * Пустой список — референсы не принимаются. Для обычной LLM всегда пусто.
+ */
+QStringList referenceCategoriesFor(WorkerTaskKind kind, const ModelCapabilities &caps);
 
 //----------------------------------------------
 

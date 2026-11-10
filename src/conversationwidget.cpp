@@ -15,6 +15,9 @@
 #include <QCursor>
 #include <QHBoxLayout>
 #include <QLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -26,6 +29,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSizePolicy>
+#include <QStringList>
 #include <QTextBrowser>
 #include <QTextDocument>
 #include <QTextEdit>
@@ -41,15 +45,6 @@
 static const int kMaxVisibleBubbles  = 250;
 static const int kMaxDisplayLogItems = 1500;
 static const int kLiveActionHeight   = 24;
-
-//----------------------------------------------
-
-static QString clipDisplay(QString text, int maxChars)
-{
-    if (text.size() <= maxChars)
-        return text;
-    return text.left(maxChars) + QString::fromUtf8("\n…");
-}
 
 //----------------------------------------------
 
@@ -150,7 +145,7 @@ ChatMessageFrame::ChatMessageFrame(QString title, QString html, QString preview,
 {
     setObjectName(objectName);
     setFrameShape(QFrame::NoFrame);
-    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
     _toggle->setFixedSize(22, 22);
     _toggle->setFlat(true);
@@ -168,6 +163,12 @@ ChatMessageFrame::ChatMessageFrame(QString title, QString html, QString preview,
     _view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
     _view->document()->setDocumentMargin(2);
     connect(_view, SIGNAL(anchorClicked(QUrl)), this, SLOT(sltAnchorClicked(QUrl)));
+    if (_view->document()->documentLayout())
+    {
+        connect(_view->document()->documentLayout(),
+                SIGNAL(documentSizeChanged(QSizeF)),
+                this, SLOT(sltDocumentSizeChanged()));
+    }
     applyTheme();
 
     QHBoxLayout *inner = new QHBoxLayout();
@@ -179,7 +180,7 @@ ChatMessageFrame::ChatMessageFrame(QString title, QString html, QString preview,
     QFrame *bubble = new QFrame(this);
     bubble->setObjectName(QString::fromUtf8("bubble"));
     bubble->setLayout(inner);
-    bubble->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    bubble->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
     QHBoxLayout *row = new QHBoxLayout(this);
     row->setContentsMargins(0, 0, 0, 0);
@@ -244,6 +245,18 @@ void ChatMessageFrame::setTitleLink(QString url)
 
 //----------------------------------------------
 
+void ChatMessageFrame::setCaption(QString title, QString authorKey)
+{
+    const QString key = authorKey.trimmed().isEmpty() ? title : authorKey.trimmed();
+    if (_title == title && _authorKey == key)
+        return;
+    _title = title;
+    _authorKey = key;
+    applyCollapsed();
+}
+
+//----------------------------------------------
+
 void ChatMessageFrame::setPreview(QString preview)
 {
     _preview = preview.trimmed();
@@ -269,7 +282,7 @@ void ChatMessageFrame::sltAnchorClicked(const QUrl &url)
 void ChatMessageFrame::appendEscapedParagraph(QString text)
 {
     QString chunk = QString::fromUtf8("<p style=\"white-space:pre-wrap;\">");
-    chunk += MarkdownFormatter::escapeHtml(clipDisplay(text, 12000));
+    chunk += MarkdownFormatter::escapeHtml(text);
     chunk += QString::fromUtf8("</p>");
     _bodyHtml += chunk;
     applyCollapsed();
@@ -338,10 +351,17 @@ void ChatMessageFrame::fitDocumentHeight()
         _view->document()->setTextWidth(inner);
     }
 
-    qreal docH = _view->document()->size().height();
-    if (_view->document()->documentLayout())
-        docH = _view->document()->documentLayout()->documentSize().height();
-    const int h = qMax(_collapsed ? 22 : 28, qCeil(docH) + 4);
+    // documentSize() дочитывает ленивую вёрстку: иначе высота — только
+    // уже видимый кусок, и развёрнутый текст остаётся обрезанным.
+    qreal docH = _view->document()->documentLayout()
+                     ? _view->document()->documentLayout()->documentSize().height()
+                     : _view->document()->size().height();
+    int chrome = 0;
+    if (_view->viewport())
+        chrome = _view->height() - _view->viewport()->height();
+    if (chrome < 0)
+        chrome = 0;
+    const int h = qMax(_collapsed ? 22 : 28, qCeil(docH) + chrome + 2);
     if (h != _lastFitHeight)
     {
         _lastFitHeight = h;
@@ -364,6 +384,16 @@ void ChatMessageFrame::sltFitDocumentHeight()
 {
     _fitScheduled = false;
     fitDocumentHeight();
+}
+
+//----------------------------------------------
+
+void ChatMessageFrame::sltDocumentSizeChanged()
+{
+    if (_fitting || _fitScheduled)
+        return;
+    _fitScheduled = true;
+    QTimer::singleShot(0, this, SLOT(sltFitDocumentHeight()));
 }
 
 //----------------------------------------------
@@ -568,9 +598,6 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     root->addWidget(_inputHost);
 
     applyTheme();
-
-    connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
-            this, SLOT(retranslateUi()));
 }
 
 //----------------------------------------------
@@ -965,10 +992,9 @@ void ConversationWidget::refreshDisplayTitles()
 {
     if (_displayLog.isEmpty())
         return;
-    QList<ChatDisplayItem> items = _displayLog;
-    for (int i = 0; i < items.size(); ++i)
+    for (int i = 0; i < _displayLog.size(); ++i)
     {
-        ChatDisplayItem &item = items[i];
+        ChatDisplayItem &item = _displayLog[i];
         const QString kind = normalizeDisplayKind(item);
         item.kind = kind;
         const QString fresh = titleForKind(kind);
@@ -988,7 +1014,31 @@ void ConversationWidget::refreshDisplayTitles()
         else if (kind == QString::fromUtf8("user"))
             item.authorKey = userAuthorLabel();
     }
-    restoreDisplayLog(items);
+
+    QList<ChatMessageFrame *> frames;
+    if (_messagesLayout)
+    {
+        for (int i = 0; i < _messagesLayout->count(); ++i)
+        {
+            QLayoutItem *layoutItem = _messagesLayout->itemAt(i);
+            if (!layoutItem)
+                continue;
+            ChatMessageFrame *frame = qobject_cast<ChatMessageFrame *>(layoutItem->widget());
+            if (frame)
+                frames.append(frame);
+        }
+    }
+    int first = 0;
+    if (_displayLog.size() > kMaxVisibleBubbles)
+        first = _displayLog.size() - kMaxVisibleBubbles;
+    if (frames.size() != _displayLog.size() - first)
+    {
+        restoreDisplayLog(_displayLog);
+        return;
+    }
+    for (int i = 0; i < frames.size(); ++i)
+        frames.at(i)->setCaption(_displayLog.at(first + i).title,
+                                 _displayLog.at(first + i).authorKey);
 }
 
 //----------------------------------------------
@@ -1037,6 +1087,7 @@ void ConversationWidget::showConsoleInput(QString transcript)
     if (_consoleEdit)
     {
         _consoleEdit->clear();
+        _consoleEdit->setPlaceholderText(tr("Ввод для консоли…"));
         _consoleEdit->show();
         _consoleEdit->setFocus();
     }
@@ -1046,6 +1097,30 @@ void ConversationWidget::showConsoleInput(QString transcript)
         _alwaysButton->setVisible(false);
     if (_rejectButton)
         _rejectButton->setText(tr("Пропустить"));
+    if (_permissionHost)
+        _permissionHost->show();
+}
+
+//----------------------------------------------
+
+void ConversationWidget::showUserQuestion(QString question)
+{
+    _promptMode = 6;
+    if (_permissionLabel)
+        _permissionLabel->setText(tr("Уточнение:\n%1").arg(question));
+    if (_consoleEdit)
+    {
+        _consoleEdit->clear();
+        _consoleEdit->setPlaceholderText(tr("Ответ…"));
+        _consoleEdit->show();
+        _consoleEdit->setFocus();
+    }
+    if (_approveButton)
+        _approveButton->setText(tr("Ответить"));
+    if (_alwaysButton)
+        _alwaysButton->setVisible(false);
+    if (_rejectButton)
+        _rejectButton->setText(tr("Отмена"));
     if (_permissionHost)
         _permissionHost->show();
 }
@@ -1129,10 +1204,10 @@ void ConversationWidget::sltPermissionApprove()
 {
     const int mode = _promptMode;
     QString line;
-    if (mode == 5 && _consoleEdit)
+    if ((mode == 5 || mode == 6) && _consoleEdit)
         line = _consoleEdit->text();
     hidePermissionRequest();
-    if (mode == 5)
+    if (mode == 5 || mode == 6)
     {
         emit consoleInputAnswered(line, true);
         return;
@@ -1160,10 +1235,10 @@ void ConversationWidget::sltPermissionAlways()
 {
     const int mode = _promptMode;
     QString line;
-    if (mode == 5 && _consoleEdit)
+    if ((mode == 5 || mode == 6) && _consoleEdit)
         line = _consoleEdit->text();
     hidePermissionRequest();
-    if (mode == 5)
+    if (mode == 5 || mode == 6)
     {
         emit consoleInputAnswered(line, true);
         return;
@@ -1191,7 +1266,7 @@ void ConversationWidget::sltPermissionReject()
 {
     const int mode = _promptMode;
     hidePermissionRequest();
-    if (mode == 5)
+    if (mode == 5 || mode == 6)
     {
         emit consoleInputAnswered(QString(), false);
         return;
@@ -1342,7 +1417,8 @@ void ConversationWidget::applyTheme()
         "QWidget#permissionHost QPushButton { background:%PERMBTN%; color:%2;"
         "  border:1px solid %PERMBORDER%; border-radius:8px; }"
         "QLabel { color:%2; background:transparent; }"
-        "QTextBrowser { color:%2; background:transparent; border:none; }"
+        "QTextBrowser { color:%2; background:transparent; border:none;"
+        "  padding:0; margin:0; }"
         "QPlainTextEdit { background:%5; color:%2; border:1px solid %9;"
         "  border-radius:10px; padding:8px; }"
         "QPushButton { background:%PANEL%; color:%2; border:1px solid %9;"
@@ -1698,7 +1774,7 @@ void ConversationWidget::sltAssistantMessage(const QString &text)
     const QString kind = QString::fromUtf8("assistant");
     const QString title = titleForKind(kind);
     recordDisplay(kind, title, text, title);
-    const QString html = MarkdownFormatter::toHtml(clipDisplay(text, 24000));
+    const QString html = MarkdownFormatter::toHtml(text);
     addBubble(title, html, text, QString::fromUtf8("assistantMsg"), false, false, title);
 }
 
@@ -1713,11 +1789,72 @@ void ConversationWidget::sltToolCallStarted(const QString &name, const QString &
 
 //----------------------------------------------
 
+static QString planHowLabel(const QString &how)
+{
+    if (how == QString::fromUtf8("delegate"))
+        return QObject::tr("поручить");
+    if (how == QString::fromUtf8("tool"))
+        return QObject::tr("инструмент");
+    return QObject::tr("сам");
+}
+
+//----------------------------------------------
+
+static QString formatPlanWorkBody(const QString &arguments)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(arguments.toUtf8());
+    if (!doc.isObject())
+        return QString();
+    const QJsonObject object = doc.object();
+    const QString title = object.value(QString::fromUtf8("title")).toString().trimmed();
+    const QString architecture = object.value(QString::fromUtf8("architecture")).toString().trimmed();
+    const QJsonArray subtasks = object.value(QString::fromUtf8("subtasks")).toArray();
+    if (title.isEmpty() && architecture.isEmpty() && subtasks.isEmpty())
+        return QString();
+
+    QStringList lines;
+    if (!title.isEmpty())
+        lines << title;
+    if (!architecture.isEmpty())
+    {
+        if (!lines.isEmpty())
+            lines << QString();
+        lines << architecture;
+    }
+    for (int i = 0; i < subtasks.size(); ++i)
+    {
+        const QJsonObject item = subtasks.at(i).toObject();
+        const QString name = item.value(QString::fromUtf8("name")).toString().trimmed();
+        const QString task = item.value(QString::fromUtf8("task")).toString().trimmed();
+        const QString how = item.value(QString::fromUtf8("how")).toString().trimmed();
+        const QString reason = item.value(QString::fromUtf8("reason")).toString().trimmed();
+        lines << QString();
+        QString head = QString::number(i + 1) + QString::fromUtf8(". ");
+        head += name.isEmpty() ? task : name;
+        if (!how.isEmpty())
+            head += QString::fromUtf8(" — ") + planHowLabel(how);
+        lines << head;
+        if (!name.isEmpty() && !task.isEmpty())
+            lines << QString::fromUtf8("   ") + task;
+        if (!reason.isEmpty())
+            lines << QString::fromUtf8("   ") + QObject::tr("Зачем: %1").arg(reason);
+    }
+    return lines.join(QString::fromUtf8("\n"));
+}
+
+//----------------------------------------------
+
 void ConversationWidget::sltToolCallFinished(const QString &name, const QString &result, bool ok)
 {
-    QString body = QString::fromUtf8("%1(%2)").arg(name, _pendingToolArgs);
-    body += QChar('\n');
-    body += result;
+    QString body;
+    if (ok && name == QString::fromUtf8("plan_work"))
+        body = formatPlanWorkBody(_pendingToolArgs);
+    if (body.isEmpty())
+    {
+        body = QString::fromUtf8("%1(%2)").arg(name, _pendingToolArgs);
+        body += QChar('\n');
+        body += result;
+    }
     const QString kind = ok ? QString::fromUtf8("tool")
                             : QString::fromUtf8("tool_error");
     const QString title = titleForKind(kind);
@@ -1921,7 +2058,7 @@ QWidget *ConversationWidget::addPlainBubble(QString title, QString text, QString
     if (forceExpanded)
         collapsed = false;
     QString html = QString::fromUtf8("<p style=\"white-space:pre-wrap;\">");
-    html += MarkdownFormatter::escapeHtml(clipDisplay(text, 12000));
+    html += MarkdownFormatter::escapeHtml(text);
     html += QString::fromUtf8("</p>");
     return addBubble(title, html, text, objectName, alignRight, collapsed, authorKey);
 }

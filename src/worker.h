@@ -187,7 +187,13 @@ public:
     void registerDelegated(Worker *child);
     QString childResultsReport() const;
     QString askPermission(QString action, bool offerAlways = false,
-                          QString alwaysKey = QString());
+                          QString alwaysKey = QString(), bool forceDialog = false);
+    /**
+     * @brief Спросить пользователя и дождаться ответа.
+     * @return false, если вопрос отменён или воркер остановлен.
+     */
+    bool askUserQuestion(QString question, QString *answer);
+    bool isAskingUser() const;
     void resolvePermission(bool approved, bool always, QString comment);
     /**
      * @brief Показать хвост вывода команды и дождаться строки для stdin.
@@ -282,6 +288,7 @@ private:
     bool          _parentReportNudged;
     bool          _continueRetry;
     bool          _permissionLoopActive;
+    bool          _askingUser;
     bool          _consoleInputLoopActive;
     bool          _consoleInputSent;
     QString       _consoleInputLine;

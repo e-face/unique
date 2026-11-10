@@ -10,6 +10,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -33,6 +34,14 @@ static bool parseObject(QString argumentsJson, QJsonObject *out, QString *error)
     *out = doc.object();
     return true;
 }
+
+//----------------------------------------------
+
+static void addReferenceSchema(QJsonObject *properties, QJsonArray *required,
+                               Worker *owner, WorkerTaskKind kind);
+static QString attachReferenceMedia(QJsonObject *body, const QJsonObject &args,
+                                    const ModelCapabilities &caps, WorkerTaskKind kind,
+                                    ProjectWorkspace *workspace, QString *notice);
 
 //----------------------------------------------
 
@@ -1041,6 +1050,7 @@ QJsonObject GenerateImageTool::parametersSchema() const
     properties.insert(QString::fromUtf8("output_path"), output);
     QJsonArray required;
     required.append(QString::fromUtf8("prompt"));
+    addReferenceSchema(&properties, &required, _owner, WorkerTaskKindImageGeneration);
     QJsonObject schema;
     schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
     schema.insert(QString::fromUtf8("properties"), properties);
@@ -1088,13 +1098,43 @@ static QString fileToDataUrl(ProjectWorkspace *workspace, QString relativePath, 
     if (bytes.isEmpty())
     {
         if (error)
-            *error = QString::fromUtf8("Reference image is empty: %1").arg(relativePath);
+            *error = QString::fromUtf8("Reference file is empty: %1").arg(relativePath);
         return QString();
     }
     QMimeDatabase mimeDb;
     QString mime = mimeDb.mimeTypeForFile(abs).name();
-    if (mime.isEmpty() || !mime.startsWith(QString::fromUtf8("image/")))
-        mime = QString::fromUtf8("image/png");
+    if (mime.isEmpty() || mime == QString::fromUtf8("application/octet-stream"))
+    {
+        const QString suffix = QFileInfo(abs).suffix().toLower();
+        if (suffix == QString::fromUtf8("png"))
+            mime = QString::fromUtf8("image/png");
+        else if (suffix == QString::fromUtf8("jpg") || suffix == QString::fromUtf8("jpeg"))
+            mime = QString::fromUtf8("image/jpeg");
+        else if (suffix == QString::fromUtf8("webp"))
+            mime = QString::fromUtf8("image/webp");
+        else if (suffix == QString::fromUtf8("gif"))
+            mime = QString::fromUtf8("image/gif");
+        else if (suffix == QString::fromUtf8("wav"))
+            mime = QString::fromUtf8("audio/wav");
+        else if (suffix == QString::fromUtf8("mp3"))
+            mime = QString::fromUtf8("audio/mpeg");
+        else if (suffix == QString::fromUtf8("m4a"))
+            mime = QString::fromUtf8("audio/mp4");
+        else if (suffix == QString::fromUtf8("ogg"))
+            mime = QString::fromUtf8("audio/ogg");
+        else if (suffix == QString::fromUtf8("flac"))
+            mime = QString::fromUtf8("audio/flac");
+        else if (suffix == QString::fromUtf8("aac"))
+            mime = QString::fromUtf8("audio/aac");
+        else if (suffix == QString::fromUtf8("mp4"))
+            mime = QString::fromUtf8("video/mp4");
+        else if (suffix == QString::fromUtf8("webm"))
+            mime = QString::fromUtf8("video/webm");
+        else if (suffix == QString::fromUtf8("mov"))
+            mime = QString::fromUtf8("video/quicktime");
+        else
+            mime = QString::fromUtf8("application/octet-stream");
+    }
     return QString::fromUtf8("data:%1;base64,%2")
         .arg(mime, QString::fromLatin1(bytes.toBase64()));
 }
@@ -1109,6 +1149,222 @@ static QJsonObject buildImageReferencePart(QString urlOrData)
     part.insert(QString::fromUtf8("type"), QString::fromUtf8("image_url"));
     part.insert(QString::fromUtf8("image_url"), imageUrl);
     return part;
+}
+
+//----------------------------------------------
+
+static QStringList pathsFromArg(const QJsonObject &args, const QString &singular,
+                                const QString &plural)
+{
+    QStringList paths;
+    const QJsonValue one = args.value(singular);
+    if (one.isString())
+    {
+        const QString text = one.toString().trimmed();
+        if (!text.isEmpty())
+            paths << text;
+    }
+    else if (one.isArray())
+    {
+        const QJsonArray arr = one.toArray();
+        for (int i = 0; i < arr.size(); ++i)
+        {
+            const QString text = arr.at(i).toString().trimmed();
+            if (!text.isEmpty())
+                paths << text;
+        }
+    }
+    const QJsonArray many = args.value(plural).toArray();
+    for (int i = 0; i < many.size(); ++i)
+    {
+        const QString text = many.at(i).toString().trimmed();
+        if (!text.isEmpty() && !paths.contains(text))
+            paths << text;
+    }
+    return paths;
+}
+
+//----------------------------------------------
+
+static bool referenceFieldIsArray(const QString &field, int count, int maxCount)
+{
+    const QString low = field.toLower();
+    if (low.endsWith(QString::fromUtf8("s")) || low.contains(QString::fromUtf8("urls")))
+        return true;
+    return maxCount > 1 || count > 1;
+}
+
+//----------------------------------------------
+
+static void putReferencePayload(QJsonObject *body, const QString &modality,
+                                const QString &field, const QStringList &urls, int maxCount)
+{
+    if (!body || urls.isEmpty())
+        return;
+    const bool imageObjects = modality == QString::fromUtf8("image")
+                              && (field.isEmpty()
+                                  || field == QString::fromUtf8("input_references"));
+    if (imageObjects)
+    {
+        QJsonArray refs;
+        foreach (const QString &url, urls)
+            refs.append(buildImageReferencePart(url));
+        body->insert(QString::fromUtf8("input_references"), refs);
+        return;
+    }
+    const QString key = field.isEmpty()
+                            ? QString::fromUtf8("reference_%1").arg(modality)
+                            : field;
+    if (!referenceFieldIsArray(key, urls.size(), maxCount))
+    {
+        body->insert(key, urls.first());
+        return;
+    }
+    QJsonArray arr;
+    foreach (const QString &url, urls)
+        arr.append(url);
+    body->insert(key, arr);
+}
+
+//----------------------------------------------
+
+static int storedReferenceMin(const ModelCapabilities &caps, const QString &category)
+{
+    int minCount = caps.referenceMin.value(category, 0);
+    if (category == QString::fromUtf8("image") && caps.inputReferencesMin > minCount)
+        minCount = caps.inputReferencesMin;
+    return minCount;
+}
+
+//----------------------------------------------
+
+static int storedReferenceMax(const ModelCapabilities &caps, const QString &category)
+{
+    int maxCount = caps.referenceMax.value(category, 0);
+    if (category == QString::fromUtf8("image") && caps.inputReferencesMax > maxCount)
+        maxCount = caps.inputReferencesMax;
+    return maxCount;
+}
+
+//----------------------------------------------
+
+static void addReferenceSchema(QJsonObject *properties, QJsonArray *required,
+                               Worker *owner, WorkerTaskKind kind)
+{
+    if (!properties)
+        return;
+    const ModelCapabilities caps =
+        ModelCapabilityService::instance()->cachedOrHeuristic(modalityProfileForWorker(owner));
+    const QStringList categories = referenceCategoriesFor(kind, caps);
+    foreach (const QString &category, categories)
+    {
+        const int minCount = storedReferenceMin(caps, category);
+        const int maxCount = storedReferenceMax(caps, category);
+        const QString key = QString::fromUtf8("reference_%1").arg(category);
+        QString description = QString::fromUtf8(
+            "Existing project file used as a %1 reference. ").arg(category);
+        if (minCount >= 1)
+            description += QString::fromUtf8("Required by this model. ");
+        else
+            description += QString::fromUtf8("Optional. Pass it only when the task has one. ");
+        if (category == QString::fromUtf8("image"))
+            description += QString::fromUtf8("reference_path is an alias.");
+        QJsonObject prop;
+        prop.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+        prop.insert(QString::fromUtf8("description"), description);
+        properties->insert(key, prop);
+        if (maxCount > 1)
+        {
+            QJsonObject item;
+            item.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+            QJsonObject arr;
+            arr.insert(QString::fromUtf8("type"), QString::fromUtf8("array"));
+            arr.insert(QString::fromUtf8("items"), item);
+            arr.insert(QString::fromUtf8("description"),
+                       QString::fromUtf8("Up to %1 project files of this category.").arg(maxCount));
+            properties->insert(key + QString::fromUtf8("s"), arr);
+        }
+        if (required && minCount >= 1)
+            required->append(key);
+    }
+}
+
+//----------------------------------------------
+
+static QString attachReferenceMedia(QJsonObject *body, const QJsonObject &args,
+                                    const ModelCapabilities &caps, WorkerTaskKind kind,
+                                    ProjectWorkspace *workspace, QString *notice)
+{
+    if (!body)
+        return QString();
+    const QStringList accepted = referenceCategoriesFor(kind, caps);
+    QStringList notes;
+    QHash<QString, QStringList> paths;
+    QStringList images = pathsFromArg(args, QString::fromUtf8("reference_image"),
+                                      QString::fromUtf8("reference_images"));
+    const QString legacy = args.value(QString::fromUtf8("reference_path")).toString().trimmed();
+    if (!legacy.isEmpty() && !images.contains(legacy))
+        images << legacy;
+    paths.insert(QString::fromUtf8("image"), images);
+    paths.insert(QString::fromUtf8("audio"),
+                 pathsFromArg(args, QString::fromUtf8("reference_audio"),
+                              QString::fromUtf8("reference_audios")));
+    paths.insert(QString::fromUtf8("video"),
+                 pathsFromArg(args, QString::fromUtf8("reference_video"),
+                              QString::fromUtf8("reference_videos")));
+    const QString referenceUrl = args.value(QString::fromUtf8("reference_url")).toString().trimmed();
+
+    const QStringList known = QStringList()
+                              << QString::fromUtf8("image")
+                              << QString::fromUtf8("audio")
+                              << QString::fromUtf8("video");
+    foreach (const QString &category, known)
+    {
+        const QStringList given = paths.value(category);
+        const bool hasUrl = category == QString::fromUtf8("image") && !referenceUrl.isEmpty();
+        if (!accepted.contains(category))
+        {
+            if (!given.isEmpty() || hasUrl)
+            {
+                notes << QString::fromUtf8("Reference %1 ignored: this model does not accept it.")
+                             .arg(category);
+            }
+            continue;
+        }
+        const int minCount = storedReferenceMin(caps, category);
+        int maxCount = storedReferenceMax(caps, category);
+        if (given.isEmpty() && !hasUrl && minCount >= 1)
+        {
+            return QString::fromUtf8(
+                       "This model requires a %1 reference (min %2). "
+                       "Pass reference_%1 with a project file.")
+                .arg(category)
+                .arg(minCount);
+        }
+        QStringList urls;
+        if (hasUrl)
+            urls << referenceUrl;
+        foreach (const QString &path, given)
+        {
+            QString error;
+            const QString data = fileToDataUrl(workspace, path, &error);
+            if (data.isEmpty())
+                return error;
+            urls << data;
+        }
+        if (maxCount > 0 && urls.size() > maxCount)
+            urls = urls.mid(0, maxCount);
+        putReferencePayload(body, category, caps.referenceField.value(category), urls, maxCount);
+        if (!urls.isEmpty())
+        {
+            notes << QString::fromUtf8("Attached %1 %2 reference(s).")
+                         .arg(urls.size())
+                         .arg(category);
+        }
+    }
+    if (notice)
+        *notice = notes.join(QString::fromUtf8(" "));
+    return QString();
 }
 
 //----------------------------------------------
@@ -1135,7 +1391,9 @@ static bool mediaFieldHandled(const QString &key)
 {
     static const char *skip[] = {
         "prompt", "text", "input", "script", "model", "output_path",
-        "reference_path", "reference_url", "path", "instructions",
+        "reference_path", "reference_url", "reference_image", "reference_images",
+        "reference_audio", "reference_audios", "reference_video", "reference_videos",
+        "path", "instructions",
         "format", "voice", "voice_id", "n", "size", "seconds", "duration",
         "resolution", "quality", "output_format", "background", "aspect_ratio",
         0
@@ -1227,54 +1485,17 @@ QString GenerateImageTool::invoke(QString argumentsJson, bool *ok)
         body.insert(QString::fromUtf8("n"), n);
     }
 
-    QString referenceUrl = args.value(QString::fromUtf8("reference_url")).toString().trimmed();
-    const QString referencePath =
-        args.value(QString::fromUtf8("reference_path")).toString().trimmed();
-
-    if (!caps.allowsImageReference()
-        && (!referencePath.isEmpty() || !referenceUrl.isEmpty()))
-    {
-        modalityNotice(parent(),
-                       QString::fromUtf8(
-                           "Image: model does not accept input_references — ignoring reference."));
-        referenceUrl.clear();
-    }
-    else
-    {
-        if (referenceUrl.isEmpty() && !referencePath.isEmpty())
-        {
-            modalityNotice(parent(),
-                           QString::fromUtf8("Image: loading reference %1…").arg(referencePath));
-            referenceUrl = fileToDataUrl(_workspace, referencePath, &error);
-            if (referenceUrl.isEmpty())
-            {
-                if (ok)
-                    *ok = false;
-                return error;
-            }
-        }
-        if (!referenceUrl.isEmpty())
-        {
-            QJsonArray refs;
-            refs.append(buildImageReferencePart(referenceUrl));
-            body.insert(QString::fromUtf8("input_references"), refs);
-            modalityNotice(parent(), QString::fromUtf8("Image: attached 1 reference image."));
-        }
-    }
-
-    if (caps.requiresImageReference()
-        && !body.contains(QString::fromUtf8("input_references")))
+    QString refNotice;
+    const QString refError = attachReferenceMedia(
+        &body, args, caps, WorkerTaskKindImageGeneration, _workspace, &refNotice);
+    if (!refNotice.isEmpty())
+        modalityNotice(parent(), QString::fromUtf8("Image: %1").arg(refNotice));
+    if (!refError.isEmpty())
     {
         if (ok)
             *ok = false;
-        const QString msg = QString::fromUtf8(
-            "This model requires a reference image (input_modalities include image, "
-            "input_references min=%1). Pass reference_path or reference_url. "
-            "Capabilities: %2")
-                                .arg(caps.inputReferencesMin)
-                                .arg(caps.summary());
-        modalityNotice(parent(), msg);
-        return msg;
+        modalityNotice(parent(), refError);
+        return refError;
     }
 
     client.applyBodyDefaults(&body);
@@ -1529,6 +1750,7 @@ QJsonObject TextToSpeechTool::parametersSchema() const
     properties.insert(QString::fromUtf8("output_path"), output);
     QJsonArray required;
     required.append(QString::fromUtf8("text"));
+    addReferenceSchema(&properties, &required, _owner, WorkerTaskKindSpeech);
     QJsonObject schema;
     schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
     schema.insert(QString::fromUtf8("properties"), properties);
@@ -1574,10 +1796,20 @@ QString TextToSpeechTool::invoke(QString argumentsJson, bool *ok)
     body.insert(QString::fromUtf8("voice"),
                 voice.isEmpty() ? QString::fromUtf8("alloy") : voice);
     body.insert(QString::fromUtf8("response_format"), format);
-    client.applyBodyDefaults(&body);
-
     const ModelCapabilities caps =
         ModelCapabilityService::instance()->capabilitiesFor(profile);
+    QString refNotice;
+    const QString refError = attachReferenceMedia(
+        &body, args, caps, WorkerTaskKindSpeech, _workspace, &refNotice);
+    if (!refNotice.isEmpty())
+        modalityNotice(parent(), QString::fromUtf8("Speech: %1").arg(refNotice));
+    if (!refError.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return refError;
+    }
+    client.applyBodyDefaults(&body);
     QString usedPath;
     const ModalityApiClient::Result result = postToFirstEndpoint(
         &client, QStringList() << QString::fromUtf8("/audio/speech"),
@@ -1841,6 +2073,7 @@ QJsonObject GenerateAudioTool::parametersSchema() const
     properties.insert(QString::fromUtf8("output_path"), output);
     QJsonArray required;
     required.append(QString::fromUtf8("prompt"));
+    addReferenceSchema(&properties, &required, _owner, WorkerTaskKindAudioGeneration);
     QJsonObject schema;
     schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
     schema.insert(QString::fromUtf8("properties"), properties);
@@ -1880,11 +2113,21 @@ QString GenerateAudioTool::invoke(QString argumentsJson, bool *ok)
     if (args.contains(QString::fromUtf8("duration")))
         body.insert(QString::fromUtf8("duration"),
                     args.value(QString::fromUtf8("duration")).toDouble());
-    copyExtraMediaFields(&body, args);
-    client.applyBodyDefaults(&body);
-
     const ModelCapabilities caps =
         ModelCapabilityService::instance()->capabilitiesFor(profile);
+    QString refNotice;
+    const QString refError = attachReferenceMedia(
+        &body, args, caps, WorkerTaskKindAudioGeneration, _workspace, &refNotice);
+    if (!refNotice.isEmpty())
+        modalityNotice(parent(), QString::fromUtf8("Audio: %1").arg(refNotice));
+    if (!refError.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return refError;
+    }
+    copyExtraMediaFields(&body, args);
+    client.applyBodyDefaults(&body);
     QString usedPath;
     const ModalityApiClient::Result result = postToFirstEndpoint(
         &client,
@@ -2032,6 +2275,7 @@ QJsonObject GenerateVideoTool::parametersSchema() const
     properties.insert(QString::fromUtf8("output_path"), output);
     QJsonArray required;
     required.append(QString::fromUtf8("prompt"));
+    addReferenceSchema(&properties, &required, _owner, WorkerTaskKindVideoGeneration);
     QJsonObject schema;
     schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
     schema.insert(QString::fromUtf8("properties"), properties);
@@ -2074,11 +2318,21 @@ QString GenerateVideoTool::invoke(QString argumentsJson, bool *ok)
     const QString size = args.value(QString::fromUtf8("size")).toString().trimmed();
     if (!size.isEmpty())
         body.insert(QString::fromUtf8("size"), size);
-    copyExtraMediaFields(&body, args);
-    client.applyBodyDefaults(&body);
-
     const ModelCapabilities caps =
         ModelCapabilityService::instance()->capabilitiesFor(profile);
+    QString refNotice;
+    const QString refError = attachReferenceMedia(
+        &body, args, caps, WorkerTaskKindVideoGeneration, _workspace, &refNotice);
+    if (!refNotice.isEmpty())
+        modalityNotice(parent(), QString::fromUtf8("Video: %1").arg(refNotice));
+    if (!refError.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return refError;
+    }
+    copyExtraMediaFields(&body, args);
+    client.applyBodyDefaults(&body);
     QString usedPath;
     const ModalityApiClient::Result result = postToFirstEndpoint(
         &client,

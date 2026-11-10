@@ -44,6 +44,8 @@ BalanceDialog::BalanceDialog(QWidget *parent)
     connect(_refreshButton, SIGNAL(clicked()), this, SLOT(sltRefresh()));
 
     QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
+    if (QPushButton *closeButton = buttons->button(QDialogButtonBox::Close))
+        closeButton->setText(tr("Закрыть"));
     buttons->addButton(_refreshButton, QDialogButtonBox::ActionRole);
     connect(buttons, SIGNAL(rejected()), this, SLOT(reject()));
     connect(buttons, SIGNAL(accepted()), this, SLOT(accept()));
@@ -210,13 +212,13 @@ QString BalanceDialog::parseBalance(QByteArray data, QString jsonPath, QString *
             sample.replace('\r', ' ');
             if (data.trimmed().startsWith('<') || sample.toLower().contains("html"))
             {
-                *failReason = QString::fromUtf8(
+                *failReason = tr(
                     "ответ HTML (нужен API баланса, не страница кабинета). "
                     "Для DashScope/Qwen: /api/v1/quotas");
             }
             else
             {
-                *failReason = QString::fromUtf8("ответ не JSON: %1 (%2)")
+                *failReason = tr("ответ не JSON: %1 (%2)")
                                   .arg(err.errorString(),
                                        QString::fromUtf8(sample));
             }
@@ -250,8 +252,7 @@ QString BalanceDialog::parseBalance(QByteArray data, QString jsonPath, QString *
         if (!text.isEmpty())
             return text;
         if (failReason)
-            *failReason = QString::fromUtf8(
-                              "в JSON нет значения по пути «%1»").arg(jsonPath.trimmed());
+            *failReason = tr("в JSON нет значения по пути «%1»").arg(jsonPath.trimmed());
         return QString();
     }
 
@@ -324,9 +325,8 @@ QString BalanceDialog::parseBalance(QByteArray data, QString jsonPath, QString *
         }
     }
     if (failReason && failReason->isEmpty())
-        *failReason = QString::fromUtf8(
-            "не удалось распознать баланс в ответе API "
-            "(задайте JSON путь баланса в профиле)");
+        *failReason = tr("не удалось распознать баланс в ответе API "
+                         "(задайте JSON путь баланса в профиле)");
     return QString();
 }
 

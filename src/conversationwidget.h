@@ -41,6 +41,8 @@ public:
      * @brief Ссылка в заголовке (например unique-worker:&lt;id&gt;).
      */
     void setTitleLink(QString url);
+    /** Сменить подпись без пересоздания виджета (смена языка). */
+    void setCaption(QString title, QString authorKey);
     /** Текст после заголовка в свёрнутой строке. Пустая строка — только заголовок. */
     void setPreview(QString preview);
     /**
@@ -61,6 +63,7 @@ protected:
 private slots:
     void sltToggle();
     void sltFitDocumentHeight();
+    void sltDocumentSizeChanged();
     void sltAnchorClicked(const QUrl &url);
 
 private:
@@ -138,6 +141,7 @@ public:
     void showPermissionRequest(QString action, bool offerAlways = false);
     void hidePermissionRequest();
     void showConsoleInput(QString transcript);
+    void showUserQuestion(QString question);
     void showContinuationRequest(QString error);
     void showToolBudgetRequest(int chunk);
     void showSubtreeBudgetRequest(QString text);

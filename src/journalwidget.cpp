@@ -409,6 +409,8 @@ QString JournalWidget::actionTitleForTool(const QString &name)
         return JournalWidget::tr("завершение задачи");
     if (n == QString::fromUtf8("plan_work"))
         return JournalWidget::tr("план");
+    if (n == QString::fromUtf8("ask_user"))
+        return JournalWidget::tr("уточнение");
     if (n == QString::fromUtf8("list_tools"))
         return JournalWidget::tr("список инструментов");
     if (n == QString::fromUtf8("list_worker_presets"))
@@ -477,6 +479,14 @@ QString JournalWidget::toolArgsExcerpt(const QString &name, const QString &argum
     {
         excerpt = o.value(QString::fromUtf8("result")).toString();
     }
+    else if (n == QString::fromUtf8("plan_work"))
+    {
+        excerpt = o.value(QString::fromUtf8("title")).toString();
+    }
+    else if (n == QString::fromUtf8("ask_user"))
+    {
+        excerpt = o.value(QString::fromUtf8("question")).toString();
+    }
     excerpt = excerpt.trimmed();
     excerpt.replace(QChar('\n'), QChar(' '));
     excerpt.replace(QChar('\r'), QChar(' '));
@@ -528,9 +538,12 @@ static QString shortNameFromLabel(const QString &label)
     const int dot = name.indexOf(QString::fromUtf8(" \xC2\xB7 "));
     if (dot > 0)
         return name.left(dot).trimmed();
-    const QString toolPrefix = QString::fromUtf8("Инструмент: ");
+    const QString toolPrefix = JournalWidget::tr("Инструмент: ");
+    const QString toolPrefixRu = QString::fromUtf8("Инструмент: ");
     if (name.startsWith(toolPrefix))
         name = name.mid(toolPrefix.size()).trimmed();
+    else if (toolPrefixRu != toolPrefix && name.startsWith(toolPrefixRu))
+        name = name.mid(toolPrefixRu.size()).trimmed();
     const int dash = name.indexOf(QString::fromUtf8(" \xE2\x80\x94 "));
     if (dash > 0)
         name = name.left(dash).trimmed();

@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QObject>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -300,7 +301,7 @@ QString CreateFileAgentTool::createOne(QString relPath, QString content, bool *o
         return error;
     }
     if (!confirmIfOutside(_owner, _workspace, absolute,
-                          QString::fromUtf8("Создать файл вне проекта:\n%1").arg(absolute),
+                          QObject::tr("Создать файл вне проекта:\n%1").arg(absolute),
                           &error))
     {
         if (ok)
@@ -453,7 +454,7 @@ QString WriteFileAgentTool::writeOne(QString relPath, QString content, bool *ok)
         return error;
     }
     if (!confirmIfOutside(_owner, _workspace, absolute,
-                          QString::fromUtf8("Изменить файл вне проекта:\n%1").arg(absolute),
+                          QObject::tr("Изменить файл вне проекта:\n%1").arg(absolute),
                           &error))
     {
         if (ok)
@@ -879,7 +880,7 @@ QString DeleteFileAgentTool::invoke(QString argumentsJson, bool *ok)
         return error;
     }
     if (!confirmIfOutside(_owner, _workspace, absolute,
-                          QString::fromUtf8("Удалить файл вне проекта:\n%1").arg(absolute),
+                          QObject::tr("Удалить файл вне проекта:\n%1").arg(absolute),
                           &error))
     {
         if (ok)
@@ -998,11 +999,11 @@ QString RenameFileAgentTool::invoke(QString argumentsJson, bool *ok)
         return error;
     }
     if (!confirmIfOutside(_owner, _workspace, fromAbs,
-                          QString::fromUtf8("Переименовать или переместить вне проекта:\n%1\n→ %2")
+                          QObject::tr("Переименовать или переместить вне проекта:\n%1\n→ %2")
                               .arg(fromAbs, toAbs),
                           &error)
         || !confirmIfOutside(_owner, _workspace, toAbs,
-                             QString::fromUtf8("Создать файл вне проекта:\n%1").arg(toAbs),
+                             QObject::tr("Создать файл вне проекта:\n%1").arg(toAbs),
                              &error))
     {
         if (ok)

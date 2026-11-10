@@ -555,7 +555,10 @@ QString WorkerManager::toolsSummary() const
             "provider catalog. Set every required key. Set an optional key only "
             "when the task asks for it, and only with a listed value. "
             "prompt/text is the content, not an instruction to save a file. "
-            "output_path is the new file and is not sent to the provider.");
+            "output_path is the new file and is not sent to the provider. "
+            "reference_image, reference_audio and reference_video are existing "
+            "project files of that kind. Pass one only when params list that "
+            "category. reference_path means reference_image.");
     }
     return text;
 }
@@ -3136,6 +3139,7 @@ void WorkerManager::installTools(Worker *worker)
     if (!workerTaskKindIsMediaExecutor(modality))
     {
         agent->addTool(new ReadSettingsTool(worker, agent));
+        agent->addTool(new AskUserTool(worker, agent));
         if (!worker->isCheckOnly())
             agent->addTool(new EditSettingsTool(worker, agent));
     }
@@ -3374,7 +3378,15 @@ QString WorkerManager::promptFor(Worker *worker) const
     default:
     {
         const QString shared = QString::fromUtf8(
-            "Before any other action, in order: list_tools, list_worker_presets, "
+            "Do not invent a detail that is not in the assignment, the project files, "
+            "or the settings. Call ask_user with one question (several unknowns as one "
+            "list) and wait. Do not plan or act on a guess. An empty answer means the "
+            "detail is still unknown.\n"
+            "If a model profile or a program setting is wrong for the task, call "
+            "read_settings, then edit_settings. Say in reason what is wrong and what "
+            "each value becomes. The user sees every field as old → new and confirms. "
+            "Nothing changes without that confirmation. Do not work around a bad setting.\n"
+            "Then, in order: list_tools, list_worker_presets, "
             "plan_work. In the plan and in the work, spend as few tokens and as "
             "little time as the task allows.\n"
             "Default is how=self: you do the work in this chat. A lookup, a list, "
@@ -3417,7 +3429,8 @@ QString WorkerManager::promptFor(Worker *worker) const
                 QString::fromUtf8(
                     "You are an EXECUTOR for one part of a larger assignment. "
                     "You report that part to your parent with complete_task, and "
-                    "only after the part is actually done. You do not address the user.\n")
+                    "only after the part is actually done. You do not report to the user. "
+                    "A missing fact is asked with ask_user; the result still goes to the parent.\n")
                     + shared
                     + QString::fromUtf8(
                         "Do not tell the parent to do your part. "
@@ -3447,11 +3460,15 @@ QString WorkerManager::startupContextFor(Worker *worker) const
     const QString owners = fileOwnershipSummary();
     if (!owners.isEmpty())
         text += QString::fromUtf8("\n") + owners;
+    const AppLocale *locale = AppLocale::instance();
     if (!worker->personName().isEmpty())
-        text += QString::fromUtf8("\nYour name: %1").arg(worker->personName());
+        text += locale->model(QString::fromUtf8("ctx_your_name"),
+                               QString::fromUtf8("\nYour name: %1"))
+                    .arg(worker->personName());
     if (!worker->groupId().isEmpty())
     {
-        text += QString::fromUtf8("\nGroup id=%1 role=%2")
+        text += locale->model(QString::fromUtf8("ctx_group"),
+                               QString::fromUtf8("\nGroup id=%1 role=%2"))
                     .arg(worker->groupId(), groupRoleToString(worker->groupRole()));
         QStringList peers;
         foreach (Worker *peer, groupMembers(worker->groupId()))
@@ -3476,10 +3493,14 @@ QString WorkerManager::startupContextFor(Worker *worker) const
                                   peerProfile));
         }
         if (!peers.isEmpty())
-            text += QString::fromUtf8("\nGroup peers: ") + peers.join(QString::fromUtf8("; "));
-        text += QString::fromUtf8(
-            "\nCollaborate: turn-based group_speak / group_await / group_propose / group_vote "
-            "until unanimous result. Do not use talk_to.");
+            text += locale->model(QString::fromUtf8("ctx_peers"),
+                                   QString::fromUtf8("\nGroup peers: "))
+                    + peers.join(QString::fromUtf8("; "));
+        text += locale->model(
+            QString::fromUtf8("ctx_collaborate"),
+            QString::fromUtf8(
+                "\nCollaborate: turn-based group_speak / group_await / group_propose / "
+                "group_vote until unanimous result. Do not use talk_to."));
         if (isGroupDialogueActive(worker->groupId()))
             text += QString::fromUtf8("\n") + groupDialogueStatus(worker->groupId());
     }
@@ -3504,24 +3525,28 @@ QString WorkerManager::startupContextFor(Worker *worker) const
             ownPurpose = QString::fromUtf8("(no purpose set)");
         else if (ownPurpose.size() > 240)
             ownPurpose = ownPurpose.left(237) + QString::fromUtf8("...");
-        text += QString::fromUtf8(
-                    "\nYour model: profile=\"%1\" model=%2 modality=%3 purpose=\"%4\" "
-                    "(modality = API capability: llm | image_generation | speech | "
-                    "audio_generation | video_generation | embedding | decisions | other; "
-                    "purpose = what THIS model is specialized for). "
-                    "When you spawn children, pick preset_id whose modality AND "
-                    "purpose fit the subtask (e.g. text-to-image vs object segmentation are "
-                    "both image-related but different purposes; TTS vs STT within speech; "
-                    "coding→llm). Read purpose on every preset — do not treat same-modality "
-                    "models as interchangeable.")
+        text += locale->model(
+                    QString::fromUtf8("ctx_your_model"),
+                    QString::fromUtf8(
+                        "\nYour model: profile=\"%1\" model=%2 modality=%3 purpose=\"%4\" "
+                        "(modality = API capability: llm | image_generation | speech | "
+                        "audio_generation | video_generation | embedding | decisions | other; "
+                        "purpose = what THIS model is specialized for). "
+                        "When you spawn children, pick preset_id whose modality AND "
+                        "purpose fit the subtask (e.g. text-to-image vs object segmentation are "
+                        "both image-related but different purposes; TTS vs STT within speech; "
+                        "coding→llm). Read purpose on every preset — do not treat same-modality "
+                        "models as interchangeable."))
                     .arg(profileName, model, workerTaskKindToString(profile.modality),
                          ownPurpose);
         if (profile.modality == WorkerTaskKindDecisions)
         {
-            text += QString::fromUtf8(
-                "\nYou are a Decisions worker: compare options with propose_decision "
-                "(question, options, chosen, rationale). A child then reports with "
-                "complete_task. The top executor answers the user.");
+            text += locale->model(
+                QString::fromUtf8("ctx_decisions"),
+                QString::fromUtf8(
+                    "\nYou are a Decisions worker: compare options with propose_decision "
+                    "(question, options, chosen, rationale). A child then reports with "
+                    "complete_task. The top executor answers the user."));
         }
         text += QString::fromUtf8("\n");
         text += AppSettings::instance()->workerPresetsSummary();
