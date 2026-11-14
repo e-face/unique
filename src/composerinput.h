@@ -8,10 +8,12 @@
 #include <QString>
 #include <QStringList>
 
+class ComposerEditor;
 class QCheckBox;
 class QEvent;
 class QHBoxLayout;
 class QLabel;
+class QMimeData;
 class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
@@ -23,7 +25,7 @@ class QWidget;
 
 /**
  * @brief Поле ввода в стиле chat-composer: превью вложений внутри рамки,
- *        «+», Send/Stop и приём файлов drag-and-drop.
+ *        «+», Send/Stop, приём файлов drag-and-drop и вставка из буфера.
  */
 class ComposerInput : public QFrame
 {
@@ -38,6 +40,7 @@ public:
     void setCapsHint(QString text, QString toolTip = QString());
     void setAttachments(const QStringList &relativePaths,
                         const QList<QPixmap> &thumbs);
+    void activateAttachment(int index);
     void setSendEnabled(bool on);
     void setStopEnabled(bool on);
     bool isSendEnabled() const;
@@ -55,6 +58,8 @@ signals:
     void schemaClicked();
     void removeAttachmentRequested(int index);
     void filesDropped(const QStringList &absolutePaths);
+    void pasteHint(QString text, bool force);
+    void attachmentOpenRequested(QString relativePath);
 
 protected:
     virtual bool eventFilter(QObject *watched, QEvent *event);
@@ -67,10 +72,14 @@ protected:
 private slots:
     void sltRemoveChip();
     void sltAutoApproveToggled(bool checked);
+    void sltReasoningToggled(bool checked);
     void sltDisplayOptionsChanged();
 
 private:
+    friend class ComposerEditor;
+
     void rebuildChips(const QStringList &relativePaths, const QList<QPixmap> &thumbs);
+    bool handlePasteMime(const QMimeData *mime);
     bool acceptDrop(const QMimeData *mime) const;
     QStringList absolutePathsFromMime(const QMimeData *mime) const;
     void updateAttachStripVisible();
@@ -85,9 +94,11 @@ private:
     QToolButton    *_plusButton;
     QPushButton    *_schemaButton;
     QCheckBox      *_autoApproveBox;
+    QCheckBox      *_reasoningBox;
     QPushButton    *_stopButton;
     QPushButton    *_sendButton;
     bool            _dropHighlight;
+    QStringList     _attachmentPaths;
 };
 
 #endif // COMPOSERINPUT_H

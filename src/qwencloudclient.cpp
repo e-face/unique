@@ -97,6 +97,5 @@ void QwenCloudClient::decorateRequestBody(QJsonObject *root, const LlmRequest &r
 {
     if (!root)
         return;
-    if (!request.tools.isEmpty())
-        root->insert(QString::fromUtf8("enable_thinking"), false);
+    root->insert(QString::fromUtf8("enable_thinking"), request.reasoning);
 }

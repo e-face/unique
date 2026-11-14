@@ -1512,7 +1512,17 @@ void Worker::startTask()
         return;
     }
 
-    const QString prefix = composeStartPrefix();
+    QString prefix = composeStartPrefix();
+    if (manager)
+    {
+        const QString schema = manager->teamSchemaNoteFor(this);
+        if (!schema.isEmpty())
+        {
+            if (!prefix.isEmpty())
+                prefix += QString::fromUtf8("\n\n");
+            prefix += schema;
+        }
+    }
     if (!prefix.isEmpty())
         _session->agent()->injectContext(prefix);
     _session->agent()->sendUserMessage(_task, AgentUserIngressAssignment);

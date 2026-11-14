@@ -91,6 +91,9 @@ AppSettings::AppSettings(QObject *parent)
     , _persistProjectPending(false)
     , _showForwardedContext(true)
     , _autoApprovePermissions(false)
+    , _reasoningEnabled(false)
+    , _dropLargeContextFiles(true)
+    , _largeContextFileKb(4)
     , _uiLanguage(QString::fromUtf8("ru"))
     , _mainWindowGeometry()
     , _mainWindowState()
@@ -699,6 +702,15 @@ void AppSettings::load()
                                            true).toBool();
     _autoApprovePermissions = settings.value(QString::fromUtf8("ui/autoApprovePermissions"),
                                              false).toBool();
+    _reasoningEnabled = settings.value(QString::fromUtf8("ui/reasoningEnabled"),
+                                       false).toBool();
+    _dropLargeContextFiles = settings.value(QString::fromUtf8("ui/dropLargeContextFiles"),
+                                            true).toBool();
+    _largeContextFileKb = settings.value(QString::fromUtf8("ui/largeContextFileKb"), 4).toInt();
+    if (_largeContextFileKb < 1)
+        _largeContextFileKb = 1;
+    if (_largeContextFileKb > 4096)
+        _largeContextFileKb = 4096;
     _uiLanguage = settings.value(QString::fromUtf8("ui/language"),
                                  QString::fromUtf8("ru")).toString().trimmed().toLower();
     if (_uiLanguage.isEmpty())
@@ -733,6 +745,9 @@ void AppSettings::save() const
     settings.setValue(QString::fromUtf8("ui/chatOtherColor"), _chatOtherColor.name());
     settings.setValue(QString::fromUtf8("ui/showForwardedContext"), _showForwardedContext);
     settings.setValue(QString::fromUtf8("ui/autoApprovePermissions"), _autoApprovePermissions);
+    settings.setValue(QString::fromUtf8("ui/reasoningEnabled"), _reasoningEnabled);
+    settings.setValue(QString::fromUtf8("ui/dropLargeContextFiles"), _dropLargeContextFiles);
+    settings.setValue(QString::fromUtf8("ui/largeContextFileKb"), _largeContextFileKb);
     settings.setValue(QString::fromUtf8("ui/language"), _uiLanguage);
     if (!_mainWindowGeometry.isEmpty())
         settings.setValue(QString::fromUtf8("ui/mainWindowGeometry"),
@@ -1301,6 +1316,75 @@ void AppSettings::setAutoApprovePermissions(bool enabled)
     settings.setValue(QString::fromUtf8("ui/autoApprovePermissions"), _autoApprovePermissions);
     settings.sync();
     emit displayOptionsChanged();
+}
+
+//----------------------------------------------
+
+bool AppSettings::reasoningEnabled() const
+{
+    return _reasoningEnabled;
+}
+
+//----------------------------------------------
+
+void AppSettings::setReasoningEnabled(bool enabled)
+{
+    if (_reasoningEnabled == enabled)
+        return;
+    _reasoningEnabled = enabled;
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    settings.setValue(QString::fromUtf8("ui/reasoningEnabled"), _reasoningEnabled);
+    settings.sync();
+    emit displayOptionsChanged();
+}
+
+//----------------------------------------------
+
+bool AppSettings::dropLargeContextFiles() const
+{
+    return _dropLargeContextFiles;
+}
+
+//----------------------------------------------
+
+void AppSettings::setDropLargeContextFiles(bool enabled)
+{
+    if (_dropLargeContextFiles == enabled)
+        return;
+    _dropLargeContextFiles = enabled;
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    settings.setValue(QString::fromUtf8("ui/dropLargeContextFiles"), _dropLargeContextFiles);
+    settings.sync();
+}
+
+//----------------------------------------------
+
+int AppSettings::largeContextFileKb() const
+{
+    return _largeContextFileKb;
+}
+
+//----------------------------------------------
+
+void AppSettings::setLargeContextFileKb(int kb)
+{
+    if (kb < 1)
+        kb = 1;
+    if (kb > 4096)
+        kb = 4096;
+    if (_largeContextFileKb == kb)
+        return;
+    _largeContextFileKb = kb;
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    settings.setValue(QString::fromUtf8("ui/largeContextFileKb"), _largeContextFileKb);
+    settings.sync();
+}
+
+//----------------------------------------------
+
+int AppSettings::largeContextFileBytes() const
+{
+    return _largeContextFileKb * 1024;
 }
 
 //----------------------------------------------

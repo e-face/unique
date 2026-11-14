@@ -72,6 +72,8 @@ private slots:
     void sltRevokePermission();
     void sltControlToggled();
     void sltShowForwardedToggled(bool enabled);
+    void sltDropLargeFilesToggled(bool enabled);
+    void sltLargeFileKbChanged(int kb);
     void sltProfileSelected();
     void sltProfileFieldChanged();
     void sltAddProfile();
@@ -131,6 +133,7 @@ private:
     SettingsKind _kind;
     WorkerManager *_workers;
     QGroupBox   *_viewBox;
+    QGroupBox   *_contextBox;
     QGroupBox   *_apiBox;
     QGroupBox   *_workersBox;
     QGroupBox   *_projectBox;
@@ -181,6 +184,9 @@ private:
     QLabel      *_projectPathLabel;
     QCheckBox   *_inspectCheck;
     QCheckBox   *_showForwardedCheck;
+    QCheckBox   *_dropLargeFilesCheck;
+    QSpinBox    *_largeFileKbSpin;
+    QFormLayout *_contextForm;
     QCheckBox   *_shellControlCheck;
     QCheckBox   *_outsideFilesControlCheck;
     QCheckBox   *_systemSettingsControlCheck;

@@ -98,6 +98,7 @@ struct LlmRequest
     LlmRequest()
         : temperature(-1.0)
         , maxTokens(0)
+        , reasoning(false)
     {
     }
 
@@ -106,6 +107,8 @@ struct LlmRequest
     QString           model;
     double            temperature;
     int               maxTokens;
+    /** Галочка в поле ввода: модель сначала рассуждает. По умолчанию выключено. */
+    bool              reasoning;
 };
 
 //----------------------------------------------

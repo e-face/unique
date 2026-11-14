@@ -297,6 +297,24 @@ public:
     bool autoApprovePermissions() const;
     void setAutoApprovePermissions(bool enabled);
 
+    /**
+     * @brief Модель сначала рассуждает, затем отвечает.
+     *        Выключено по умолчанию. Читается в момент запроса.
+     */
+    bool reasoningEnabled() const;
+    void setReasoningEnabled(bool enabled);
+
+    /**
+     * @brief Убирать из контекста только крупные тела файлов
+     *        и только когда модель просит FILE_DROP.
+     */
+    bool dropLargeContextFiles() const;
+    void setDropLargeContextFiles(bool enabled);
+    /** Порог в килобайтах тела файла, лежащего в контексте. */
+    int largeContextFileKb() const;
+    void setLargeContextFileKb(int kb);
+    int largeContextFileBytes() const;
+
     QString uiLanguage() const;
     void setUiLanguage(QString code);
     void persistUiLanguage(QString code);
@@ -517,6 +535,9 @@ private:
     bool                   _persistProjectPending;
     bool                   _showForwardedContext;
     bool                   _autoApprovePermissions;
+    bool                   _reasoningEnabled;
+    bool                   _dropLargeContextFiles;
+    int                    _largeContextFileKb;
     QString                _uiLanguage;
     QByteArray             _mainWindowGeometry;
     QByteArray             _mainWindowState;

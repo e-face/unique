@@ -39,6 +39,7 @@ struct LiveFileContext
 {
     QString id;
     QString meta;
+    int     bytes;
 };
 
 static QList<LiveFileContext> liveFileContexts(const QList<LlmMessage> &history)
@@ -56,7 +57,12 @@ static QList<LiveFileContext> liveFileContexts(const QList<LlmMessage> &history)
             LiveFileContext item;
             item.id = rx.cap(1);
             item.meta = rx.cap(2).trimmed();
-            from = at + rx.matchedLength();
+            const int bodyStart = at + rx.matchedLength();
+            const int closeAt = message.content.indexOf(QString::fromUtf8("[[/filectx]]"),
+                                                        bodyStart);
+            const int bodyEnd = closeAt < 0 ? message.content.size() : closeAt;
+            item.bytes = message.content.mid(bodyStart, bodyEnd - bodyStart).toUtf8().size();
+            from = bodyStart;
             if (item.meta.contains(QString::fromUtf8("dropped")))
                 continue;
             bool seen = false;
@@ -122,6 +128,30 @@ static QStringList parseDroppedFileIds(const QString &content)
         }
     }
     return ids;
+}
+
+//----------------------------------------------
+
+static QStringList eligibleDroppedFileIds(const QList<LlmMessage> &history,
+                                          const QStringList &ids)
+{
+    if (ids.isEmpty() || !AppSettings::instance()->dropLargeContextFiles())
+        return QStringList();
+    const int minBytes = AppSettings::instance()->largeContextFileBytes();
+    const QList<LiveFileContext> files = liveFileContexts(history);
+    QStringList eligible;
+    foreach (const QString &id, ids)
+    {
+        foreach (const LiveFileContext &file, files)
+        {
+            if (file.id == id && file.bytes >= minBytes)
+            {
+                eligible.append(id);
+                break;
+            }
+        }
+    }
+    return eligible;
 }
 
 //----------------------------------------------
@@ -1156,7 +1186,8 @@ void Agent::sltResponseReceived(const LlmResponse &response)
     }
 
     LlmMessage stored = response.message;
-    const QStringList droppedIds = parseDroppedFileIds(stored.content);
+    const QStringList droppedIds = eligibleDroppedFileIds(
+        _history, parseDroppedFileIds(stored.content));
     stored.content = stripRetentionDirectives(stored.content);
     if (!droppedIds.isEmpty())
     {
@@ -1522,9 +1553,19 @@ void Agent::requestCompletion()
     }
 
     LlmRequest request;
+    request.reasoning = AppSettings::instance()->reasoningEnabled();
     _optimizer.repairToolTurns(&_history);
     request.messages = _history;
-    const QList<LiveFileContext> cachedFiles = liveFileContexts(_history);
+    QList<LiveFileContext> cachedFiles;
+    if (AppSettings::instance()->dropLargeContextFiles())
+    {
+        const int minBytes = AppSettings::instance()->largeContextFileBytes();
+        foreach (const LiveFileContext &file, liveFileContexts(_history))
+        {
+            if (file.bytes >= minBytes)
+                cachedFiles.append(file);
+        }
+    }
     if (!cachedFiles.isEmpty())
     {
         const QString askText = fileRetentionRequest(cachedFiles);

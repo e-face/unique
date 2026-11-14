@@ -239,6 +239,13 @@ public:
      * префикс запроса оставался стабильным для кеша провайдера.
      */
     QString startupContextFor(Worker *worker) const;
+    /**
+     * @brief Схема команды и место воркера в ней.
+     *
+     * Для корня пусто: ему схема приходит прикреплённым файлом.
+     * Дочерние получают её один раз при старте задания.
+     */
+    QString teamSchemaNoteFor(Worker *worker) const;
     QString changedFilesForChildren(Worker *parent) const;
     /**
      * @brief Один активный писатель на файл (относительный путь). Fail-closed.

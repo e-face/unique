@@ -11,6 +11,7 @@
 #include "workertools.h"
 #include "applocale.h"
 #include "appsettings.h"
+#include "teamschemaeditor.h"
 //----------------------------------------------
 #include <QDir>
 #include <QEventLoop>
@@ -3444,6 +3445,49 @@ QString WorkerManager::promptFor(Worker *worker) const
     base += locale->model(QString::fromUtf8("sequence_suffix"));
     base += internetSearchRule(locale);
     return base;
+}
+
+//----------------------------------------------
+
+static QString schemaWorkerLabel(Worker *worker)
+{
+    if (!worker)
+        return QString();
+    QString title = worker->title().trimmed();
+    if (title.isEmpty() && worker->isRoot())
+        title = QString::fromUtf8("root");
+    const QString name = worker->personName().trimmed();
+    if (!name.isEmpty() && name != title)
+    {
+        if (title.isEmpty())
+            return name;
+        return title + QString::fromUtf8(" (") + name + QString::fromUtf8(")");
+    }
+    if (!title.isEmpty())
+        return title;
+    return worker->id();
+}
+
+//----------------------------------------------
+
+QString WorkerManager::teamSchemaNoteFor(Worker *worker) const
+{
+    if (!worker || worker->isTool() || worker->isRoot())
+        return QString();
+    if (workerTaskKindIsMediaExecutor(modalityOf(worker)))
+        return QString();
+    if (!_workspace || _workspace->root().trimmed().isEmpty())
+        return QString();
+    const QString path = AppSettings::projectStoreDir(_workspace->root())
+                         + QString::fromUtf8("/team-schema.json");
+    if (!QFileInfo(path).isFile())
+        return QString();
+    QStringList chain;
+    for (Worker *parent = worker->parentWorker(); parent; parent = parent->parentWorker())
+        chain.prepend(schemaWorkerLabel(parent));
+    return TeamSchemaDialog::workerContextFromFile(
+        path, false, worker->title(), chain.join(QString::fromUtf8(" → ")),
+        worker->llmProfileId(), worker->depth());
 }
 
 //----------------------------------------------

@@ -569,8 +569,9 @@ QString ReadFileAgentTool::description() const
         "Read project text file(s) (~8 KB/file, ~12 KB/call). Prefer paths=[...] for several "
         "independent files. Single path= still works. Use offset (1-based line) and limit to "
         "continue a long file — truncated replies include a ready continuation call. "
-        "Each file body is tagged [[filectx id=fcN ...]] and stays in context until you "
-        "list that id in FILE_DROP.");
+        "Each file body is tagged [[filectx id=fcN ...]]. FILE_DROP removes a body only "
+        "when the program setting to drop large files is on and that body is at least "
+        "the configured size. Smaller bodies stay even if you list them.");
 }
 
 //----------------------------------------------

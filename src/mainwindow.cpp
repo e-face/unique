@@ -21,6 +21,7 @@
 #include "projectworkspace.h"
 #include "settingspage.h"
 #include "teamschemaeditor.h"
+#include "updatechecker.h"
 #include "usagestatswidget.h"
 #include "worker.h"
 #include "workergraphwidget.h"
@@ -34,6 +35,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDockWidget>
@@ -68,6 +70,7 @@
 #include <QMetaObject>
 #include <QKeyEvent>
 #include <QPlainTextEdit>
+#include <QUrl>
 #include <QTextCursor>
 #include <QProgressBar>
 #include <QPushButton>
@@ -394,6 +397,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _windowJournalAction(0)
     , _windowSettingsAction(0)
     , _helpStatsAction(0)
+    , _helpUpdateAction(0)
     , _helpAboutAction(0)
     , _openProjectAction(0)
     , _newProjectAction(0)
@@ -433,6 +437,8 @@ MainWindow::MainWindow(QWidget *parent)
     , _chatSavePending(false)
     , _pendingSwitchLoad(false)
     , _pendingSwitchTries(0)
+    , _updateChecker(new UpdateChecker(this))
+    , _updateCheckScheduled(false)
 {
     setWindowTitle(QString::fromUtf8("%1 %2")
                        .arg(QString::fromUtf8(UNIQUE_APP_NAME),
@@ -492,6 +498,12 @@ void MainWindow::closeEvent(QCloseEvent *event)
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
+    // Один автозапрос после показа окна: в конструкторе окно ещё не видно.
+    if (!_updateCheckScheduled && _updateChecker)
+    {
+        _updateCheckScheduled = true;
+        QTimer::singleShot(0, _updateChecker, SLOT(sltAutoCheck()));
+    }
     if (_chatsShown)
         return;
     _chatsShown = true;
@@ -2215,6 +2227,67 @@ QString MainWindow::teamSchemaPath() const
 
 //----------------------------------------------
 
+QString MainWindow::teamSchemaRelativePath() const
+{
+    return QString::fromUtf8("___project___/team-schema.txt");
+}
+
+//----------------------------------------------
+
+void MainWindow::writeTeamSchemaText(const QString &text)
+{
+    const QString jsonPath = teamSchemaPath();
+    if (jsonPath.isEmpty())
+        return;
+    const QString txtPath = QFileInfo(jsonPath).dir().filePath(
+        QString::fromUtf8("team-schema.txt"));
+    const QString body = text.trimmed();
+    if (body.isEmpty())
+    {
+        QFile::remove(txtPath);
+        if (_composerAttachments.removeAll(teamSchemaRelativePath()) > 0)
+            updateComposerAttachmentsUi();
+        return;
+    }
+    QString fileBody = body;
+    const QString lead = QString::fromUtf8(
+        "Team schema file. These rules bind every worker in the tree, "
+        "not only the root. Each worker follows its own node.\n\n");
+    if (!fileBody.startsWith(QString::fromUtf8("Team schema file.")))
+        fileBody = lead + fileBody;
+    QFile file(txtPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    file.write(fileBody.toUtf8());
+    file.close();
+}
+
+//----------------------------------------------
+
+void MainWindow::attachSavedTeamSchema()
+{
+    if (!hasSavedTeamSchema() || !_composer)
+        return;
+    const QString jsonPath = teamSchemaPath();
+    const QString txtPath = QFileInfo(jsonPath).dir().filePath(
+        QString::fromUtf8("team-schema.txt"));
+    if (!QFileInfo(txtPath).isFile() || QFileInfo(txtPath).size() < 2)
+    {
+        TeamSchemaDialog dialog(this);
+        if (!dialog.loadFromFile(jsonPath))
+            return;
+        writeTeamSchemaText(dialog.instructionText());
+    }
+    if (!QFileInfo(txtPath).isFile() || QFileInfo(txtPath).size() < 2)
+        return;
+    const QString rel = teamSchemaRelativePath();
+    if (!_composerAttachments.contains(rel))
+        _composerAttachments.append(rel);
+    updateComposerAttachmentsUi();
+}
+
+//----------------------------------------------
+
 bool MainWindow::hasSavedTeamSchema() const
 {
     const QString path = teamSchemaPath();
@@ -2229,17 +2302,15 @@ void MainWindow::storeTeamSchema(TeamSchemaDialog &dialog, bool insertIntoQuery)
     const QString path = teamSchemaPath();
     if (!path.isEmpty())
         dialog.saveToFile(path);
+    const QString block = dialog.instructionText().trimmed();
+    writeTeamSchemaText(block);
     if (insertIntoQuery && _composer && projectAwaitingFirstQuery())
     {
-        const QString block = dialog.instructionText().trimmed();
+        _composer->setPlainText(
+            TeamSchemaDialog::stripFromQuery(_composer->toPlainText()).trimmed());
         if (!block.isEmpty())
-        {
-            _composer->setPlainText(TeamSchemaDialog::mergeIntoQuery(_composer->toPlainText(), block));
-            QTextCursor cursor = _composer->textCursor();
-            cursor.movePosition(QTextCursor::End);
-            _composer->setTextCursor(cursor);
-            _composer->setFocus();
-        }
+            attachSavedTeamSchema();
+        _composer->setFocus();
     }
     updateProjectActions();
 }
@@ -2293,6 +2364,14 @@ void MainWindow::sltShowAbout()
                  tr("Агент ИИ с функциями распределения ролей."),
                  tr("Связь: <a href=\"mailto:%1\">%1</a>").arg(email));
     QMessageBox::about(this, tr("О программе"), text);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltCheckUpdates()
+{
+    if (_updateChecker)
+        _updateChecker->check(true);
 }
 
 //----------------------------------------------
@@ -2506,13 +2585,33 @@ void MainWindow::sltComposerSend()
 {
     if (!_composer || !_composerBar || !_composerBar->isSendEnabled())
         return;
-    const QString text = _composer->toPlainText().trimmed();
-    if (text.isEmpty() && _composerAttachments.isEmpty())
-        return;
-
+    QString text = _composer->toPlainText();
     const LlmProfile profile = profileForComposerTarget();
     const ModelCapabilities caps =
         ModelCapabilityService::instance()->capabilitiesFor(profile);
+    if (projectAwaitingFirstQuery() && hasSavedTeamSchema()
+        && !workerTaskKindIsMediaExecutor(profile.modality))
+    {
+        text = TeamSchemaDialog::stripFromQuery(text);
+        attachSavedTeamSchema();
+    }
+    text = text.trimmed();
+    if (text.isEmpty() && _composerAttachments.isEmpty())
+        return;
+    if (text.isEmpty())
+    {
+        bool onlySchema = true;
+        foreach (const QString &path, _composerAttachments)
+        {
+            if (path != teamSchemaRelativePath())
+            {
+                onlySchema = false;
+                break;
+            }
+        }
+        if (onlySchema)
+            return;
+    }
 
     if (workerTaskKindIsMediaExecutor(profile.modality))
     {
@@ -2525,6 +2624,8 @@ void MainWindow::sltComposerSend()
         QStringList videos;
         foreach (const QString &path, _composerAttachments)
         {
+            if (path == teamSchemaRelativePath())
+                continue;
             QString category;
             const QString lower = path.toLower();
             const bool webm = lower.endsWith(QString::fromUtf8(".webm"));
@@ -2695,9 +2796,12 @@ void MainWindow::sltComposerSend()
                 embeddedTexts.append(path);
                 QJsonObject part;
                 part.insert(QString::fromUtf8("type"), QString::fromUtf8("text"));
+                QString shown = path;
+                if (path == teamSchemaRelativePath())
+                    shown = QString::fromUtf8("team-schema.txt");
                 part.insert(QString::fromUtf8("text"),
                             QString::fromUtf8("### Attached file: %1\n```\n%2\n```")
-                                .arg(path, body));
+                                .arg(shown, body));
                 mediaParts.append(part);
                 continue;
             }
@@ -2750,7 +2854,12 @@ void MainWindow::sltComposerSend()
     {
         message += QString::fromUtf8("\n\nAttached text files (content inlined):\n");
         foreach (const QString &path, embeddedTexts)
-            message += QString::fromUtf8("- %1\n").arg(path);
+        {
+            const QString shown = (path == teamSchemaRelativePath())
+                                  ? QString::fromUtf8("team-schema.txt")
+                                  : path;
+            message += QString::fromUtf8("- %1\n").arg(shown);
+        }
     }
     if (!embeddedFiles.isEmpty())
     {
@@ -2907,6 +3016,47 @@ void MainWindow::sltComposerRemoveAttachment(int index)
 
 //----------------------------------------------
 
+void MainWindow::sltComposerOpenAttachment(QString relativePath)
+{
+    if (!_workspace || !_workspace->isSet())
+    {
+        if (statusBar())
+            statusBar()->showMessage(tr("Проект не открыт."));
+        return;
+    }
+    QString abs;
+    QString error;
+    if (!_workspace->resolvePath(relativePath, true, false, &abs, &error) || abs.isEmpty())
+    {
+        if (statusBar())
+        {
+            statusBar()->showMessage(error.isEmpty()
+                                     ? tr("Файл не найден: %1").arg(relativePath)
+                                     : error);
+        }
+        return;
+    }
+    const QFileInfo info(abs);
+    if (!info.exists() || info.isDir())
+    {
+        if (statusBar())
+            statusBar()->showMessage(tr("Файл не найден: %1").arg(relativePath));
+        return;
+    }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(info.absoluteFilePath()))
+        && statusBar())
+        statusBar()->showMessage(tr("Не удалось открыть файл: %1").arg(info.fileName()));
+}
+
+//----------------------------------------------
+
+namespace
+{
+int gComposerAttachAdded = 0;
+}
+
+//----------------------------------------------
+
 void MainWindow::sltComposerFilesDropped(const QStringList &absolutePaths)
 {
     addComposerAbsoluteFiles(absolutePaths);
@@ -2914,24 +3064,46 @@ void MainWindow::sltComposerFilesDropped(const QStringList &absolutePaths)
 
 //----------------------------------------------
 
-void MainWindow::addComposerAbsoluteFiles(const QStringList &absolutePaths)
+void MainWindow::sltComposerPasteHint(QString text, bool force)
 {
-    if (!hasOpenProject() || !_workspace)
+    if (!force && gComposerAttachAdded <= 0)
         return;
+    if (statusBar() && !text.trimmed().isEmpty())
+        statusBar()->showMessage(text);
+}
+
+//----------------------------------------------
+
+int MainWindow::addComposerAbsoluteFiles(const QStringList &absolutePaths)
+{
+    gComposerAttachAdded = 0;
+    if (!hasOpenProject() || !_workspace)
+    {
+        if (statusBar() && !absolutePaths.isEmpty())
+            statusBar()->showMessage(tr("Проект не открыт."));
+        return 0;
+    }
+    int added = 0;
+    bool failed = false;
     foreach (const QString &abs, absolutePaths)
     {
         QString error;
         const QString rel = importAttachmentIntoProject(abs, &error);
         if (rel.isEmpty())
         {
+            failed = true;
             if (statusBar() && !error.isEmpty())
                 statusBar()->showMessage(error);
             continue;
         }
         if (!_composerAttachments.contains(rel))
             _composerAttachments.append(rel);
+        ++added;
     }
     updateComposerAttachmentsUi();
+    if (!failed)
+        gComposerAttachAdded = added;
+    return added;
 }
 
 //----------------------------------------------
@@ -3473,8 +3645,12 @@ void MainWindow::setupUi()
     connect(_composerBar, SIGNAL(schemaClicked()), this, SLOT(sltCreateTeamSchema()));
     connect(_composerBar, SIGNAL(removeAttachmentRequested(int)),
             this, SLOT(sltComposerRemoveAttachment(int)));
+    connect(_composerBar, SIGNAL(attachmentOpenRequested(QString)),
+            this, SLOT(sltComposerOpenAttachment(QString)));
     connect(_composerBar, SIGNAL(filesDropped(QStringList)),
             this, SLOT(sltComposerFilesDropped(QStringList)));
+    connect(_composerBar, SIGNAL(pasteHint(QString,bool)),
+            this, SLOT(sltComposerPasteHint(QString,bool)));
 
     QVBoxLayout *root = new QVBoxLayout(central);
     // Отступ центральной области от доков и краёв окна — 2px со всех сторон.
@@ -3637,6 +3813,8 @@ void MainWindow::setupMenus()
     _helpStatsAction = _helpMenu->addAction(L("menu.help.stats"));
     connect(_helpStatsAction, SIGNAL(triggered()), this, SLOT(sltShowStatistics()));
     _helpMenu->addSeparator();
+    _helpUpdateAction = _helpMenu->addAction(L("menu.help.checkUpdates"));
+    connect(_helpUpdateAction, SIGNAL(triggered()), this, SLOT(sltCheckUpdates()));
     _helpAboutAction = _helpMenu->addAction(L("menu.help.about"));
     connect(_helpAboutAction, SIGNAL(triggered()), this, SLOT(sltShowAbout()));
 }
@@ -3683,6 +3861,8 @@ void MainWindow::retranslateUi()
         _helpMenu->setTitle(L("menu.help"));
     if (_helpStatsAction)
         _helpStatsAction->setText(L("menu.help.stats"));
+    if (_helpUpdateAction)
+        _helpUpdateAction->setText(L("menu.help.checkUpdates"));
     if (_helpAboutAction)
         _helpAboutAction->setText(L("menu.help.about"));
     if (_clearAction)
@@ -4337,7 +4517,8 @@ void MainWindow::beginStatusProgress(QString title, int total)
 
 //----------------------------------------------
 
-void MainWindow::updateStatusProgress(int current, int total, QString detail)
+void MainWindow::updateStatusProgress(int current, int total, QString detail,
+                                      bool showCounts)
 {
     if (_progressBar)
     {
@@ -4351,7 +4532,7 @@ void MainWindow::updateStatusProgress(int current, int total, QString detail)
         _progressBar->show();
     }
     QString msg = _progressTitle.isEmpty() ? tr("Загрузка") : _progressTitle;
-    if (total > 0)
+    if (showCounts && total > 0)
         msg += QString::fromUtf8(" %1/%2").arg(current).arg(total);
     if (!detail.isEmpty())
         msg += QString::fromUtf8(" — ") + detail;

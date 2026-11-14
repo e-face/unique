@@ -3,6 +3,6 @@
 
 /** Версия приложения Unique (заголовок окна, «О программе»). */
 #define UNIQUE_APP_NAME    "Unique"
-#define UNIQUE_APP_VERSION "0.1.1"
+#define UNIQUE_APP_VERSION "0.2.1"
 
 #endif // APPVERSION_H

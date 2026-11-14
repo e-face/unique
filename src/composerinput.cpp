@@ -3,16 +3,22 @@
 #include "applocale.h"
 #include "appsettings.h"
 //----------------------------------------------
+#include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QEvent>
+#include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
@@ -28,23 +34,81 @@
 
 //----------------------------------------------
 
+/** Длиннее этого текст из буфера уходит вложением, а не в поле запроса. */
+static const int kPasteAsFileChars = 2000;
+static const int kPasteAsFileLines = 40;
+
+//----------------------------------------------
+
+static QString writeTempPasteFile(const QString &fileName, const QByteArray &bytes)
+{
+    const QString path = QDir(QDir::tempPath()).filePath(fileName);
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
+    if (file.write(bytes) != bytes.size())
+    {
+        file.close();
+        QFile::remove(path);
+        return QString();
+    }
+    file.close();
+    return path;
+}
+
+//----------------------------------------------
+
+class ComposerEditor : public QPlainTextEdit
+{
+public:
+    ComposerEditor(ComposerInput *owner, QWidget *parent)
+        : QPlainTextEdit(parent)
+        , _owner(owner)
+    {
+    }
+
+protected:
+    virtual bool canInsertFromMimeData(const QMimeData *source) const
+    {
+        if (source && (source->hasUrls() || source->hasImage() || source->hasText()))
+            return true;
+        return QPlainTextEdit::canInsertFromMimeData(source);
+    }
+
+    virtual void insertFromMimeData(const QMimeData *source)
+    {
+        if (_owner && _owner->handlePasteMime(source))
+            return;
+        QPlainTextEdit::insertFromMimeData(source);
+    }
+
+private:
+    ComposerInput *_owner;
+};
+
+//----------------------------------------------
+
 namespace {
 
 class AttachmentChip : public QFrame
 {
 public:
-    AttachmentChip(int index, QString path, QPixmap thumb, QWidget *parent)
+    AttachmentChip(ComposerInput *owner, int index, QString path, QPixmap thumb,
+                   QWidget *parent)
         : QFrame(parent)
+        , _owner(owner)
         , _index(index)
     {
         setFixedSize(64, 64);
         setObjectName(QString::fromUtf8("composerChip"));
         setToolTip(path);
+        setCursor(Qt::PointingHandCursor);
 
         _preview = new QLabel(this);
         _preview->setGeometry(4, 4, 56, 56);
         _preview->setAlignment(Qt::AlignCenter);
         _preview->setScaledContents(false);
+        _preview->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
         if (!thumb.isNull())
         {
@@ -89,6 +153,14 @@ public:
     int index() const { return _index; }
 
 protected:
+    virtual void mouseReleaseEvent(QMouseEvent *event)
+    {
+        if (_owner && event && event->button() == Qt::LeftButton
+            && rect().contains(event->pos()) && childAt(event->pos()) != _remove)
+            _owner->activateAttachment(_index);
+        QFrame::mouseReleaseEvent(event);
+    }
+
     virtual void paintEvent(QPaintEvent *)
     {
         QPainter p(this);
@@ -111,9 +183,10 @@ protected:
     }
 
 private:
-    int          _index;
-    QLabel      *_preview;
-    QToolButton *_remove;
+    ComposerInput *_owner;
+    int            _index;
+    QLabel        *_preview;
+    QToolButton   *_remove;
 };
 
 } // namespace
@@ -130,6 +203,7 @@ ComposerInput::ComposerInput(QWidget *parent)
     , _plusButton(0)
     , _schemaButton(0)
     , _autoApproveBox(0)
+    , _reasoningBox(0)
     , _stopButton(0)
     , _sendButton(0)
     , _dropHighlight(false)
@@ -161,7 +235,7 @@ ComposerInput::ComposerInput(QWidget *parent)
     _attachScroll->setWidget(_attachHost);
     _attachScroll->hide();
 
-    _editor = new QPlainTextEdit(this);
+    _editor = new ComposerEditor(this, this);
     _editor->setObjectName(QString::fromUtf8("composerEditor"));
     _editor->setFrameShape(QFrame::NoFrame);
     _editor->setMaximumHeight(120);
@@ -200,6 +274,13 @@ ComposerInput::ComposerInput(QWidget *parent)
     connect(AppSettings::instance(), SIGNAL(displayOptionsChanged()),
             this, SLOT(sltDisplayOptionsChanged()));
 
+    _reasoningBox = new QCheckBox(this);
+    _reasoningBox->setObjectName(QString::fromUtf8("composerReasoning"));
+    _reasoningBox->setCursor(Qt::PointingHandCursor);
+    _reasoningBox->setChecked(AppSettings::instance()->reasoningEnabled());
+    connect(_reasoningBox, SIGNAL(toggled(bool)),
+            this, SLOT(sltReasoningToggled(bool)));
+
     _stopButton = new QPushButton(this);
     _stopButton->setObjectName(QString::fromUtf8("composerStop"));
     _stopButton->setCursor(Qt::PointingHandCursor);
@@ -221,6 +302,7 @@ ComposerInput::ComposerInput(QWidget *parent)
     toolbar->addWidget(_plusButton, 0, Qt::AlignVCenter);
     toolbar->addWidget(_schemaButton, 0, Qt::AlignVCenter);
     toolbar->addStretch(1);
+    toolbar->addWidget(_reasoningBox, 0, Qt::AlignVCenter);
     toolbar->addWidget(_autoApproveBox, 0, Qt::AlignVCenter);
     toolbar->addWidget(_stopButton, 0, Qt::AlignVCenter);
     toolbar->addWidget(_sendButton, 0, Qt::AlignVCenter);
@@ -283,6 +365,11 @@ void ComposerInput::retranslateUi()
     {
         _autoApproveBox->setText(L("composer.autoApprove"));
         _autoApproveBox->setToolTip(L("composer.autoApproveTip"));
+    }
+    if (_reasoningBox)
+    {
+        _reasoningBox->setText(L("composer.reasoning"));
+        _reasoningBox->setToolTip(L("composer.reasoningTip"));
     }
     if (_stopButton)
     {
@@ -409,11 +496,12 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
         "  font-size:16px; font-weight:bold; padding:0; }"
         "QPushButton#composerSend:hover { background:%4; }"
         "QPushButton#composerSend:disabled { background:%5; color:%1; }"
-        "QCheckBox#composerAutoApprove {"
+        "QCheckBox#composerAutoApprove, QCheckBox#composerReasoning {"
         "  background:transparent; color:%3; spacing:6px; }"
-        "QCheckBox#composerAutoApprove::indicator {"
+        "QCheckBox#composerAutoApprove::indicator, QCheckBox#composerReasoning::indicator {"
         "  width:15px; height:15px; border:1px solid %2; border-radius:3px; background:%1; }"
-        "QCheckBox#composerAutoApprove::indicator:checked {"
+        "QCheckBox#composerAutoApprove::indicator:checked,"
+        "QCheckBox#composerReasoning::indicator:checked {"
         "  background:%4; border:1px solid %4; }"
         "QPushButton#composerStop {"
         "  background:transparent; color:%3; border:1px solid %2; border-radius:12px;"
@@ -436,16 +524,35 @@ void ComposerInput::sltAutoApproveToggled(bool checked)
 
 //----------------------------------------------
 
+void ComposerInput::sltReasoningToggled(bool checked)
+{
+    AppSettings::instance()->setReasoningEnabled(checked);
+}
+
+//----------------------------------------------
+
 void ComposerInput::sltDisplayOptionsChanged()
 {
-    if (!_autoApproveBox)
-        return;
-    const bool on = AppSettings::instance()->autoApprovePermissions();
-    if (_autoApproveBox->isChecked() == on)
-        return;
-    _autoApproveBox->blockSignals(true);
-    _autoApproveBox->setChecked(on);
-    _autoApproveBox->blockSignals(false);
+    if (_autoApproveBox)
+    {
+        const bool on = AppSettings::instance()->autoApprovePermissions();
+        if (_autoApproveBox->isChecked() != on)
+        {
+            _autoApproveBox->blockSignals(true);
+            _autoApproveBox->setChecked(on);
+            _autoApproveBox->blockSignals(false);
+        }
+    }
+    if (_reasoningBox)
+    {
+        const bool on = AppSettings::instance()->reasoningEnabled();
+        if (_reasoningBox->isChecked() != on)
+        {
+            _reasoningBox->blockSignals(true);
+            _reasoningBox->setChecked(on);
+            _reasoningBox->blockSignals(false);
+        }
+    }
 }
 
 //----------------------------------------------
@@ -468,12 +575,23 @@ void ComposerInput::rebuildChips(const QStringList &relativePaths,
         QPixmap thumb;
         if (i < thumbs.size())
             thumb = thumbs.at(i);
-        AttachmentChip *chip = new AttachmentChip(i, relativePaths.at(i), thumb, _attachHost);
+        AttachmentChip *chip = new AttachmentChip(this, i, relativePaths.at(i), thumb,
+                                                  _attachHost);
         connect(chip->removeButton(), SIGNAL(clicked()), this, SLOT(sltRemoveChip()));
         _attachLayout->addWidget(chip, 0, Qt::AlignLeft | Qt::AlignVCenter);
     }
     _attachLayout->addStretch();
+    _attachmentPaths = relativePaths;
     updateAttachStripVisible();
+}
+
+//----------------------------------------------
+
+void ComposerInput::activateAttachment(int index)
+{
+    if (index < 0 || index >= _attachmentPaths.size())
+        return;
+    emit attachmentOpenRequested(_attachmentPaths.at(index));
 }
 
 //----------------------------------------------
@@ -495,6 +613,95 @@ void ComposerInput::sltRemoveChip()
         return;
     const int index = btn->property("chipIndex").toInt();
     emit removeAttachmentRequested(index);
+}
+
+//----------------------------------------------
+
+bool ComposerInput::handlePasteMime(const QMimeData *mime)
+{
+    if (!mime || !isEnabled() || (_editor && _editor->isReadOnly()))
+        return false;
+
+    QStringList files;
+    if (mime->hasUrls())
+    {
+        foreach (const QUrl &url, mime->urls())
+        {
+            if (!url.isLocalFile())
+                continue;
+            const QString path = QFileInfo(url.toLocalFile()).absoluteFilePath();
+            if (QFileInfo(path).isFile() && !files.contains(path))
+                files.append(path);
+        }
+    }
+    if (!files.isEmpty())
+    {
+        emit filesDropped(files);
+        return true;
+    }
+
+    QImage image;
+    if (mime->hasImage())
+    {
+        image = qvariant_cast<QImage>(mime->imageData());
+        if (image.isNull())
+        {
+            const QClipboard *clip = QApplication::clipboard();
+            if (clip)
+                image = clip->image();
+        }
+    }
+    const bool hasImage = !image.isNull() && image.width() > 0 && image.height() > 0;
+
+    QString text;
+    if (mime->hasText())
+        text = mime->text();
+    const QString trimmed = text.trimmed();
+    const int lines = trimmed.isEmpty() ? 0 : trimmed.count(QChar('\n')) + 1;
+    const bool longText = !trimmed.isEmpty()
+                           && (trimmed.size() >= kPasteAsFileChars
+                               || lines >= kPasteAsFileLines);
+
+    QString imagePath;
+    QString textPath;
+    if (hasImage)
+    {
+        const QString path = QDir(QDir::tempPath()).filePath(
+            QString::fromUtf8("screenshot.png"));
+        if (image.save(path, "PNG"))
+            imagePath = path;
+    }
+    if (longText)
+        textPath = writeTempPasteFile(QString::fromUtf8("pasted.txt"), text.toUtf8());
+
+    if (imagePath.isEmpty() && textPath.isEmpty())
+    {
+        if (hasImage)
+        {
+            emit pasteHint(tr("Не удалось сохранить вложение из буфера."), true);
+            return true;
+        }
+        return false;
+    }
+
+    QStringList temps;
+    if (!imagePath.isEmpty())
+        temps.append(imagePath);
+    if (!textPath.isEmpty())
+        temps.append(textPath);
+    emit filesDropped(temps);
+    if (!imagePath.isEmpty() && !textPath.isEmpty())
+        emit pasteHint(tr("Снимок и длинный текст прикреплены файлами."), false);
+    else if (!imagePath.isEmpty())
+        emit pasteHint(tr("Снимок из буфера прикреплён."), false);
+    else
+        emit pasteHint(tr("Длинный текст прикреплён файлом."), false);
+    foreach (const QString &path, temps)
+        QFile::remove(path);
+
+    if (!imagePath.isEmpty() && textPath.isEmpty() && !trimmed.isEmpty() && _editor)
+        _editor->insertPlainText(text);
+    return true;
 }
 
 //----------------------------------------------

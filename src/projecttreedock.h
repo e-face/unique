@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QModelIndex>
 #include <QString>
+#include <QStringList>
 
 class ProjectTreeDelegate;
 class ProjectTreeWatchThread;
@@ -35,6 +36,8 @@ public:
     void applyTheme();
     void retranslateUi();
     qreal flashAmount(QString absPath) const;
+    QString dropDirectoryForIndex(const QModelIndex &index) const;
+    void copyDroppedLocalFiles(const QStringList &absolutePaths, const QModelIndex &target);
 
 signals:
     void customContextMenuRequested(QMenu *menu, QString path, bool isDir);
@@ -45,6 +48,7 @@ private slots:
     void sltOpenFile();
     void sltRevealInExplorer();
     void sltCopyPath();
+    void sltDeleteSelected();
     void sltDirectoryChanged(const QString &path);
     void sltFlashTick();
     void sltExpanded(const QModelIndex &index);
@@ -57,6 +61,7 @@ private:
     QString filePathForIndex(const QModelIndex &viewIndex) const;
     QString normalizePath(QString path) const;
     bool skipDirName(QString name) const;
+    bool isServicePath(QString path) const;
     void clearWatches();
     void startOsWatch();
     void stopOsWatch();

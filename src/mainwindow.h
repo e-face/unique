@@ -36,6 +36,7 @@ class QTimer;
 class SessionTabBar;
 class SettingsPage;
 class TeamSchemaDialog;
+class UpdateChecker;
 class Worker;
 class WorkerGraphWidget;
 class WorkerManager;
@@ -55,6 +56,11 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = 0);
     virtual ~MainWindow();
+
+    void beginStatusProgress(QString title, int total);
+    void updateStatusProgress(int current, int total, QString detail = QString(),
+                              bool showCounts = true);
+    void endStatusProgress(QString readyMessage = QString());
 
 protected:
     virtual void closeEvent(QCloseEvent *event);
@@ -116,6 +122,7 @@ private slots:
     void sltShowMySchema();
     void sltShowStatistics();
     void sltShowAbout();
+    void sltCheckUpdates();
     void sltShowBalance();
     void sltAppearanceApplied();
     void sltProfilesChanged();
@@ -133,7 +140,9 @@ private slots:
     void sltComposerAttachFile();
     void sltComposerClearAttachments();
     void sltComposerRemoveAttachment(int index);
+    void sltComposerOpenAttachment(QString relativePath);
     void sltComposerFilesDropped(const QStringList &absolutePaths);
+    void sltComposerPasteHint(QString text, bool force);
     void sltStopAll();
     void sltFlushSaveChats();
     void sltChatSaveFinished();
@@ -189,9 +198,6 @@ private:
     QString tabKeyForWidget(QWidget *widget) const;
     void openTabByKey(const QString &key, bool makeCurrent);
     void pumpUi(bool force = false);
-    void beginStatusProgress(QString title, int total);
-    void updateStatusProgress(int current, int total, QString detail = QString());
-    void endStatusProgress(QString readyMessage = QString());
     void updateWindowTitle();
     void applySessionGeometries();
     void rememberChatNumber(QString title);
@@ -212,8 +218,11 @@ private:
     void updateProjectActions();
     bool projectAwaitingFirstQuery() const;
     QString teamSchemaPath() const;
+    QString teamSchemaRelativePath() const;
     bool hasSavedTeamSchema() const;
     void storeTeamSchema(TeamSchemaDialog &dialog, bool insertIntoQuery);
+    void writeTeamSchemaText(const QString &text);
+    void attachSavedTeamSchema();
     bool hasOpenProject() const;
     QString projectDialogStartPath() const;
     QString workspaceRootFromSelection(QString selected) const;
@@ -229,7 +238,7 @@ private:
     void refreshLiveStatusBar();
     void updateComposerState();
     void updateComposerAttachmentsUi();
-    void addComposerAbsoluteFiles(const QStringList &absolutePaths);
+    int addComposerAbsoluteFiles(const QStringList &absolutePaths);
     QStringList pickComposerAttachments(QString filter, QString title);
     QString importAttachmentIntoProject(QString absolutePath, QString *error);
     QPixmap composerThumbForPath(QString relativePath) const;
@@ -286,6 +295,7 @@ private:
     QAction             *_windowJournalAction;
     QAction             *_windowSettingsAction;
     QAction             *_helpStatsAction;
+    QAction             *_helpUpdateAction;
     QAction             *_helpAboutAction;
     QAction             *_openProjectAction;
     QAction             *_newProjectAction;
@@ -332,6 +342,8 @@ private:
     QString              _pendingRetireStore;
     bool                 _pendingSwitchLoad;
     int                  _pendingSwitchTries;
+    UpdateChecker       *_updateChecker;
+    bool                 _updateCheckScheduled;
 };
 
 #endif // MAINWINDOW_H

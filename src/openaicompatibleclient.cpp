@@ -383,11 +383,41 @@ void OpenAiCompatibleClient::decorateRequestBody(QJsonObject *root, const LlmReq
     if (!root)
         return;
     const QString url = _baseUrl.toLower();
-    if ((url.contains(QString::fromUtf8("dashscope")) || url.contains(QString::fromUtf8("aliyuncs")))
-        && !request.tools.isEmpty())
+    const QString model = _model.toLower();
+    const bool deepseek = url.contains(QString::fromUtf8("deepseek"))
+                          || model.contains(QString::fromUtf8("deepseek"));
+    const bool qwen = url.contains(QString::fromUtf8("dashscope"))
+                      || url.contains(QString::fromUtf8("aliyuncs"))
+                      || model.contains(QString::fromUtf8("qwen"));
+    const bool grok = model.contains(QString::fromUtf8("grok"))
+                      || url.contains(QString::fromUtf8("x.ai"))
+                      || url.contains(QString::fromUtf8("xai"));
+    const bool openaiReasoning = (url.contains(QString::fromUtf8("openai.com"))
+                                  || url.contains(QString::fromUtf8("api.openai")))
+                                 && (model.startsWith(QString::fromUtf8("gpt-5"))
+                                     || model.startsWith(QString::fromUtf8("gpt-6"))
+                                     || model.startsWith(QString::fromUtf8("o1"))
+                                     || model.startsWith(QString::fromUtf8("o3"))
+                                     || model.startsWith(QString::fromUtf8("o4")));
+    if (deepseek)
     {
-        root->insert(QString::fromUtf8("enable_thinking"), false);
+        QJsonObject thinking;
+        thinking.insert(QString::fromUtf8("type"),
+                        request.reasoning ? QString::fromUtf8("enabled")
+                                          : QString::fromUtf8("disabled"));
+        root->insert(QString::fromUtf8("thinking"), thinking);
     }
+    if (qwen)
+        root->insert(QString::fromUtf8("enable_thinking"), request.reasoning);
+    // Grok 4.5 и новее не выключает рассуждение. Снятая галочка — наименьшая глубина.
+    if (grok)
+        root->insert(QString::fromUtf8("reasoning_effort"),
+                     request.reasoning ? QString::fromUtf8("high")
+                                       : QString::fromUtf8("low"));
+    if (openaiReasoning)
+        root->insert(QString::fromUtf8("reasoning_effort"),
+                     request.reasoning ? QString::fromUtf8("medium")
+                                       : QString::fromUtf8("none"));
 }
 
 //----------------------------------------------

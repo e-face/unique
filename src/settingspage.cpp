@@ -125,6 +125,7 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _kind(kind)
     , _workers(0)
     , _viewBox(0)
+    , _contextBox(0)
     , _apiBox(0)
     , _workersBox(0)
     , _projectBox(0)
@@ -175,6 +176,9 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _projectPathLabel(0)
     , _inspectCheck(0)
     , _showForwardedCheck(0)
+    , _dropLargeFilesCheck(0)
+    , _largeFileKbSpin(0)
+    , _contextForm(0)
     , _shellControlCheck(0)
     , _outsideFilesControlCheck(0)
     , _systemSettingsControlCheck(0)
@@ -226,6 +230,29 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
         root->addWidget(_viewBox);
         connect(_showForwardedCheck, SIGNAL(toggled(bool)),
                 this, SLOT(sltShowForwardedToggled(bool)));
+
+        _contextBox = new QGroupBox(tr("Контекст"), this);
+        _dropLargeFilesCheck = new QCheckBox(
+            tr("Удалять большие файлы из контекста"), _contextBox);
+        _dropLargeFilesCheck->setToolTip(
+            tr("Тело файла убирается только если модель просит FILE_DROP "
+               "и оно не меньше порога. Мелкие файлы остаются."));
+        _largeFileKbSpin = new QSpinBox(_contextBox);
+        _largeFileKbSpin->setRange(1, 4096);
+        _largeFileKbSpin->setSuffix(tr(" КБ"));
+        _largeFileKbSpin->setToolTip(
+            tr("Размер тела файла в контексте. Меньшие фрагменты не удаляются."));
+        _contextForm = new QFormLayout();
+        _contextForm->setContentsMargins(0, 0, 0, 0);
+        _contextForm->addRow(tr("Порог размера:"), _largeFileKbSpin);
+        QVBoxLayout *contextLay = new QVBoxLayout(_contextBox);
+        contextLay->addWidget(_dropLargeFilesCheck);
+        contextLay->addLayout(_contextForm);
+        root->addWidget(_contextBox);
+        connect(_dropLargeFilesCheck, SIGNAL(toggled(bool)),
+                this, SLOT(sltDropLargeFilesToggled(bool)));
+        connect(_largeFileKbSpin, SIGNAL(valueChanged(int)),
+                this, SLOT(sltLargeFileKbChanged(int)));
     }
     root->addWidget(buildSecurityBox());
     if (_kind == SettingsKindDefaults)
@@ -284,6 +311,17 @@ void SettingsPage::reloadAll()
     {
         const QSignalBlocker blocker(_showForwardedCheck);
         _showForwardedCheck->setChecked(AppSettings::instance()->showForwardedContext());
+    }
+    if (_dropLargeFilesCheck)
+    {
+        const QSignalBlocker blocker(_dropLargeFilesCheck);
+        _dropLargeFilesCheck->setChecked(AppSettings::instance()->dropLargeContextFiles());
+    }
+    if (_largeFileKbSpin)
+    {
+        const QSignalBlocker blocker(_largeFileKbSpin);
+        _largeFileKbSpin->setValue(AppSettings::instance()->largeContextFileKb());
+        _largeFileKbSpin->setEnabled(AppSettings::instance()->dropLargeContextFiles());
     }
 }
 
@@ -364,6 +402,19 @@ void SettingsPage::retranslateUi()
 
     if (_viewBox)
         _viewBox->setTitle(tr("Отображение"));
+    if (_contextBox)
+        _contextBox->setTitle(tr("Контекст"));
+    if (_dropLargeFilesCheck)
+    {
+        _dropLargeFilesCheck->setText(tr("Удалять большие файлы из контекста"));
+        _dropLargeFilesCheck->setToolTip(
+            tr("Тело файла убирается только если модель просит FILE_DROP "
+               "и оно не меньше порога. Мелкие файлы остаются."));
+    }
+    if (_largeFileKbSpin)
+        _largeFileKbSpin->setSuffix(tr(" КБ"));
+    if (_contextForm && _largeFileKbSpin)
+        setFormLabelText(_contextForm, _largeFileKbSpin, tr("Порог размера:"));
     if (_showForwardedCheck)
     {
         _showForwardedCheck->setText(
@@ -2349,6 +2400,22 @@ void SettingsPage::sltControlToggled()
 void SettingsPage::sltShowForwardedToggled(bool enabled)
 {
     AppSettings::instance()->setShowForwardedContext(enabled);
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltDropLargeFilesToggled(bool enabled)
+{
+    AppSettings::instance()->setDropLargeContextFiles(enabled);
+    if (_largeFileKbSpin)
+        _largeFileKbSpin->setEnabled(enabled);
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltLargeFileKbChanged(int kb)
+{
+    AppSettings::instance()->setLargeContextFileKb(kb);
 }
 
 //----------------------------------------------

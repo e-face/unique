@@ -9,15 +9,22 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QFileSystemModel>
 #include <QFileSystemWatcher>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
+#include <QMimeData>
 #include <QPainter>
 #include <QPolygon>
 #include <QProcess>
+#include <QPushButton>
 #include <QMetaObject>
 #include <QSortFilterProxyModel>
 #include <QStackedWidget>
@@ -243,15 +250,73 @@ protected:
 class ProjectTreeView : public QTreeView
 {
 public:
-    explicit ProjectTreeView(QWidget *parent = 0)
+    explicit ProjectTreeView(ProjectTreeDock *dock, QWidget *parent = 0)
         : QTreeView(parent)
+        , _dock(dock)
     {
         setObjectName(QString::fromUtf8("projectTree"));
         setDragEnabled(true);
-        setDragDropMode(QAbstractItemView::DragOnly);
+        setAcceptDrops(true);
+        setDropIndicatorShown(true);
+        setDragDropMode(QAbstractItemView::DragDrop);
         setDefaultDropAction(Qt::CopyAction);
+        setDragDropOverwriteMode(false);
         setSelectionMode(QAbstractItemView::ExtendedSelection);
     }
+
+protected:
+    virtual void dragEnterEvent(QDragEnterEvent *event)
+    {
+        if (event && event->mimeData() && event->mimeData()->hasUrls())
+        {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+            return;
+        }
+        event->ignore();
+    }
+
+    virtual void dragMoveEvent(QDragMoveEvent *event)
+    {
+        if (event && event->mimeData() && event->mimeData()->hasUrls())
+        {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+            return;
+        }
+        event->ignore();
+    }
+
+    virtual void dropEvent(QDropEvent *event)
+    {
+        if (!_dock || !event || !event->mimeData() || !event->mimeData()->hasUrls())
+        {
+            if (event)
+                event->ignore();
+            return;
+        }
+        QStringList paths;
+        foreach (const QUrl &url, event->mimeData()->urls())
+        {
+            const QString local = url.toLocalFile();
+            if (!local.isEmpty())
+                paths.append(local);
+        }
+        if (paths.isEmpty())
+        {
+            event->ignore();
+            return;
+        }
+        const QModelIndex index = indexAt(event->pos());
+        _dock->copyDroppedLocalFiles(paths, index);
+        if (index.isValid())
+            expand(index);
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    }
+
+private:
+    ProjectTreeDock *_dock;
 
 protected:
     virtual void drawBranches(QPainter *painter, const QRect &rect,
@@ -358,7 +423,7 @@ ProjectTreeDock::ProjectTreeDock(QWidget *parent)
     , _contentHost(new QWidget(this))
     , _stack(new QStackedWidget(_contentHost))
     , _emptyLabel(new QLabel(_contentHost))
-    , _tree(new ProjectTreeView(_contentHost))
+    , _tree(new ProjectTreeView(this, _contentHost))
     , _delegate(0)
     , _titleBar(new DockTitleBar(tr("Проект"), this))
     , _watcher(new QFileSystemWatcher(this))
@@ -556,6 +621,17 @@ QString ProjectTreeDock::normalizePath(QString path) const
 bool ProjectTreeDock::skipDirName(QString name) const
 {
     return projectSkipDirName(name);
+}
+
+//----------------------------------------------
+
+bool ProjectTreeDock::isServicePath(QString path) const
+{
+    if (_root.isEmpty() || path.trimmed().isEmpty())
+        return false;
+    const QString clean = normalizePath(path);
+    const QString store = normalizePath(_root + QString::fromUtf8("/___project___"));
+    return clean == store || clean.startsWith(store + QString::fromUtf8("/"));
 }
 
 //----------------------------------------------
@@ -832,6 +908,207 @@ void ProjectTreeDock::sltDoubleClicked(const QModelIndex &index)
 
 //----------------------------------------------
 
+static bool sameLocalPath(const QString &left, const QString &right)
+{
+    QString a = QDir::cleanPath(left);
+    QString b = QDir::cleanPath(right);
+    a.replace(QChar('\\'), QChar('/'));
+    b.replace(QChar('\\'), QChar('/'));
+#ifdef Q_OS_WIN
+    return a.compare(b, Qt::CaseInsensitive) == 0;
+#else
+    return a == b;
+#endif
+}
+
+//----------------------------------------------
+
+static bool pathIsInside(const QString &parentDir, const QString &childPath)
+{
+    QString parent = QDir::cleanPath(parentDir);
+    QString child = QDir::cleanPath(childPath);
+    parent.replace(QChar('\\'), QChar('/'));
+    child.replace(QChar('\\'), QChar('/'));
+    if (!parent.endsWith(QChar('/')))
+        parent += QChar('/');
+#ifdef Q_OS_WIN
+    return child.startsWith(parent, Qt::CaseInsensitive);
+#else
+    return child.startsWith(parent);
+#endif
+}
+
+//----------------------------------------------
+
+/** 0 — спросить, 1 — заменять все, 2 — пропускать все, 3 — отмена. */
+static int askReplaceFile(QWidget *parent, const QString &name, int *mode)
+{
+    if (!mode)
+        return 2;
+    if (*mode == 1 || *mode == 2 || *mode == 3)
+        return *mode;
+    QMessageBox box(parent);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(ProjectTreeDock::tr("Копирование"));
+    box.setText(ProjectTreeDock::tr("«%1» уже есть. Заменить?").arg(name));
+    QPushButton *yes = box.addButton(ProjectTreeDock::tr("Заменить"), QMessageBox::YesRole);
+    QPushButton *all = box.addButton(ProjectTreeDock::tr("Заменить все"), QMessageBox::YesRole);
+    QPushButton *skip = box.addButton(ProjectTreeDock::tr("Пропустить"), QMessageBox::NoRole);
+    QPushButton *cancel = box.addButton(ProjectTreeDock::tr("Отмена"), QMessageBox::RejectRole);
+    box.setDefaultButton(skip);
+    box.exec();
+    if (box.clickedButton() == cancel)
+    {
+        *mode = 3;
+        return 3;
+    }
+    if (box.clickedButton() == all)
+    {
+        *mode = 1;
+        return 1;
+    }
+    if (box.clickedButton() == yes)
+        return 1;
+    Q_UNUSED(skip);
+    return 2;
+}
+
+//----------------------------------------------
+
+static bool copyEntryInto(QWidget *parent, const QString &source, const QString &destDir,
+                          int *mode, QString *error)
+{
+    if (mode && *mode == 3)
+        return false;
+    const QFileInfo info(source);
+    if (!info.exists())
+    {
+        if (error)
+            *error = ProjectTreeDock::tr("Не удалось скопировать: %1").arg(source);
+        return false;
+    }
+    const QString srcClean = QDir::cleanPath(info.absoluteFilePath());
+    const QString dest = QDir::cleanPath(destDir + QChar('/') + info.fileName());
+    if (sameLocalPath(srcClean, dest))
+        return true;
+    if (pathIsInside(srcClean, dest))
+    {
+        if (error && error->isEmpty())
+            *error = ProjectTreeDock::tr("Нельзя скопировать каталог внутрь самого себя.");
+        return false;
+    }
+    if (info.isDir())
+    {
+        if (QFileInfo(dest).exists() && !QFileInfo(dest).isDir())
+        {
+            const int choice = askReplaceFile(parent, info.fileName(), mode);
+            if (choice == 3)
+                return false;
+            if (choice != 1)
+                return true;
+            if (!QFile::remove(dest))
+            {
+                if (error)
+                    *error = ProjectTreeDock::tr("Не удалось скопировать: %1").arg(info.fileName());
+                return false;
+            }
+        }
+        if (!QDir().mkpath(dest))
+        {
+            if (error)
+                *error = ProjectTreeDock::tr("Не удалось скопировать: %1").arg(dest);
+            return false;
+        }
+        const QFileInfoList entries = QDir(srcClean).entryInfoList(
+            QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        foreach (const QFileInfo &entry, entries)
+        {
+            if (!copyEntryInto(parent, entry.absoluteFilePath(), dest, mode, error))
+                return false;
+        }
+        return true;
+    }
+    if (QFileInfo(dest).exists())
+    {
+        const int choice = askReplaceFile(parent, info.fileName(), mode);
+        if (choice == 3)
+            return false;
+        if (choice != 1)
+            return true;
+        if (QFileInfo(dest).isDir())
+        {
+            if (!QDir(dest).removeRecursively())
+            {
+                if (error)
+                    *error = ProjectTreeDock::tr("Не удалось скопировать: %1").arg(info.fileName());
+                return false;
+            }
+        }
+        else if (!QFile::remove(dest))
+        {
+            if (error)
+                *error = ProjectTreeDock::tr("Не удалось скопировать: %1").arg(info.fileName());
+            return false;
+        }
+    }
+    if (!QFile::copy(srcClean, dest))
+    {
+        if (error)
+            *error = ProjectTreeDock::tr("Не удалось скопировать: %1").arg(info.fileName());
+        return false;
+    }
+    return true;
+}
+
+//----------------------------------------------
+
+QString ProjectTreeDock::dropDirectoryForIndex(const QModelIndex &index) const
+{
+    if (_root.isEmpty())
+        return QString();
+    const QString path = filePathForIndex(index);
+    if (path.isEmpty())
+        return _root;
+    const QFileInfo info(path);
+    if (!info.exists())
+        return _root;
+    if (info.isDir())
+        return info.absoluteFilePath();
+    return info.absolutePath();
+}
+
+//----------------------------------------------
+
+void ProjectTreeDock::copyDroppedLocalFiles(const QStringList &absolutePaths,
+                                           const QModelIndex &target)
+{
+    if (_root.isEmpty() || absolutePaths.isEmpty())
+        return;
+    const QString destDir = dropDirectoryForIndex(target);
+    if (destDir.isEmpty())
+        return;
+    if (isServicePath(destDir))
+    {
+        QMessageBox::information(this, tr("Копирование"),
+                                 tr("Сюда копировать нельзя."));
+        return;
+    }
+    int mode = 0;
+    QString error;
+    foreach (const QString &path, absolutePaths)
+    {
+        if (mode == 3)
+            break;
+        if (path.trimmed().isEmpty() || isServicePath(path))
+            continue;
+        copyEntryInto(this, path, destDir, &mode, &error);
+    }
+    if (!error.isEmpty() && mode != 3)
+        QMessageBox::warning(this, tr("Копирование"), error);
+}
+
+//----------------------------------------------
+
 void ProjectTreeDock::sltContextMenu(const QPoint &pos)
 {
     const QModelIndex index = _tree->indexAt(pos);
@@ -855,11 +1132,109 @@ void ProjectTreeDock::sltContextMenu(const QPoint &pos)
     QAction *copyAction = menu.addAction(tr("Копировать путь"));
     connect(copyAction, SIGNAL(triggered()), this, SLOT(sltCopyPath()));
 
+    const bool canDelete = normalizePath(_contextPath) != normalizePath(_root)
+                           && !isServicePath(_contextPath);
+    if (canDelete)
+    {
+        menu.addSeparator();
+        QAction *deleteAction = menu.addAction(tr("Удалить"));
+        connect(deleteAction, SIGNAL(triggered()), this, SLOT(sltDeleteSelected()));
+    }
+
     menu.addSeparator();
     emit customContextMenuRequested(&menu, _contextPath, isDir);
 
     if (!menu.isEmpty())
         menu.exec(_tree->viewport()->mapToGlobal(pos));
+}
+
+//----------------------------------------------
+
+void ProjectTreeDock::sltDeleteSelected()
+{
+    if (_contextPath.isEmpty() || _root.isEmpty() || !_tree)
+        return;
+    QStringList paths;
+    const QModelIndex current = _tree->currentIndex();
+    const QModelIndexList selected = _tree->selectionModel()
+                                     ? _tree->selectionModel()->selectedRows()
+                                     : QModelIndexList();
+    if (selected.size() > 1 && selected.contains(current))
+    {
+        foreach (const QModelIndex &index, selected)
+        {
+            const QString path = filePathForIndex(index);
+            if (!path.isEmpty())
+                paths.append(path);
+        }
+    }
+    if (paths.isEmpty())
+        paths.append(_contextPath);
+
+    QStringList victims;
+    foreach (const QString &path, paths)
+    {
+        if (normalizePath(path) == normalizePath(_root) || isServicePath(path))
+            continue;
+        bool nested = false;
+        foreach (const QString &other, paths)
+        {
+            if (sameLocalPath(other, path))
+                continue;
+            if (pathIsInside(other, path))
+            {
+                nested = true;
+                break;
+            }
+        }
+        if (!nested)
+            victims.append(path);
+    }
+    if (victims.isEmpty())
+    {
+        QMessageBox::information(this, tr("Удаление"),
+                                 tr("Нельзя удалить корень проекта."));
+        return;
+    }
+
+    QString question;
+    if (victims.size() == 1)
+    {
+        const QString name = QFileInfo(victims.first()).fileName();
+        if (QFileInfo(victims.first()).isDir())
+            question = tr("Удалить каталог «%1» и всё его содержимое?").arg(name);
+        else
+            question = tr("Удалить «%1»?").arg(name);
+    }
+    else
+        question = tr("Удалить выбранное (%1)?").arg(victims.size());
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(tr("Удаление"));
+    box.setText(question);
+    QPushButton *yes = box.addButton(tr("Удалить"), QMessageBox::YesRole);
+    QPushButton *no = box.addButton(tr("Отмена"), QMessageBox::RejectRole);
+    box.setDefaultButton(no);
+    box.exec();
+    if (box.clickedButton() != yes)
+        return;
+
+    foreach (const QString &path, victims)
+    {
+        const QFileInfo info(path);
+        bool ok = false;
+        if (info.isDir())
+            ok = QDir(path).removeRecursively();
+        else
+            ok = QFile::remove(path);
+        if (!ok)
+        {
+            QMessageBox::warning(this, tr("Удаление"),
+                                 tr("Не удалось удалить: %1").arg(info.fileName()));
+            return;
+        }
+    }
 }
 
 //----------------------------------------------
