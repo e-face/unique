@@ -6,12 +6,12 @@
 //----------------------------------------------
 
 /**
- * @brief Клиент Groq Chat Completions (формат OpenAI).
+ * @brief Groq Chat Completions client (OpenAI format).
  *
- * Ключ создаётся на https://console.groq.com/keys
+ * The key is created at https://console.groq.com/keys
  * API: https://api.groq.com/openai/v1
  *
- * Поле messages[].name Groq не принимает (HTTP 400), поэтому не отправляется.
+ * Groq does not accept the messages[].name field (HTTP 400), so it is not sent.
  */
 class GroqClient : public OpenAiCompatibleClient
 {

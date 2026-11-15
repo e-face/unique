@@ -26,7 +26,7 @@ static const int kMaxPersistedEntries   = 100;
 static const int kJournalPersistMs      = 500;
 static const int kLiveRotateMs          = 3000;
 static const int kLiveFadeMs            = 40;
-/** Полный цикл яркости «чёткий → почти невидимый → чёткий», мс. */
+/** Full brightness cycle from sharp to almost invisible and back to sharp, in milliseconds. */
 static const int kLiveFadeCycleMs       = 2200;
 
 //----------------------------------------------
@@ -639,7 +639,7 @@ void JournalWidget::applyLiveActionFadeStyle()
     double alpha = 0.0;
     if (!_liveActions.isEmpty())
     {
-        // 1 → ~0.12 → 1 по синусу.
+        // 1 to about 0.12 and back to 1 along a sine.
         const double wave = 0.5 * (1.0 + qSin(_liveFadePhase * 2.0 * 3.14159265358979323846));
         alpha = 0.12 + wave * 0.88;
     }
@@ -733,7 +733,7 @@ void JournalWidget::sltLiveActionFade()
 void JournalWidget::addPermanent(const QString &author, const QString &text, bool fromUser,
                                  const QString &workerId)
 {
-    // Постоянная запись: предыдущая временная остаётся в ленте как есть.
+    // A permanent record: the previous temporary one stays in the feed as it is.
     _transient = 0;
     const QString who = author.trimmed().isEmpty() ? tr("Чат") : author.trimmed();
     QString colorKey = who;
@@ -859,8 +859,8 @@ void JournalWidget::sltJournalNotice(const QString &text)
 void JournalWidget::sltJournalForwarded(const QString &text)
 {
     Q_UNUSED(text);
-    // Служебные контексты (handoff, отчёты) в журнал не показываем —
-    // только понятные человеку события.
+    // Service context (handoff, reports) is not shown in the journal.
+    // Only events a person can understand are shown.
 }
 
 //----------------------------------------------

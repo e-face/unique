@@ -108,9 +108,9 @@ QString ProjectBrief::collectTree(QString dir, int depth, int *entriesLeft) cons
     if (!entriesLeft || *entriesLeft <= 0 || depth > kMaxTreeDepth)
         return QString();
 
-    // entryList вместо entryInfoList: не создаётся QFileInfo на каждый элемент
-    // каталога. На каталоге в 10 000 файлов это 43 мс вместо 82 мс и без тысяч
-    // временных объектов (замерено на Qt 5.9.9 + MinGW, см. отчёт).
+    // entryList instead of entryInfoList: no QFileInfo is created for every
+    // directory entry. On a directory of 10,000 files that is 43 ms instead of 82 ms, and without thousands
+    // of temporary objects (measured on Qt 5.9.9 and MinGW).
     QDir folder(dir);
     const QStringList dirs = folder.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
     const QStringList files = folder.entryList(QDir::Files | QDir::NoDotAndDotDot, QDir::Name);

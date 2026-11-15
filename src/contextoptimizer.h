@@ -10,13 +10,13 @@
 //----------------------------------------------
 
 /**
- * @brief Оценка токенов и подготовка истории к сжатию моделью.
+ * @brief Token estimate and preparing history for compression by the model.
  *
- * Сама выжимка делается языковой моделью, одинаково для всех воркеров:
- * системный промпт и закреплённая формулировка задачи остаются как есть,
- * свежий хвост (по бюджету токенов) сохраняется дословно, всё остальное
- * уходит модели порциями и возвращается одной сводкой. Текстовая выжимка
- * (extractiveSummary) — только запасной вариант, когда модель недоступна.
+ * The extract itself is made by the language model, the same way for every worker:
+ * the system prompt and the pinned task wording stay as they are,
+ * the fresh tail (by token budget) is kept verbatim, and everything else
+ * goes to the model in chunks and comes back as one summary. The text extract
+ * (extractiveSummary) is only a fallback when the model is unavailable.
  */
 class ContextOptimizer
 {
@@ -32,32 +32,32 @@ public:
     int  estimatePrompt(const QList<LlmMessage> &messages, const QList<LlmTool> &tools) const;
 
     /**
-     * @brief Индекс первого сообщения хвоста, укладывающегося в @p tokenBudget.
+     * @brief Index of the first tail message that fits in @p tokenBudget.
      *
-     * Сообщения считаются с конца; @p firstMovable — первый индекс, который
-     * вообще можно сжимать (после системного промпта). Бюджет 0 — хвоста нет,
-     * возвращается размер списка.
+     * Messages are counted from the end; @p firstMovable is the first index that
+     * may be compressed at all (after the system prompt). A budget of 0 means no tail,
+     * and the list size is returned.
      */
     int tailKeepIndex(const QList<LlmMessage> &messages, int firstMovable, int tokenBudget) const;
     /**
-     * @brief Сдвинуть границу назад, чтобы не разорвать пару tool_call/tool.
+     * @brief Move the boundary back so a tool_call/tool pair is not split.
      */
     int expandKeepIndexForTools(const QList<LlmMessage> &messages, int keepFrom) const;
     void repairToolTurns(QList<LlmMessage> *messages) const;
 
     /**
-     * @brief Разбить старую часть истории на текстовые порции для модели.
+     * @brief Split the old part of history into text chunks for the model.
      *
-     * Каждая порция не длиннее @p chunkTokenBudget токенов (по оценке);
-     * очень длинные отдельные сообщения обрезаются, чтобы влезть.
+     * Each chunk is no longer than @p chunkTokenBudget tokens (by estimate);
+     * very long individual messages are truncated so they fit.
      */
     QStringList splitForSummary(const QList<LlmMessage> &oldPart, int chunkTokenBudget) const;
     /**
-     * @brief Запрос модели на сводку очередной порции.
-     * @param previousSummary Сводка по предыдущим порциям (пусто для первой).
-     * @param chunk           Текст порции.
-     * @param index           Номер порции (с 1) и @p total — всего порций.
-     * @param anchorKept      Формулировка задачи хранится отдельно и её не надо повторять.
+     * @brief Model request to summarize the next chunk.
+     * @param previousSummary Summary of the previous chunks (empty for the first).
+     * @param chunk           Text of the chunk.
+     * @param index           Chunk number (from 1); @p total is the number of chunks.
+     * @param anchorKept      The task wording is stored separately and must not be repeated.
      */
     QList<LlmMessage> buildSummarizeMessages(QString previousSummary, QString chunk,
                                              int index, int total, bool anchorKept) const;

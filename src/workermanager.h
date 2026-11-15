@@ -19,7 +19,7 @@ class Worker;
 //----------------------------------------------
 
 /**
- * @brief Один запуск инструмента по запросу воркера (элемент очереди).
+ * @brief One tool run requested by a worker (a queue item).
  */
 struct ToolRun
 {
@@ -31,7 +31,7 @@ struct ToolRun
 //----------------------------------------------
 
 /**
- * @brief Ожидание ответа собеседника на talk_to (только parent/child).
+ * @brief Waiting for a peer's reply to talk_to (parent or child only).
  */
 struct TalkWait
 {
@@ -75,10 +75,10 @@ struct GroupUtterance
 //----------------------------------------------
 
 /**
- * @brief Поочерёдный диалог группы: один оратор, реплика всем, затем голос.
+ * @brief A turn-based group dialogue: one speaker, a line to everyone, then a vote.
  *
- * События монотонны (seq). Каждому участнику доставляется ровно один action-prompt
- * на ход/голос и один терминальный DONE; чужие реплики не будят модель отдельно.
+ * Events are monotonic (seq). Each member gets exactly one action prompt
+ * per turn or vote, and one terminal DONE. Other members' lines do not wake the model on their own.
  */
 struct GroupDialogue
 {
@@ -94,7 +94,7 @@ struct GroupDialogue
     QString             groupId;
     QStringList         order;
     int                 speakerIndex;
-    int                 speakCount; // только счётчик, без потолка
+    int                 speakCount; // a counter only, with no cap
     GroupDialoguePhase  phase;
     QList<GroupUtterance> transcript;
     QString             proposal;
@@ -103,23 +103,23 @@ struct GroupDialogue
     QSet<QString>       approvals;
     QHash<QString, QString> voteComments;
     QString             outcome;
-    QString             lastOutcome; // итог прошлого раунда (после рестарта)
+    QString             lastOutcome; // outcome of the previous round (after a restart)
     int                 nextSeq;
     int                 roundId;           // round counter (full-transcript dedup)
     QHash<QString, int> roundSeen;         // workerId -> last roundId seen by him
     QHash<QString, int> cursor;           // workerId -> last acked seq
-    QSet<QString>       terminalDelivered; // DONE уже отдан участнику
-    /** Сколько раз уже нудили участника на текущий ход/голос (анти-дедлок). */
+    QSet<QString>       terminalDelivered; // DONE was already delivered to this member
+    /** How many times this member was already nudged on the current turn or vote (anti-deadlock). */
     QHash<QString, int> actionNudges;
 };
 
 //----------------------------------------------
 
 /**
- * @brief Создаёт воркеров, вешает изолированные инструменты, ждёт результат.
+ * @brief Creates workers, attaches isolated tools, and waits for the result.
  *
- * Следит за лимитами: глубина дерева и число одновременно работающих
- * воркеров. Лишние воркеры ставятся в очередь и стартуют сами.
+ * Enforces limits: tree depth, and how many workers run at once.
+ * Extra workers are queued and start on their own.
  */
 class WorkerManager : public QObject
 {
@@ -134,15 +134,15 @@ public:
     Worker *spawn(Worker *parent, WorkerType type, QString task, QString *error,
                   QString llmProfileId = QString(), bool checkOnly = false);
     /**
-     * @brief Добавить собеседника в группу главного (создаёт группу при необходимости).
+     * @brief Add a peer to the chief's group (creates the group if needed).
      */
     Worker *addGroupMember(Worker *chief, QString presetId, QString *error);
     QList<Worker *> groupMembers(QString groupId) const;
     QString allocatePersonName() const;
     /**
-     * @brief Сообщение родителю/ребёнку; блокирует до ответа.
+     * @brief A message to the parent or a child. Blocks until the reply.
      *
-     * Для участников одной группы не используется — там group_speak / group_await.
+     * Not used for members of the same group. There it is group_speak or group_await.
      */
     QString talkTo(Worker *from, QString peerId, QString message, QString *error);
 
@@ -159,24 +159,24 @@ public:
     QString groupVote(Worker *from, bool approve, QString comment, QString *error);
     QString groupAwait(Worker *from, QString *error);
     /**
-     * @brief Участник должен действовать сейчас (оратор / голос / DONE).
+     * @brief The member must act now (speaker, vote, or DONE).
      */
     bool groupParticipantShouldAct(Worker *worker) const;
     /**
-     * @brief Если участник должен действовать, а LLM ушёл в idle — снова разбудить.
+     * @brief If the member must act and the LLM went idle, wake them again.
      */
     void ensureGroupParticipantActive(Worker *worker);
     /**
-     * @brief Переустановить инструменты и поднять сохранённые групповые диалоги.
+     * @brief Reinstall tools and raise saved group dialogues.
      */
     void reinstallToolsAndResumeGroups();
 
     bool dismissChild(Worker *parent, QString childId, QString *error);
-    /** Удалить воркера, уже завершившего работу (Completed/Failed), с дочерними. */
+    /** Delete a worker that has already finished (Completed or Failed), together with its children. */
     bool forceRemoveFinished(Worker *worker, QString *error);
     /**
-     * @brief Удалить инструменты и некорневых воркеров с данным профилем;
-     *        у корней сбросить llmProfileId (подставится профиль роли).
+     * @brief Delete tools and non-root workers that use this profile.
+     *        On roots, clear llmProfileId so the role profile is substituted.
      */
     int removeWorkersUsingProfile(QString profileId);
     int countWorkersUsingProfile(QString profileId) const;
@@ -184,12 +184,12 @@ public:
 
     void installTools(Worker *worker);
     /**
-     * @brief Modality профиля модели воркера (llm / image / speech / …).
+     * @brief Modality of the worker's model profile (llm, image, speech, and so on).
      */
     WorkerTaskKind modalityOf(Worker *worker) const;
     /**
-     * @brief Прямой запуск media/embedding tool без chat-цикла.
-     * @return отчёт для complete(); *ok = успех tool.
+     * @brief A direct media or embedding tool run, with no chat cycle.
+     * @return the report for complete(); *ok is true when the tool succeeded.
      */
     QString runMediaExecutor(Worker *worker, bool *ok);
     void refreshPrompt(Worker *worker);
@@ -203,14 +203,14 @@ public:
     void linkParent(Worker *child, QString parentId);
 
     /**
-     * @brief Инструменты: общие многоразовые исполнители без родителя.
+     * @brief Tools: shared reusable executors with no parent.
      *
-     * Создаёт менеджер, запускать может любой воркер (кроме инструментов).
-     * Один инструмент выполняет один запрос за раз, остальные ждут в очереди.
-     * Удаляются только по требованию пользователя.
+     * The manager creates them. Any worker except a tool may start them.
+     * One tool runs one request at a time; the rest wait in a queue.
+     * They are deleted only when the user asks.
      */
     /**
-     * @param llmProfileId профиль модели (из preset_id); пусто — профиль роли Tool.
+     * @param llmProfileId model profile from preset_id. Empty means the Tool role profile.
      */
     Worker *createTool(Worker *creator, QString name, QString purpose, QString *error,
                        QString llmProfileId = QString());
@@ -233,22 +233,22 @@ public:
     QString limitsSummaryFor(Worker *worker) const;
     QString loadSummary() const;
     /**
-     * @brief Переменная часть стартового контекста (лимиты, список инструментов).
+     * @brief The variable part of the startup context (limits and the tool list).
      *
-     * Идёт в первое сообщение воркера, а не в системный промпт, чтобы
-     * префикс запроса оставался стабильным для кеша провайдера.
+     * It goes into the worker's first message, not the system prompt, so
+     * the request prefix stays stable for the provider cache.
      */
     QString startupContextFor(Worker *worker) const;
     /**
-     * @brief Схема команды и место воркера в ней.
+     * @brief The team schema and the worker's place in it.
      *
-     * Для корня пусто: ему схема приходит прикреплённым файлом.
-     * Дочерние получают её один раз при старте задания.
+     * Empty for the root: the schema arrives as an attached file.
+     * Children receive it once when the assignment starts.
      */
     QString teamSchemaNoteFor(Worker *worker) const;
     QString changedFilesForChildren(Worker *parent) const;
     /**
-     * @brief Один активный писатель на файл (относительный путь). Fail-closed.
+     * @brief One active writer per file (a relative path). Fail closed.
      */
     bool claimFilePath(Worker *worker, QString relativePath, QString *error);
     void releaseFilePaths(Worker *worker);
@@ -257,7 +257,7 @@ public:
     void noteTaskCompleted();
 
     /**
-     * @brief Запустить воркера или поставить его в очередь на запуск.
+     * @brief Start a worker, or queue it to start.
      */
     void requestStart(Worker *worker);
 
@@ -297,8 +297,8 @@ private:
 
     void startGroupDialogue(QString groupId);
     /**
-     * @brief Новый раунд обсуждения после DONE (те же участники).
-     * @return false, если группы нет или мало участников.
+     * @brief A new discussion round after DONE, with the same members.
+     * @return false if there is no group or too few members.
      */
     bool reopenGroupDialogue(QString groupId, Worker *starter, QString *error);
     /**

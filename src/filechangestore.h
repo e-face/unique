@@ -27,8 +27,8 @@ struct FileLineDelta
 //----------------------------------------------
 
 /**
- * @brief Счётчики строк «как в Cursor»: +добавлено / −удалено относительно
- *        исходного содержимого файла (снимок до первой правки в проекте).
+ * @brief Line counters in the Cursor style: added and removed against
+ *        the file's original contents (a snapshot before the first edit in the project).
  */
 class FileChangeStore : public QObject
 {
@@ -47,7 +47,7 @@ public:
     void clear();
 
     FileLineDelta deltaFor(QString absPath) const;
-    /** Сумма по всем изменённым файлам проекта. */
+    /** Sum across all changed files in the project. */
     FileLineDelta totals() const;
     int changedFileCount() const;
     QString relativePath(QString absPath) const;

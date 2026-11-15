@@ -47,7 +47,7 @@ static QString roleBudgetKey(int index)
 //----------------------------------------------
 
 /**
- * @brief Строка-маркер: в ini лежит полный набор настроек, а не только статистика.
+ * @brief Marker line: the ini holds the full settings set, not only statistics.
  */
 static QString workspaceSeededKey()
 {
@@ -94,7 +94,7 @@ AppSettings::AppSettings(QObject *parent)
     , _reasoningEnabled(false)
     , _dropLargeContextFiles(true)
     , _largeContextFileKb(4)
-    , _uiLanguage(QString::fromUtf8("ru"))
+    , _uiLanguage(QString::fromUtf8("en"))
     , _mainWindowGeometry()
     , _mainWindowState()
     , _leftDockWidth(0)
@@ -320,7 +320,7 @@ const WorkspaceSettings &AppSettings::workspace(SettingsKind kind) const
 void AppSettings::emitWorkspaceSignals(SettingsKind kind, bool limits, bool profiles,
                                        bool presets, bool permissions, bool controls)
 {
-    // Сигналы, влияющие на работающих воркеров, — только для активного набора.
+    // Signals that affect running workers apply only to the active set.
     const bool active = (kind == activeKind());
     if (limits && active)
         emit workerLimitsChanged();
@@ -530,7 +530,7 @@ bool AppSettings::projectWorkspaceSeeded() const
 void AppSettings::seedProjectFromDefaults()
 {
     _project = _defaults;
-    // Тела профилей не копируем: в проекте только ссылки (id) на config/ai.
+    // Profile bodies are not copied: the project stores only id references into config/ai.
     _project.profiles.clear();
     ensureWorkerProfileIds(&_project);
     ensureWorkerPresetsSeeded(&_project);
@@ -591,8 +591,8 @@ void AppSettings::setProjectRoot(QString root)
     const QString clean = QDir::cleanPath(root.trimmed());
     if (_projectRoot == clean && _projectOpen == !clean.isEmpty())
     {
-        // Тот же корень, но ___project___ пересоздан: статистика и настройки
-        // проекта заново берутся из defaults.
+        // Same root, but ___project___ was recreated: project statistics and settings
+        // are taken from defaults again.
         if (!clean.isEmpty() && !QFileInfo(projectIniPath()).exists())
         {
             _projectUsage.clear();
@@ -611,8 +611,8 @@ void AppSettings::setProjectRoot(QString root)
     _projectOpen = !clean.isEmpty();
     if (_projectOpen)
     {
-        // seeded читаем до seedProjectFromDefaults — иначе свежий ini
-        // посчитается «старым» и можно подтянуть чужие/пустые ключи неверно.
+        // Read seeded before seedProjectFromDefaults, otherwise a fresh ini
+        // is treated as old and foreign or empty keys can be pulled in wrongly.
         const bool seeded = projectWorkspaceSeeded();
         if (seeded)
         {
@@ -712,9 +712,9 @@ void AppSettings::load()
     if (_largeContextFileKb > 4096)
         _largeContextFileKb = 4096;
     _uiLanguage = settings.value(QString::fromUtf8("ui/language"),
-                                 QString::fromUtf8("ru")).toString().trimmed().toLower();
+                                 QString::fromUtf8("en")).toString().trimmed().toLower();
     if (_uiLanguage.isEmpty())
-        _uiLanguage = QString::fromUtf8("ru");
+        _uiLanguage = QString::fromUtf8("en");
     _mainWindowGeometry = QByteArray::fromBase64(
         settings.value(QString::fromUtf8("ui/mainWindowGeometry")).toString().toLatin1());
     _mainWindowState = QByteArray::fromBase64(
@@ -723,7 +723,7 @@ void AppSettings::load()
     _projectDockHeight = settings.value(QString::fromUtf8("ui/projectDockHeight"), 0).toInt();
     _graphThumbDockHeight = settings.value(QString::fromUtf8("ui/graphThumbDockHeight"), 0).toInt();
 
-    // Проект ещё не открыт: активными остаются defaults.
+    // No project is open yet: defaults stay active.
     _projectOpen = false;
     _project = _defaults;
 }
@@ -1188,7 +1188,7 @@ QColor AppSettings::inputColor() const
 
 QColor AppSettings::toolbarColor() const
 {
-    // Плоский фон как у окна — без «полосы» другой яркости.
+    // Flat background matching the window, with no band of a different brightness.
     if (isLightTheme())
         return _windowColor.isValid() ? _windowColor
                                       : QColor(QString::fromUtf8("#f7f7f8"));
@@ -1400,7 +1400,7 @@ void AppSettings::persistUiLanguage(QString code)
 {
     code = code.trimmed().toLower();
     if (code.isEmpty())
-        code = QString::fromUtf8("ru");
+        code = QString::fromUtf8("en");
     _uiLanguage = code;
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
     settings.setValue(QString::fromUtf8("ui/language"), _uiLanguage);
@@ -2298,7 +2298,7 @@ void AppSettings::migrateFromNativeRegistry()
     if (QFileInfo::exists(settingsFilePath()))
         return;
 
-    // Старые установки писали в реестр / ~/.config — один раз переносим сюда.
+    // Older installs wrote to the registry or ~/.config; copy them here once.
     QSettings native;
     const QStringList keys = native.allKeys();
     if (keys.isEmpty())
@@ -2340,8 +2340,8 @@ void AppSettings::migrateFromNativeRegistry()
 
 void AppSettings::migrateProjectLocalProfiles()
 {
-    // Старые проекты хранили полные профили в ___project___/ai — переносим
-    // отсутствующие id в config/ai и удаляем локальную копию.
+    // Old projects stored full profiles in ___project___/ai. Move
+    // missing ids into config/ai and delete the local copy.
     const QString store = projectStoreDir(_projectRoot);
     if (store.isEmpty())
         return;
@@ -2439,7 +2439,7 @@ void AppSettings::loadProfiles()
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
     if (_defaults.profiles.isEmpty())
     {
-        // Старый массив профилей в settings.ini (если миграция уже перенесла ini).
+        // The old profile array in settings.ini, if the ini migration already moved it.
         const int count = settings.beginReadArray(QString::fromUtf8("llmProfiles"));
         for (int i = 0; i < count; ++i)
         {
@@ -2558,7 +2558,7 @@ void AppSettings::updateProfile(const LlmProfile &profile)
     if (oldStem != newStem)
         QFile::remove(aiProfilesDir() + QChar('/') + oldStem + QString::fromUtf8(".ini"));
 
-    // Только файл этого профиля — не переписываем весь config/ai и settings.ini.
+    // Only this profile's file: do not rewrite all of config/ai and settings.ini.
     writeProfileFile(_defaults.profiles.at(index));
 
     const bool modalityChanged = (oldModality != next.modality);
@@ -2644,7 +2644,7 @@ LlmProfile AppSettings::profileForWorkerType(SettingsKind kind, WorkerType type)
                               ? WorkerTypeExecutor
                               : type;
     const WorkspaceSettings &bundle = ws(kind);
-    // Профиль роли берётся из первого пресета этого типа.
+    // The role profile is taken from the first preset of that type.
     foreach (const WorkerPreset &preset, bundle.workerPresets)
     {
         if (preset.type != lookup)
@@ -2653,7 +2653,7 @@ LlmProfile AppSettings::profileForWorkerType(SettingsKind kind, WorkerType type)
         if (!fromPreset.id.isEmpty())
             return fromPreset;
     }
-    // Совместимость со старыми настройками без пресетов.
+    // Compatibility with old settings that have no presets.
     LlmProfile profile = profileById(workerProfileId(kind, type));
     if (!profile.id.isEmpty())
         return profile;
@@ -2673,7 +2673,7 @@ QString AppSettings::workerProfileId(WorkerType type) const
 
 QString AppSettings::workerProfileId(SettingsKind kind, WorkerType type) const
 {
-    // Инструмент — тот же исполнитель, использует его профиль модели.
+    // A tool is the same executor and uses that executor's model profile.
     int row = 0;
     if (type == WorkerTypeExecutor || type == WorkerTypeTool)
         row = 1;
@@ -2786,7 +2786,7 @@ void AppSettings::ensureRootWorkerPresetId(WorkspaceSettings *bundle)
 {
     if (!bundle)
         return;
-    // Корень — пресет исполнителя.
+    // The root is an executor preset.
     if (!bundle->rootWorkerPresetId.trimmed().isEmpty())
     {
         foreach (const WorkerPreset &preset, bundle->workerPresets)

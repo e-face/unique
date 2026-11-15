@@ -107,7 +107,7 @@ public:
 #endif
     }
 
-    /** Разбудить поток: ожидание идёт на событии, а не в блокирующем чтении. */
+    /** Wake the thread: waiting is on an event, not a blocking read. */
     void requestStop()
     {
         _stop = 1;
@@ -511,8 +511,8 @@ void ProjectTreeDock::releaseFileModel()
 void ProjectTreeDock::setProjectRoot(QString path)
 {
     const QString root = QDir::cleanPath(path.trimmed());
-    // Тот же корень и дерево уже привязано: ничего не перестраивать,
-    // иначе каждый вызов перезапускал бы слежение за файлами.
+    // The same root and the tree is already bound: do not rebuild it,
+    // or every call would restart file watching.
     if (!root.isEmpty() && normalizePath(root) == normalizePath(_root)
         && _tree && _tree->model() == _proxy && _osWatch)
         return;
@@ -526,8 +526,8 @@ void ProjectTreeDock::setProjectRoot(QString path)
 
     if (_tree)
         _tree->setUpdatesEnabled(false);
-    // Сначала путь, потом модель: иначе Qt 5.9 падает на первом setRootPath
-    // у QFileSystemModel, уже показанного в QTreeView без корня.
+    // Set the path first, then the model: otherwise Qt 5.9 crashes on the first setRootPath
+    // of a QFileSystemModel already shown in a QTreeView with no root.
     const QModelIndex sourceRoot = _model->setRootPath(root);
     bindTreeModel();
     if (sourceRoot.isValid() && _proxy)
@@ -645,9 +645,9 @@ void ProjectTreeDock::clearWatches()
     stopOsWatch();
     if (!_watcher)
         return;
-    // Слежение ставится только на каталоги (и ограничено kMaxWatchDirs);
-    // список файлов раньше рос без предела — линейный поиск в addPath и
-    // отдельный хэндл ОС на каждый файл.
+    // Watching is set only on directories, and capped by kMaxWatchDirs.
+    // The file list used to grow without a limit: a linear search in addPath and
+    // a separate OS handle per file.
     const QStringList dirs = _watcher->directories();
     if (!dirs.isEmpty())
         _watcher->removePaths(dirs);
@@ -666,7 +666,7 @@ void ProjectTreeDock::stopOsWatch()
         delete thread;
     else
     {
-        // Поток ещё не проснулся: не убивать, пусть удалится сам.
+        // The thread has not woken yet: do not kill it; let it delete itself.
         connect(thread, SIGNAL(finished()), thread, SLOT(deleteLater()));
     }
 }
@@ -734,17 +734,17 @@ void ProjectTreeDock::addWatch(QString dir)
     const QString name = QFileInfo(clean).fileName();
     if (skipDirName(name) && QDir::cleanPath(_root) != clean)
         return;
-    // Один снимок списка вместо трёх копий QStringList на каждый вызов.
+    // One snapshot of the list instead of three QStringList copies per call.
     const QStringList watched = _watcher->directories();
     if (watched.size() >= kMaxWatchDirs)
         return;
     if (!watched.contains(clean))
         _watcher->addPath(clean);
-    // Содержимое каталога здесь не перечисляется: изменения приходят от
-    // ОС-наблюдателя (sltOsPathChanged) и от QFileSystemWatcher
-    // (sltDirectoryChanged). Прежний обход с QFileInfo на каждый файл стоил
-    // ~420 мс на каталог в 10 000 файлов и выполнялся при каждом раскрытии
-    // узла дерева и при каждом изменении каталога.
+    // Directory contents are not listed here. Changes come from
+    // the OS watcher (sltOsPathChanged) and from QFileSystemWatcher
+    // (sltDirectoryChanged). The old walk with a QFileInfo per file cost
+    // about 420 ms on a directory of 10,000 files and ran on every expand
+    // of a tree node and on every directory change.
 }
 
 //----------------------------------------------
@@ -792,8 +792,8 @@ void ProjectTreeDock::sltDirectoryChanged(const QString &path)
     const QString clean = QDir::cleanPath(path);
     if (clean.contains(QString::fromUtf8("/___project___")))
         return;
-    // Изменённые файлы ОС-наблюдатель называет точными путями; здесь достаточно
-    // подсветить сам каталог, не перечисляя его содержимое.
+    // The OS watcher names changed files with exact paths. Here it is enough
+    // to highlight the directory itself, without listing its contents.
     startFlash(clean);
 }
 
@@ -940,7 +940,7 @@ static bool pathIsInside(const QString &parentDir, const QString &childPath)
 
 //----------------------------------------------
 
-/** 0 — спросить, 1 — заменять все, 2 — пропускать все, 3 — отмена. */
+/** 0 means ask, 1 means replace all, 2 means skip all, 3 means cancel. */
 static int askReplaceFile(QWidget *parent, const QString &name, int *mode)
 {
     if (!mode)

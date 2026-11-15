@@ -24,11 +24,11 @@ class WorkerManager;
 //----------------------------------------------
 
 /**
- * @brief Страница настроек одного набора: defaults программы или проекта.
+ * @brief Settings page of one set: program defaults, or the project.
  *
- * SettingsKindDefaults — config/ рядом с exe; полные профили моделей только здесь.
- * SettingsKindProject — ___project___/; пресеты и лимиты ссылаются на профили
- * программы по id. Оформление UI только на странице defaults.
+ * SettingsKindDefaults is config/ next to the executable; full model profiles live only here.
+ * SettingsKindProject is ___project___/; presets and limits refer to program
+ * profiles by id. UI appearance is only on the defaults page.
  */
 class SettingsPage : public QScrollArea
 {
@@ -56,7 +56,7 @@ public slots:
 signals:
     void appearanceApplied();
     void profilesChanged();
-    /** Удалить живых воркеров текущего проекта, использовавших профиль. */
+    /** Delete live workers of the current project that used the profile. */
     void removeWorkersForProfile(const QString &profileId);
 
 private slots:

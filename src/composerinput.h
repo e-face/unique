@@ -24,8 +24,8 @@ class QWidget;
 //----------------------------------------------
 
 /**
- * @brief Поле ввода в стиле chat-composer: превью вложений внутри рамки,
- *        «+», Send/Stop, приём файлов drag-and-drop и вставка из буфера.
+ * @brief Chat-composer input: attachment previews inside the frame,
+ *        a plus button, Send/Stop, drag-and-drop files, and paste from the clipboard.
  */
 class ComposerInput : public QFrame
 {

@@ -19,7 +19,7 @@ class Worker;
 //----------------------------------------------
 
 /**
- * @brief Снимок открытого чата для записи на диск.
+ * @brief Snapshot of the open chat for writing to disk.
  */
 struct ChatSnapshot
 {
@@ -62,7 +62,7 @@ struct ChatSnapshot
 //----------------------------------------------
 
 /**
- * @brief Одна беседа: клиенты провайдеров, агент и виджет вкладки.
+ * @brief One conversation: provider clients, the agent, and the tab widget.
  */
 class ChatSession : public QObject
 {
@@ -92,8 +92,8 @@ public:
     bool restoreMinimized() const;
 
     /**
-     * @brief Снимок для записи. @p sealing — закрытие приложения: незавершённые
-     *        вызовы инструментов помечаются прерванными.
+     * @brief Snapshot for writing. @p sealing means application shutdown: unfinished
+     *        tool calls are marked interrupted.
      */
     ChatSnapshot snapshot(bool sealing = false) const;
     void applySnapshot(const ChatSnapshot &shot);
@@ -101,7 +101,7 @@ public:
     void ensureContentLoaded();
 
     /**
-     * @brief Содержимое (история/лента) изменилось с последней записи на диск.
+     * @brief Content (history or feed) has changed since the last write to disk.
      */
     bool contentDirty() const;
     void markContentDirty();
@@ -135,7 +135,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Состояние вкладок и окна для проекта.
+ * @brief Tab and window state for the project.
  */
 struct ProjectUiState
 {
@@ -148,7 +148,7 @@ struct ProjectUiState
 //----------------------------------------------
 
 /**
- * @brief Запись и чтение списка открытых чатов.
+ * @brief Writing and reading the list of open chats.
  */
 class ChatStore
 {

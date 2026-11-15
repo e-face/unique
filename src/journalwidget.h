@@ -15,7 +15,7 @@ class QTimer;
 //----------------------------------------------
 
 /**
- * @brief Запись постоянной ленты журнала (для сохранения в проект).
+ * @brief A permanent journal-feed record, saved into the project.
  */
 struct JournalEntry
 {
@@ -33,14 +33,14 @@ struct JournalEntry
 //----------------------------------------------
 
 /**
- * @brief Журнал: сводная лента чатов проекта.
+ * @brief Journal: the combined feed of the project's chats.
  *
- * Сообщения пользователя и ассистента — с подписью автора.
- * Вызовы функций в постоянную ленту не попадают. Текущее действие
- * в журнал не выводится: оно мерцает в строке состояния.
- * Заметки/ошибки — временные свёрнутые записи (новая замещает предыдущую).
- * Постоянные записи сохраняются в ___project___/journal.json
- * (не больше последних 100).
+ * User and assistant messages carry an author caption.
+ * Function calls do not enter the permanent feed. The current action
+ * is not printed in the journal: it flickers in the status line.
+ * Notes and errors are temporary collapsed records; a new one replaces the previous.
+ * Permanent records are saved in ___project___/journal.json
+ * (no more than the last 100).
  */
 class JournalWidget : public ConversationWidget
 {
@@ -52,16 +52,16 @@ public:
     void detachAgent(Agent *agent);
     void setAgentLabel(Agent *agent, QString label);
     void clearMessages();
-    /** Загрузить постоянную ленту из каталога текущего проекта. */
+    /** Load the permanent feed from the current project's directory. */
     void loadPersisted();
-    /** Сразу записать отложенные изменения на диск. */
+    /** Write deferred changes to disk immediately. */
     void flushPersist();
 
 signals:
     void workerChatRequested(const QString &workerId);
-    /** Текущее действие для строки состояния; пусто, когда запрос не выполняется. */
+    /** Current action for the status line; empty when no request is running. */
     void liveStatusChanged(const QString &text);
-    /** Яркость той же строки, 0…255. */
+    /** Brightness of that line, from 0 to 255. */
     void liveFadeChanged(int alpha);
 
 public slots:

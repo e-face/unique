@@ -10,10 +10,10 @@
 //----------------------------------------------
 
 /**
- * @brief Что модель умеет принимать/отдавать и какие параметры API допустимы.
+ * @brief What the model can accept and return, and which API parameters are allowed.
  *
- * Источник: provider /models (в т.ч. DeepSeek input_modalities),
- * OpenRouter /images/models|/models; иначе эвристика по modality+имени.
+ * Source: the provider /models catalog (including DeepSeek input_modalities),
+ * OpenRouter /images/models or /models; otherwise a heuristic by modality and name.
  */
 struct ModelCapabilities
 {
@@ -39,15 +39,15 @@ struct ModelCapabilities
     bool        supportsN;
     QStringList outputFormats;
     QString     source; // "openrouter_images" | "openrouter_models" | "heuristic"
-    // Имена и допустимые значения из каталога провайдера. Пусто, если API их не отдал.
+    // Names and allowed values from the provider catalog. Empty if the API did not return them.
     QString     providerParams;
-    // Путь запроса генерации, если каталог его сообщил. Пусто — стандартный.
+    // Generation request path if the catalog reported it. Empty means the standard path.
     QString     requestEndpoint;
-    // Категории референсных файлов, которые каталог (или эвристика) разрешил: image, audio, video.
+    // Reference-file categories the catalog or the heuristic allowed: image, audio, video.
     QStringList referenceModalities;
     QHash<QString, int> referenceMin;
     QHash<QString, int> referenceMax;
-    // Имя поля запроса из каталога для этой категории. Пусто — общее поле инструмента.
+    // Request field name from the catalog for this category. Empty means the tool's generic field.
     QHash<QString, QString> referenceField;
 
     bool acceptsText() const;
@@ -63,23 +63,23 @@ struct ModelCapabilities
 //----------------------------------------------
 
 /**
- * @brief Какие поля JSON исполнитель должен уметь заполнить для этой модальности.
+ * @brief Which JSON fields an executor must be able to fill for this modality.
  *
- * Пустая строка — это не медиа-модель (обычный LLM).
+ * An empty string means this is not a media model (an ordinary LLM).
  */
 QString mediaParamsLine(WorkerTaskKind kind, const ModelCapabilities &caps);
 
 /**
- * @brief Какие референсные файлы можно передать этой медиа-модели: image, audio, video.
+ * @brief Which reference files this media model accepts: image, audio, video.
  *
- * Пустой список — референсы не принимаются. Для обычной LLM всегда пусто.
+ * An empty list means references are not accepted. Always empty for an ordinary LLM.
  */
 QStringList referenceCategoriesFor(WorkerTaskKind kind, const ModelCapabilities &caps);
 
 //----------------------------------------------
 
 /**
- * @brief Кэш и загрузка capabilities по профилю модели.
+ * @brief Cache and loading of capabilities by model profile.
  */
 class ModelCapabilityService
 {
@@ -87,18 +87,18 @@ public:
     static ModelCapabilityService *instance();
 
     /**
-     * @brief Вернуть известные capabilities (сеть при miss / forceRefresh).
+     * @brief Return known capabilities (network on a miss, or when forceRefresh is set).
      */
     ModelCapabilities capabilitiesFor(const LlmProfile &profile,
                                       bool forceRefresh = false);
 
     /**
-     * @brief Кэш или эвристика — без сети (для частого UI).
+     * @brief Cache or heuristic, with no network, for frequent UI use.
      */
     ModelCapabilities cachedOrHeuristic(const LlmProfile &profile) const;
 
     /**
-     * @brief Только эвристика без сети (быстрый UI до fetch).
+     * @brief Heuristic only, with no network (a fast UI before fetch).
      */
     static ModelCapabilities heuristicFor(const LlmProfile &profile);
 

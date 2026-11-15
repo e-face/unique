@@ -18,9 +18,9 @@
 
 //----------------------------------------------
 
-/** Сколько символов отчёта ребёнка попадает в контекст родителя автоматически. */
+/** How many characters of a child's report enter the parent's context automatically. */
 static const int kChildResultReportChars = 2500;
-/** Длина метки задачи ребёнка в отчёте (полный текст уже есть в истории). */
+/** Length of the child's task label in the report (the full text is already in history). */
 static const int kChildTaskLabelChars = 120;
 
 //----------------------------------------------
@@ -160,7 +160,7 @@ QList<Worker *> Worker::unfinishedChildren() const
     QList<Worker *> list;
     foreach (Worker *child, _children)
     {
-        // Собеседники группы не «задачи»: главный не ждёт их complete_task.
+        // Group peers are not tasks: the chief does not wait for their complete_task.
         if (child && !child->isGroupInterlocutor() && !child->hasAnswered())
             list.append(child);
     }
@@ -192,9 +192,9 @@ void Worker::addChild(Worker *child)
     _children.append(child);
     child->setParentWorker(this);
     connect(child, SIGNAL(finished()), this, SLOT(sltChildFinished()));
-    // stateChanged детей намеренно не пробрасывается вверх: главное окно
-    // подписано на каждого воркера напрямую, а каскад по цепочке родителей
-    // давал O(глубина) полных перестроек интерфейса на одно изменение.
+    // Children's stateChanged is intentionally not forwarded upward: the main window
+    // is subscribed to every worker directly, and a cascade along the parent chain
+    // caused a full UI rebuild per depth level on one change.
 }
 
 //----------------------------------------------
@@ -397,17 +397,17 @@ void Worker::sendFollowUp(QString message)
         return;
     }
 
-    // Follow-up от родителя: историю не сворачиваем заранее — сжатие
-    // сработает само, когда контекст подойдёт к лимиту.
+    // A follow-up from the parent does not fold history in advance. Compression
+    // runs on its own when context approaches the limit.
     if (isTool())
     {
-        // Для инструмента каждое сообщение — самостоятельный запуск.
+        // For a tool, every message is a standalone run.
         _session->agent()->sendUserMessageAfterCompact(trimmed,
                                                        AgentUserIngressAssignment);
         return;
     }
-    // Групповые action-prompt не маскируем под «Follow-up from parent»
-    // (иначе модель думает, что задание переоткрыли).
+    // Do not disguise group action prompts as a follow-up from the parent
+    // (otherwise the model thinks the assignment was reopened).
     const bool groupAction =
         trimmed.startsWith(QString::fromUtf8("[Your turn as narrator]"))
         || trimmed.startsWith(QString::fromUtf8("[Group VOTE required]"))
@@ -470,7 +470,7 @@ void Worker::sltFlushFollowUps()
     WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
     if (manager && !manager->canStartNow())
     {
-        // Мест нет: встаём в очередь менеджера (не только state=Queued).
+        // No free slots: join the manager queue, not only when state is Queued.
         _completed = false;
         _skipIdleComplete = true;
         _result.clear();
@@ -540,10 +540,10 @@ void Worker::pushTaskAnchor()
 {
     if (!_session || !_session->agent())
         return;
-    // Формулировка задачи от родителя (или запрос пользователя для главного
-    // чата) при сжатии контекста остаётся дословно. У инструмента «задача» —
-    // очередной запрос на запуск, его закреплять не нужно: назначение
-    // инструмента уже в системном промпте.
+    // The task wording from the parent (or the user query for the main
+    // chat) stays verbatim when context is compressed. For a tool the task
+    // is the next run request and must not be pinned: the tool's purpose
+    // is already in the system prompt.
     _session->agent()->setTaskAnchor(isTool() ? QString() : _task);
 }
 
@@ -712,10 +712,10 @@ QString Worker::displayLabel() const
 
 QString Worker::shortLabelFromTask(QString task)
 {
-    // Тексты задач у соседних воркеров начинаются с одинаковой преамбулы
-    // (проект, правила, контекст), поэтому «первые 40 символов» не различают
-    // их. Ищем строку с явным заголовком задачи, иначе берём первую
-    // содержательную строку без markdown-мусора.
+    // Task texts of neighboring workers start with the same preamble
+    // (project, rules, context), so the first 40 characters do not tell
+    // them apart. Look for a line with an explicit task title, otherwise take the first
+    // meaningful line without markdown noise.
     const QStringList rawLines = task.split(QChar('\n'));
     QStringList lines;
     foreach (const QString &raw, rawLines)
@@ -742,7 +742,7 @@ QString Worker::shortLabelFromTask(QString task)
     }
     if (picked.isEmpty())
     {
-        // Заголовок markdown в начале — лучший кандидат.
+        // A markdown heading at the start is the best candidate.
         foreach (const QString &line, lines)
         {
             if (line.startsWith(QChar('#')))
@@ -758,7 +758,7 @@ QString Worker::shortLabelFromTask(QString task)
     picked.remove(QRegExp(QString::fromUtf8("^[#*\\-\\d.)\\s]+")));
     picked.remove(QString::fromUtf8("**"));
     picked = picked.simplified();
-    // Обрезаем по границе предложения, если суть уместилась в первое.
+    // Cut at a sentence boundary if the gist fits in the first sentence.
     const int stop = picked.indexOf(QRegExp(QString::fromUtf8("[.!?;]\\s")));
     if (stop >= 12)
         picked = picked.left(stop);
@@ -951,9 +951,9 @@ bool Worker::toolIsFree() const
 
 void Worker::beginToolRun(QString message)
 {
-    // Инструмент: первый запуск — как обычная задача (через очередь
-    // менеджера), дальнейшие — как продолжение той же беседы, чтобы
-    // накопленный опыт (команды, пути, ошибки) не терялся.
+    // A tool's first run is an ordinary task through the
+    // manager queue. Later runs continue the same conversation so
+    // accumulated experience (commands, paths, errors) is not lost.
     const QString trimmed = message.trimmed();
     if (trimmed.isEmpty())
         return;
@@ -963,8 +963,8 @@ void Worker::beginToolRun(QString message)
     {
         _toolStarted = true;
         _task = trimmed;
-        // После восстановления инструмент может числиться «ответившим» —
-        // иначе requestStart() молча откажется его запускать.
+        // After restore a tool may be marked as having answered.
+        // Otherwise requestStart() silently refuses to start it.
         _completed = false;
         if (answeredState(_state))
             setState(WorkerStateIdle);
@@ -1238,8 +1238,8 @@ void Worker::resumeAfterRestore()
 
     if (isTool())
     {
-        // Запросивший воркер после перезапуска уже не ждёт результата:
-        // просто освобождаем инструмент для новых запусков.
+        // The requesting worker no longer waits for the result after a restart:
+        // just free the tool for new runs.
         _completed = true;
         _skipIdleComplete = false;
         _pendingFollowUps.clear();
@@ -1262,9 +1262,9 @@ void Worker::resumeAfterRestore()
         return;
     }
 
-    // История чата грузится только там, где она нужна сразу: инструментам —
-    // нет, а воркер в очереди прочитает её сам в startTask(). Раньше при
-    // открытии проекта читались чаты всех незавершённых воркеров подряд.
+    // Chat history is loaded only where it is needed immediately. Tools do not
+    // load it, and a queued worker reads it itself in startTask(). Previously,
+    // opening a project read the chats of every unfinished worker in a row.
     if (_session)
         _session->ensureContentLoaded();
 
@@ -1427,7 +1427,7 @@ QString Worker::composeStartPrefix() const
                 arch = arch.left(1497) + QString::fromUtf8("...");
             parts.append(QString::fromUtf8("Architecture (from your manager):\n") + arch);
         }
-        // Handoff — в injectContext, не в тексте задания (журнал показывает чистое задание).
+        // Handoff goes into injectContext, not into the assignment text (the journal shows a clean assignment).
         QString handoff = QString::fromUtf8(
             "CONTEXT HANDOFF (use this; do not ignore):\n"
             "--- parent brief ---\n%1\n")
@@ -1499,7 +1499,7 @@ void Worker::startTask()
     WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
     if (manager && workerTaskKindIsMediaExecutor(manager->modalityOf(this)))
     {
-        // Image/speech/audio/video/embedding — без chat tool_calls.
+        // Image, speech, audio, video, and embedding do not use chat tool calls.
         pushTaskAnchor();
         _session->agent()->recordLocalExchange(
             _task, QString(), AgentUserIngressAssignment);
@@ -1542,9 +1542,9 @@ void Worker::complete(QString result, bool ok)
     }
     if (_completed)
         return;
-    // Наверх уходит только отчёт модели: она уже пересказала детей, а их
-    // полные результаты остаются доступны через get_child_result. Сводку по
-    // детям добавляем лишь когда отчёта нет вовсе.
+    // Only the model's report goes up: it already retold the children, and their
+    // full results stay available through get_child_result. A children summary
+    // is added only when there is no report at all.
     QString text = result.trimmed();
     if (text.isEmpty() || text == QString::fromUtf8("(no output)"))
         text = composeParentReport();
@@ -1614,8 +1614,8 @@ QString Worker::childResultsReport() const
                     .arg(child->id(),
                          workerTypeToString(child->type()),
                          workerStateToString(child->state()));
-        // Полный текст задачи уже есть в истории родителя (аргументы
-        // delegate_task) — даём лишь короткую метку для ориентировки.
+        // The full task text is already in the parent's history (the
+        // delegate_task arguments). Give only a short label for orientation.
         QString task = child->task().simplified();
         if (task.size() > kChildTaskLabelChars)
             task = task.left(kChildTaskLabelChars - 3) + QString::fromUtf8("...");
@@ -1652,7 +1652,7 @@ QString Worker::childOutcomesSummary() const
     if (_children.isEmpty())
         return QString();
 
-    // Свежие делегирования в этом батче — первыми (приоритет, не отсечение).
+    // Fresh delegations in this batch come first (priority, not a cutoff).
     QList<Worker *> ordered;
     QList<Worker *> seen;
     foreach (Worker *child, _delegatedThisBatch)
@@ -1760,7 +1760,7 @@ QString Worker::askPermission(QString action, bool offerAlways, QString alwaysKe
     if (offerAlways && !key.isEmpty()
         && AppSettings::instance()->isCommandAlwaysAllowed(key))
         return QString::fromUtf8("approved: always");
-    // Правка настроек и профилей всегда спрашивает, даже при автоподтверждении.
+    // Editing settings and profiles always asks, even with auto-approve.
     if (!forceDialog && AppSettings::instance()->autoApprovePermissions())
         return QString::fromUtf8("approved");
 
@@ -2265,7 +2265,7 @@ void Worker::sltBusyChanged(bool busy)
             setState(WorkerStateRunning);
         return;
     }
-    // Инструмент освободился: менеджер запустит следующий запрос из очереди.
+    // The tool is free: the manager starts the next request from the queue.
     if (isTool())
         emit stateChanged();
     if (_userStopped)
@@ -2281,7 +2281,7 @@ void Worker::sltBusyChanged(bool busy)
         || _state == WorkerStateWaitingContinuation
         || _state == WorkerStateWaitingChildren)
         return;
-    // Пауза на решение по бюджету функций — не конец хода.
+    // A pause for a function-budget decision is not the end of the turn.
     if (_session && _session->agent() && _session->agent()->isWaitingToolBudget())
         return;
     QMetaObject::invokeMethod(this, "sltIdleAfterBusy", Qt::QueuedConnection);
@@ -2343,14 +2343,14 @@ void Worker::sltIdleAfterBusy()
         return;
     if (_state != WorkerStateRunning)
         return;
-    // Участники активного группового диалога не завершают задачу между репликами.
+    // Members of an active group dialogue do not finish the task between turns.
     if (!_groupId.isEmpty())
     {
         WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
         if (manager && manager->isGroupDialogueActive(_groupId))
         {
-            // Оратор/голосующий ушёл в idle без действия — снова разбудить,
-            // иначе остальные навсегда остаются в group_await.
+            // A speaker or voter went idle without an action. Wake them again,
+            // otherwise the others stay in group_await forever.
             if (manager->groupParticipantShouldAct(this))
             {
                 setState(WorkerStateIdle);
@@ -2360,8 +2360,8 @@ void Worker::sltIdleAfterBusy()
             setState(WorkerStateIdle);
             return;
         }
-        // После единогласного DONE: собеседники автозавершаются с outcome,
-        // chief (не root) должен вызвать complete_task — иначе один авто-отчёт.
+        // After a unanimous DONE, peers finish automatically with the outcome.
+        // The chief (not the root) must call complete_task; otherwise there is one automatic report.
         if (manager && manager->isGroupDialogueDone(_groupId))
         {
             const QString outcome = manager->groupDialogueOutcome(_groupId);
@@ -2389,7 +2389,7 @@ void Worker::sltIdleAfterBusy()
                 complete(QString::fromUtf8("Group dialogue DONE:\n%1").arg(outcome), true);
                 return;
             }
-            // Root chief: диалог закончен — idle без авто-complete в «parent».
+            // Root chief: the dialogue is over. Stay idle, with no automatic complete to the parent.
             setState(WorkerStateIdle);
             return;
         }
@@ -2518,7 +2518,7 @@ void Worker::sltPruneUnusedChildren()
         else
             ++child->_unusedParentTurns;
     }
-    // Завершённых детей не удаляем автоматически: родитель может многократно
-    // перезапустить их через delegate_task(worker_id=...) с новыми указаниями.
+    // Finished children are not deleted automatically: the parent can restart
+    // them many times through delegate_task(worker_id=...) with new instructions.
     _touchedThisTurn.clear();
 }

@@ -26,7 +26,7 @@ struct PermissionGrant
 //----------------------------------------------
 
 /**
- * @brief Профиль модели: имя, адрес API, модель, токен, класс задач и баланс.
+ * @brief Model profile: name, API address, model, token, task class, and balance.
  */
 struct LlmProfile
 {
@@ -42,47 +42,47 @@ struct LlmProfile
     QString baseUrl;
     QString model;
     QString apiKey;
-    /** Класс задач API: llm / image / speech / audio / video / embedding / decisions / other. */
+    /** API task class: llm / image / speech / audio / video / embedding / decisions / other. */
     WorkerTaskKind modality;
     /**
-     * @brief Краткое назначение модели (для воркеров: когда выбирать этот профиль).
-     *        Например: «генерация картинок» vs «сегментация объектов на изображении».
+     * @brief Short purpose of the model (so workers know when to pick this profile).
+     *        For example: "image generation" versus "object segmentation".
      */
     QString purpose;
     /**
-     * @brief URL или путь относительно baseUrl для запроса баланса.
-     *        Пусто — баланс не запрашивается.
+     * @brief Balance URL, or a path relative to baseUrl.
+     *        Empty — balance is not requested.
      */
     QString balanceUrl;
     /**
-     * @brief Точечный путь к числу в JSON (например balance_infos.0.total_balance).
-     *        Пусто — авторазбор типичных ответов (DeepSeek и др.).
+     * @brief Dotted path to a number in JSON (for example balance_infos.0.total_balance).
+     *        Empty — typical responses (DeepSeek and others) are parsed automatically.
      */
     QString balanceJsonPath;
     /**
-     * @brief Путь запроса генерации (от baseUrl или полный URL).
-     *        Пусто — стандартные OpenAI-совместимые пути для класса задач.
+     * @brief Generation request path (relative to baseUrl, or a full URL).
+     *        Empty — the standard OpenAI-compatible paths for the task class.
      */
     QString requestPath;
     /**
-     * @brief Шаблон опроса асинхронной задачи с {id}, например /tasks/{id}.
-     *        Пусто — ссылка из ответа провайдера или /tasks/{id}.
+     * @brief Async task poll template with {id}, for example /tasks/{id}.
+     *        Empty — the link from the provider response, or /tasks/{id}.
      */
     QString taskPath;
     /**
-     * @brief Каталог моделей со схемой параметров (от baseUrl или полный URL).
-     *        Пусто — /models.
+     * @brief Model catalog with the parameter schema (relative to baseUrl, or a full URL).
+     *        Empty — /models.
      */
     QString catalogUrl;
     /**
-     * @brief JSON-объект: поля, добавляемые в каждый запрос генерации,
-     *        если их не задал вызывающий. Пусто — ничего.
+     * @brief JSON object: fields added to every generation request
+     *        when the caller did not set them. Empty — nothing.
      */
     QString extraBody;
-    /** Максимум вызовов функций за ход воркера с этим профилем. */
+    /** Maximum function calls per worker turn with this profile. */
     int maxToolIterations;
     /**
-     * @brief Потолок контекста (токены). 0 — полное окно модели.
+     * @brief Context ceiling (tokens). 0 — the full model window.
      */
     int contextCap;
 };
@@ -90,7 +90,7 @@ struct LlmProfile
 //----------------------------------------------
 
 /**
- * @brief Счётчики токенов одной роли воркера.
+ * @brief Token counters for one worker role.
  */
 struct RoleUsageStats
 {
@@ -111,7 +111,7 @@ struct RoleUsageStats
 //----------------------------------------------
 
 /**
- * @brief Сводка использования модели: запросы, токены и разбивка по ролям.
+ * @brief Model usage summary: requests, tokens, and a breakdown by role.
  */
 struct UsageStats
 {
@@ -134,7 +134,7 @@ struct UsageStats
     qint64 totalTokens;
     qint64 cachedPromptTokens;
     qint64 requestCount;
-    /** Суммарное время запросов к модели и вызовов функций, миллисекунды. */
+    /** Total time of model requests and function calls, in milliseconds. */
     qint64 workMs;
     QMap<QString, RoleUsageStats> byRole;
 };
@@ -144,21 +144,21 @@ struct UsageStats
 //----------------------------------------------
 
 /**
- * @brief Настройки воркеров/API/доступов: либо defaults программы, либо проекта.
- * Полные профили моделей живут только в defaults.
+ * @brief Worker, API, and permission settings: either program defaults or the project.
+ * Full model profiles live only in defaults.
  */
 enum SettingsKind
 {
-    /** Значения по умолчанию в config/ — ими инициализируется новый проект. */
+    /** Defaults in config/ — a new project is initialized from them. */
     SettingsKindDefaults = 0,
-    /** Настройки открытого проекта в ___project___/ — независимы от defaults. */
+    /** Settings of the open project in ___project___/ — independent of defaults. */
     SettingsKindProject = 1
 };
 
 //----------------------------------------------
 
 /**
- * @brief Рабочий набор настроек (профили только в defaults; в проекте — ссылки).
+ * @brief Working settings bundle (profiles only in defaults; the project stores references).
  */
 struct WorkspaceSettings
 {
@@ -169,14 +169,14 @@ struct WorkspaceSettings
     bool                   shellControl;
     bool                   outsideFilesControl;
     bool                   systemSettingsControl;
-    /** Заполняется только для SettingsKindDefaults (config/ai). */
+    /** Filled only for SettingsKindDefaults (config/ai). */
     QList<LlmProfile>      profiles;
     QList<WorkerPreset>    workerPresets;
-    /** Пресет корневого воркера при создании проекта / пустого сеанса. */
+    /** Root worker preset when a project or an empty session is created. */
     QString                rootWorkerPresetId;
     /**
-     * Идентификаторы пресетов из настроек программы, которые в этом проекте
-     * удалили и не нужно подтягивать снова.
+     * Preset ids from the program settings that were removed in this project
+     * and must not be copied in again.
      */
     QSet<QString>          hiddenWorkerPresetIds;
     QString                workerProfileId[3];
@@ -188,13 +188,13 @@ struct WorkspaceSettings
 //----------------------------------------------
 
 /**
- * @brief Настройки приложения: defaults (config/) и проект (___project___/).
+ * @brief Application settings: defaults (config/) and the project (___project___/).
  *
- * Оформление UI и полные профили моделей — только в defaults (config/ai).
- * В проекте хранятся ссылки на профили (workerProfileId, preset.profileId)
- * плюс пресеты, лимиты и контроль действий. При создании проекта пресеты
- * копируются из defaults. Новый пресет в настройках программы дописывается
- * и в открытый проект; удалённый в проекте повторно не подтягивается.
+ * UI appearance and full model profiles live only in defaults (config/ai).
+ * The project stores profile references (workerProfileId, preset.profileId)
+ * plus presets, limits, and action control. Creating a project copies presets
+ * from defaults. A new preset in the program settings is also added to the
+ * open project; one deleted in the project is not copied back.
  */
 class AppSettings : public QObject
 {
@@ -203,22 +203,22 @@ public:
     static AppSettings *instance();
 
     /**
-     * @brief Каталог config рядом с exe (создаётся при необходимости).
+     * @brief config directory next to the executable (created when needed).
      */
     static QString configDir();
     /**
-     * @brief Каталог config/ai с текстовыми файлами профилей программы.
+     * @brief config/ai directory with the program's profile text files.
      */
     static QString aiProfilesDir();
     /**
-     * @brief Путь к config/settings.ini (defaults и оформление).
+     * @brief Path to config/settings.ini (defaults and appearance).
      */
     static QString settingsFilePath();
 
     void load();
     void save() const;
     void save(SettingsKind kind) const;
-    /** Сбросить отложенную запись настроек на диск (перед сменой проекта и т.п.). */
+    /** Flush deferred settings to disk (before switching projects, and similar). */
     void flushPersist();
     void setProjectRoot(QString root);
     QString projectRoot() const;
@@ -275,42 +275,42 @@ public:
     QColor  toolbarColor() const;
     QColor  borderColor() const;
     QColor  mutedTextColor() const;
-    /** Мягкая светлая заливка карточки воркера. */
+    /** Soft light fill of a worker card. */
     QColor  workerCardColor(WorkerType type, bool root = false) const;
     QColor  workerCardTextColor() const;
     QColor  workerCardMutedColor() const;
     QColor  selectionColor() const;
     QColor  scrollbarColor() const;
     bool    isLightTheme() const;
-    /** Фон ленты чата воркера: окно в светлой теме, панель чуть темнее в тёмной. */
+    /** Worker chat feed background: the window in a light theme, a slightly darker panel in a dark one. */
     QColor  chatBackgroundColor() const;
 
     /**
-     * @brief Показывать пересылаемый между воркерами контекст в чатах и журнале.
+     * @brief Show context forwarded between workers in chats and the journal.
      */
     bool showForwardedContext() const;
     void setShowForwardedContext(bool enabled);
 
     /**
-     * @brief Одобрять запросы подтверждения моделей без диалога.
+     * @brief Approve model confirmation requests without a dialog.
      */
     bool autoApprovePermissions() const;
     void setAutoApprovePermissions(bool enabled);
 
     /**
-     * @brief Модель сначала рассуждает, затем отвечает.
-     *        Выключено по умолчанию. Читается в момент запроса.
+     * @brief The model reasons first, then answers.
+     *        Off by default. Read at request time.
      */
     bool reasoningEnabled() const;
     void setReasoningEnabled(bool enabled);
 
     /**
-     * @brief Убирать из контекста только крупные тела файлов
-     *        и только когда модель просит FILE_DROP.
+     * @brief Drop only large file bodies from context,
+     *        and only when the model asks for FILE_DROP.
      */
     bool dropLargeContextFiles() const;
     void setDropLargeContextFiles(bool enabled);
-    /** Порог в килобайтах тела файла, лежащего в контексте. */
+    /** Threshold in kilobytes for a file body that sits in context. */
     int largeContextFileKb() const;
     void setLargeContextFileKb(int kb);
     int largeContextFileBytes() const;
@@ -320,15 +320,15 @@ public:
     void persistUiLanguage(QString code);
 
     /**
-     * @brief Геометрия и состояние главного окна/доков — настройки программы,
-     *        не привязаны к проекту.
+     * @brief Main window and dock geometry and state — program settings,
+     *        not tied to a project.
      */
     QByteArray mainWindowGeometry() const;
     QByteArray mainWindowState() const;
     void setMainWindowLayout(const QByteArray &geometry, const QByteArray &state);
     /**
-     * @brief Размеры сплиттеров левой колонки доков (ширина / высоты).
-     *        Нулевые значения — нет сохранённых размеров.
+     * @brief Splitter sizes of the left dock column (width / heights).
+     *        Zero means no saved sizes.
      */
     int leftDockWidth() const;
     int projectDockHeight() const;
@@ -336,23 +336,23 @@ public:
     void setMainWindowDockSplit(int leftWidth, int projectHeight, int graphHeight);
 
     /**
-     * @brief Учёт токенов одного ответа модели.
-     * @param role  ключ роли воркера (manager/executor/tester/tool/root) для разбивки.
+     * @brief Account tokens of one model reply.
+     * @param role  worker role key (manager/executor/tester/tool/root) for the breakdown.
      *
-     * Всегда добавляется в общую статистику приложения. Если открыт проект —
-     * дублируется в статистику этого проекта.
+     * Always added to the application totals. If a project is open,
+     * the same numbers are also added to that project's statistics.
      */
     void addUsage(int promptTokens, int completionTokens, int totalTokens,
                   int cachedPromptTokens = 0, QString role = QString());
     /**
-     * @brief Начать отрезок работы (запрос к модели или вызов функции).
-     *        Время попадёт в статистику в endWork.
+     * @brief Start a work span (a model request or a function call).
+     *        The time is added to statistics in endWork.
      */
     int beginWork();
     void endWork(int id);
     /**
-     * @brief Накопленное время плюс ещё идущие отрезки.
-     *        @p project — счётчик открытого проекта, иначе общий.
+     * @brief Accumulated time plus spans that are still running.
+     *        @p project — the open project's counter, otherwise the global one.
      */
     qint64 liveWorkMs(bool project) const;
     UsageStats globalUsage() const;
@@ -370,7 +370,7 @@ public:
     void resetUsage();
     void resetGlobalUsage();
     /**
-     * @brief Сбросить настройки и статистику открытого проекта как при создании.
+     * @brief Reset the open project's settings and statistics as if it were just created.
      */
     void reseedOpenProject();
 
@@ -386,12 +386,12 @@ public:
     int  llmTimeoutSec(SettingsKind kind) const;
     void setLlmTimeoutSec(int seconds);
     void setLlmTimeoutSec(SettingsKind kind, int seconds);
-    /** Полные профили — всегда из настроек программы (config/ai). */
+    /** Full profiles always come from the program settings (config/ai). */
     QList<LlmProfile> profiles() const;
     LlmProfile profileById(QString id) const;
     LlmProfile profileForWorkerType(WorkerType type) const;
     LlmProfile profileForWorkerType(SettingsKind kind, WorkerType type) const;
-    /** Профиль воркера: явный llmProfileId или профиль роли по умолчанию. */
+    /** Worker profile: an explicit llmProfileId, or the role's default profile. */
     LlmProfile profileForWorker(WorkerType type, QString llmProfileId) const;
     QString workerProfileId(WorkerType type) const;
     QString workerProfileId(SettingsKind kind, WorkerType type) const;
@@ -412,20 +412,20 @@ public:
     void updateWorkerPreset(SettingsKind kind, const WorkerPreset &preset, QString *error = 0);
     void removeWorkerPreset(QString id);
     void removeWorkerPreset(SettingsKind kind, QString id);
-    /** Пресеты, ссылающиеся на профиль (оба набора настроек). */
+    /** Presets that reference a profile (both settings sets). */
     QList<WorkerPreset> presetsUsingProfile(QString profileId) const;
     QList<WorkerPreset> presetsUsingProfile(SettingsKind kind, QString profileId) const;
-    /** Пресеты проекта с profileId, которого нет в списке профилей. */
+    /** Project presets whose profileId is missing from the profile list. */
     QList<WorkerPreset> orphanProjectPresets() const;
-    /** Удалить пресеты с данным profileId из defaults и/или проекта. */
+    /** Remove presets with this profileId from defaults and/or the project. */
     int removePresetsUsingProfile(QString profileId);
-    /** Удалить пресеты проекта с неизвестным profileId. */
+    /** Remove project presets with an unknown profileId. */
     int removeOrphanProjectPresets();
     QString workerPresetsSummary() const;
     QString workerPresetsSummary(SettingsKind kind) const;
 
     /**
-     * @brief Пресет воркера верхнего уровня (корень чата при создании проекта).
+     * @brief Top-level worker preset (chat root when a project is created).
      */
     QString rootWorkerPresetId() const;
     QString rootWorkerPresetId(SettingsKind kind) const;

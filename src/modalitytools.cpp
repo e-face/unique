@@ -153,7 +153,7 @@ static bool ttsContentMarkerLine(const QString &line, QString *restOut)
 
 //----------------------------------------------
 
-/** Достать реплику из «…» / "…" / “…” — без QRegExp (кириллица/UTF). */
+/** Pull a quoted line out of the text, without QRegExp (Cyrillic and UTF-8). */
 static QString ttsExtractQuotedSpeech(const QString &text)
 {
     struct Hit
@@ -258,7 +258,7 @@ static QString ttsStripInstructionWrapper(QString text)
     if (ttsContentMarkerLine(text, &rest) && !rest.isEmpty())
         text = rest;
 
-    // Хвост: «Верни аудио…» / Return the audio…
+    // Tail such as "Return the audio...".
     const QString low = text.toLower();
     static const char *tails[] = {
         " верни аудио", " верните аудио", " сообщи", " сообщите",
@@ -347,7 +347,7 @@ static QString ttsHeuristicPlainTask(QString task)
 
 //----------------------------------------------
 
-/** Итоговая строка для TTS: только речь, без мета-инструкций LLM. */
+/** Final string for TTS: speech only, without LLM meta-instructions. */
 static QString ttsSanitizeSpeakText(QString raw)
 {
     raw = raw.trimmed();
@@ -485,7 +485,7 @@ static QString submittedTaskId(const QJsonObject &root)
 
 //----------------------------------------------
 
-/** Ссылка на файл результата: ключ, где она лежала, и сам URL. */
+/** A link to a result file: the key it sat under, and the URL itself. */
 struct MediaLink
 {
     QString key;
@@ -558,11 +558,11 @@ static bool urlHasAnyExtension(const QString &url, const char *const *exts)
 //----------------------------------------------
 
 /**
- * @brief Все ссылки на файлы результата, подходящие под класс задач.
+ * @brief Every result-file link that fits the task class.
  *
- * kind: "image" | "video" | "audio". Сначала ссылки, у которых ключ или
- * расширение говорят о нужной модальности; если таких нет — любые ссылки,
- * кроме служебных (статус, превью, обложка).
+ * kind is "image", "video", or "audio". First, links whose key or
+ * extension says the needed modality; if there are none, any links
+ * except service ones (status, preview, cover).
  */
 static QStringList resultMediaUrls(const QJsonObject &root, const QString &kind)
 {
@@ -743,9 +743,9 @@ static bool takeAsyncMedia(ModalityApiClient *client, const QByteArray &body,
 //----------------------------------------------
 
 /**
- * @brief POST по пути профиля, либо по каталогу и стандартным путям.
- *        404/405 открывает следующий путь только когда путь профиля пуст.
- *        В ошибку попадают все попытки, а не только последняя.
+ * @brief POST along the profile path, or along the catalog and standard paths.
+ *        404 or 405 opens the next path only when the profile path is empty.
+ *        The error includes every attempt, not only the last one.
  */
 static ModalityApiClient::Result postToFirstEndpoint(ModalityApiClient *client,
                                                      const QStringList &standardPaths,
@@ -861,7 +861,7 @@ static QString saveImagePayload(ModalityApiClient *client, ProjectWorkspace *wor
     const QJsonArray data = response.value(QString::fromUtf8("data")).toArray();
     if (data.isEmpty())
     {
-        // Некоторые провайдеры кладут url/b64 в корень.
+        // Some providers put url or b64 at the root.
         QString b64 = response.value(QString::fromUtf8("b64_json")).toString();
         QString url = response.value(QString::fromUtf8("url")).toString();
         if (b64.isEmpty() && url.isEmpty())
@@ -1638,7 +1638,7 @@ QString GenerateImageTool::invoke(QString argumentsJson, bool *ok)
     const QJsonDocument doc = QJsonDocument::fromJson(result.body, &pe);
     if (!doc.isObject())
     {
-        // Сырые байты картинки
+        // Raw image bytes.
         if (result.body.size() > 32
             && (result.body.startsWith("\x89PNG")
                 || result.body.startsWith("\xFF\xD8")))
@@ -1846,7 +1846,7 @@ QString TextToSpeechTool::invoke(QString argumentsJson, bool *ok)
         return QString::fromUtf8("Speech audio: %1").arg(saved);
     }
 
-    // Ответ — сырые байты аудио (или JSON с ошибкой/url).
+    // The reply is raw audio bytes, or JSON with an error or a url.
     QByteArray bytes = result.body;
     QJsonParseError pe;
     const QJsonDocument doc = QJsonDocument::fromJson(result.body, &pe);
@@ -2389,7 +2389,7 @@ QString GenerateVideoTool::invoke(QString argumentsJson, bool *ok)
             if (url.isEmpty())
                 url = first.value(QString::fromUtf8("url")).toString();
         }
-        // Асинхронные job id (Sora и др.) — возвращаем статус, файл ещё не готов.
+        // Async job ids (Sora and others): return the status; the file is not ready yet.
         const QString id = obj.value(QString::fromUtf8("id")).toString();
         const QString status = obj.value(QString::fromUtf8("status")).toString();
         if (b64.isEmpty() && url.isEmpty() && !id.isEmpty())
@@ -2707,7 +2707,7 @@ QString ProposeDecisionTool::invoke(QString argumentsJson, bool *ok)
     }
     if (_owner)
         _owner->noteFileChanged(rel);
-    // Рядом JSON для машинного разбора.
+    // JSON alongside, for machine parsing.
     const QString jsonPath = QFileInfo(rel).path() + QChar('/')
                              + QFileInfo(rel).completeBaseName()
                              + QString::fromUtf8(".json");

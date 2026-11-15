@@ -27,7 +27,7 @@ class QWidget;
 //----------------------------------------------
 
 /**
- * @brief Карточка одного сообщения: один HTML-документ, без лейбла на строку.
+ * @brief One message card: a single HTML document, with no per-line label.
  */
 class ChatMessageFrame : public QFrame
 {
@@ -38,19 +38,19 @@ public:
                      QWidget *parent = 0, QString authorKey = QString());
     void applyTheme();
     /**
-     * @brief Ссылка в заголовке (например unique-worker:&lt;id&gt;).
+     * @brief Link in the header (for example unique-worker:<id>).
      */
     void setTitleLink(QString url);
-    /** Сменить подпись без пересоздания виджета (смена языка). */
+    /** Change the caption without recreating the widget (language change). */
     void setCaption(QString title, QString authorKey);
-    /** Текст после заголовка в свёрнутой строке. Пустая строка — только заголовок. */
+    /** Text after the header in a collapsed row. An empty string means the header only. */
     void setPreview(QString preview);
     /**
-     * @brief Добавить абзац (экранированный текст) в уже существующее сообщение.
+     * @brief Append a paragraph (escaped text) to an existing message.
      */
     void appendEscapedParagraph(QString text);
     /**
-     * @brief Добавить готовый HTML-абзац в уже существующее сообщение.
+     * @brief Append a ready HTML paragraph to an existing message.
      */
     void appendHtmlParagraph(QString html, QString previewSource);
 
@@ -90,7 +90,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Уникальный цвет имени автора (стабильный по имени, тёмные тона).
+ * @brief A unique color for the author's name (stable by name, dark tones).
  */
 namespace AuthorBadge
 {
@@ -103,7 +103,7 @@ QString titleHtml(QString title, QString authorKey = QString(),
 //----------------------------------------------
 
 /**
- * @brief Элемент визуальной ленты чата (не обязательно совпадает с историей модели).
+ * @brief A visual chat-feed item (not necessarily the same as model history).
  */
 struct ChatDisplayItem
 {
@@ -116,10 +116,10 @@ struct ChatDisplayItem
 //----------------------------------------------
 
 /**
- * @brief Виджет беседы: лента сообщений, шкала контекста, ввод.
+ * @brief Conversation widget: message feed, context meter, and input.
  *
- * Визуальная история не стирается при сжатии контекста модели —
- * оптимизатор меняет только то, что уходит в API.
+ * The visual history is not erased when the model context is compressed.
+ * The optimizer changes only what is sent to the API.
  */
 class ConversationWidget : public QWidget
 {
@@ -135,7 +135,7 @@ public:
     void setUserInputEnabled(bool enabled);
     bool userInputEnabled() const;
     /**
-     * @brief Подписи авторов в ленте (как в журнале): пользователь и этот воркер.
+     * @brief Author captions in the feed, as in the journal: the user and this worker.
      */
     void setAuthorLabels(QString userAuthor, QString assistantAuthor);
     void showPermissionRequest(QString action, bool offerAlways = false);
@@ -150,16 +150,16 @@ public:
     void applyTheme();
     bool hasActivePrompt() const;
     void setContextRowVisible(bool visible);
-    /** Шкала контекста и кнопка сжатия. Прервать остаётся. */
+    /** Context meter and compress button. Interrupt stays. */
     void setContextMeterVisible(bool visible);
     /**
-     * @brief Состояние воркера, перекрывающее показания агента
-     *        (ожидание детей, разрешения, очередь). Пусто — снять.
+     * @brief Worker state that overrides the agent's reading
+     *        (waiting for children, permission, or the queue). Empty clears it.
      */
     void setExternalActivity(QString text);
-    /** Подтянуть строку активности и кнопки, если работа началась до открытия чата. */
+    /** Refresh the activity line and buttons if work started before the chat was opened. */
     void syncRunningState();
-    /** Скрыть строку активности чата (в журнале своя строка). */
+    /** Hide the chat activity line (the journal has its own line). */
     void setChatLiveActionVisible(bool visible);
 
 signals:
@@ -229,9 +229,9 @@ private:
     void refreshActivity();
     QString userAuthorLabel() const;
     QString assistantAuthorLabel() const;
-    /** Заголовок пузыря по стабильному kind (для смены языка). */
+    /** Bubble title from a stable kind, so a language change can rebuild it. */
     QString titleForKind(const QString &kind) const;
-    /** Нормализовать kind старых записей ленты к стабильному коду. */
+    /** Normalize the kind of old feed records to a stable code. */
     QString normalizeDisplayKind(const ChatDisplayItem &item) const;
     void refreshDisplayTitles();
     void refreshContextBar();

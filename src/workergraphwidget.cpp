@@ -156,7 +156,7 @@ WorkerGraphWidget::WorkerGraphWidget(QWidget *parent)
 
 void WorkerGraphWidget::applyTheme()
 {
-    // Тот же фон, что у окна/ленты чата — без ступеньки яркости на вкладке.
+    // The same background as the window and the chat feed, with no brightness step on the tab.
     const QColor bg = AppSettings::instance()->isLightTheme()
                       ? AppSettings::instance()->windowColor()
                       : AppSettings::instance()->panelColor();
@@ -222,7 +222,7 @@ void WorkerGraphWidget::rebuild(WorkerManager *manager)
         const qreal width = layoutWorker(root, left, top);
         left += width + kHGap * 2;
     }
-    // Инструменты — отдельной колонкой справа от дерева, за разделителем.
+    // Tools sit in a separate column to the right of the tree, past a divider.
     if (!manager->tools().isEmpty())
     {
         const qreal treeRight = _scene->itemsBoundingRect().right();
@@ -230,7 +230,7 @@ void WorkerGraphWidget::rebuild(WorkerManager *manager)
         layoutTools(toolsLeft, top);
     }
 
-    // Пунктирные рамки групп обсуждения.
+    // Dotted frames of discussion groups.
     QSet<QString> drawnGroups;
     foreach (Worker *worker, manager->workers())
     {
@@ -312,8 +312,8 @@ qreal WorkerGraphWidget::layoutWorker(Worker *worker, qreal left, qreal top)
         return SchemaNodeItem::cardWidth();
     }
 
-    // Собеседников группы кладём рядом друг с другом, чтобы пунктирная
-    // рамка не захватывала обычных детей-исполнителей между ними.
+    // Place group peers next to each other so the dotted
+    // frame does not enclose ordinary executor children between them.
     QList<Worker *> peers;
     QList<Worker *> others;
     foreach (Worker *child, worker->children())
@@ -476,7 +476,7 @@ void WorkerGraphWidget::mousePressEvent(QMouseEvent *event)
         return;
     if (event->button() == Qt::RightButton)
     {
-        // Контекстное меню обработает contextMenuEvent.
+        // The context menu is handled by contextMenuEvent.
         event->accept();
         return;
     }

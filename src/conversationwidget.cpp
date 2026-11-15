@@ -41,7 +41,7 @@
 
 //----------------------------------------------
 
-// Сколько пузырей держим в виджете и сколько записей ленты храним на диске.
+// How many bubbles stay in the widget, and how many feed records are stored on disk.
 static const int kMaxVisibleBubbles  = 250;
 static const int kMaxDisplayLogItems = 1500;
 static const int kLiveActionHeight   = 24;
@@ -71,12 +71,12 @@ QString AuthorBadge::normalizeKey(QString author)
     QString key = author.trimmed();
     if (key.isEmpty())
         return QString::fromUtf8("?");
-    // Все варианты «от пользователя» — один цвет.
+    // Every variant that comes from the user uses one color.
     if (key == QString::fromUtf8("Вы")
         || key == QString::fromUtf8("Задача")
         || key.startsWith(QString::fromUtf8("Пользователь")))
         return QString::fromUtf8("Пользователь");
-    // «Имя · Создан» / «Имя · Ошибка» → цвет по имени.
+    // "Name · Created" / "Name · Error" takes its color from the name.
     const int sep = key.indexOf(QString::fromUtf8(" \xC2\xB7 "));
     if (sep > 0)
         key = key.left(sep).trimmed();
@@ -87,7 +87,7 @@ QString AuthorBadge::normalizeKey(QString author)
 
 QColor AuthorBadge::colorFor(QString authorKey)
 {
-    // Тёмные оттенки, согласованные с синим акцентом и палитрой графа воркеров.
+    // Dark shades aligned with the blue accent and the worker-graph palette.
     static const int kHues[] = {
         210, 160, 355, 280, 190, 25, 240, 330, 145, 40, 200, 300
     };
@@ -96,7 +96,7 @@ QColor AuthorBadge::colorFor(QString authorKey)
     const int hue = kHues[h % 12];
     const int sat = 52 + int((h >> 4) % 18);   // 52..69 %
     const bool light = AppSettings::instance()->isLightTheme();
-    // На светлой теме — тёмные; на тёмной чуть светлее, чтобы оставались читаемыми.
+    // On a light theme they stay dark; on a dark theme they are a bit lighter so they stay readable.
     const int lit = light
         ? (26 + int((h >> 8) % 12))            // 26..37 %
         : (52 + int((h >> 8) % 12));           // 52..63 %
@@ -221,7 +221,7 @@ void ChatMessageFrame::applyTheme()
             "a { color: %2; }")
                                                     .arg(text, accent));
     }
-    // Пересобрать HTML подписи — цвет автора зависит от светлой/тёмной темы.
+    // Rebuild the caption HTML: the author color depends on the light or dark theme.
     applyCollapsed();
 }
 
@@ -351,8 +351,8 @@ void ChatMessageFrame::fitDocumentHeight()
         _view->document()->setTextWidth(inner);
     }
 
-    // documentSize() дочитывает ленивую вёрстку: иначе высота — только
-    // уже видимый кусок, и развёрнутый текст остаётся обрезанным.
+    // documentSize() finishes lazy layout; otherwise the height is only
+    // the already visible piece, and expanded text stays clipped.
     qreal docH = _view->document()->documentLayout()
                      ? _view->document()->documentLayout()->documentSize().height()
                      : _view->document()->size().height();
@@ -661,7 +661,7 @@ void ConversationWidget::retranslateUi()
     if (_contextBar)
         refreshContextBar();
 
-    // Подписи пузырей («Функция», «Задание» …) — по kind, не по сохранённому языку.
+    // Bubble captions follow kind, not the language saved with the record.
     refreshDisplayTitles();
 }
 
@@ -719,8 +719,8 @@ void ConversationWidget::clearMessages()
             QLayoutItem *item = _messagesLayout->itemAt(i);
             if (!item || !item->widget())
                 continue;
-            // Только пузыри сообщений: служебные строки (чат / журнал)
-            // и растяжка layout трогать нельзя.
+            // Only message bubbles: service rows (chat and journal)
+            // and the layout stretch must not be touched.
             if (!qobject_cast<ChatMessageFrame *>(item->widget()))
                 continue;
             _messagesLayout->takeAt(i);
@@ -747,8 +747,8 @@ void ConversationWidget::restoreDisplayLog(const QList<ChatDisplayItem> &items)
     _restoring = true;
     clearMessages();
     _displayLog = items;
-    // На экран поднимаем только хвост ленты: сотни QTextBrowser
-    // в скрытой вкладке — это память и бесконечные пересчёты layout.
+    // Only the tail of the feed is put on screen: hundreds of QTextBrowser
+    // widgets in a hidden tab cost memory and endless layout recalculations.
     int first = 0;
     if (items.size() > kMaxVisibleBubbles)
         first = items.size() - kMaxVisibleBubbles;
@@ -764,7 +764,7 @@ void ConversationWidget::restoreDisplayLog(const QList<ChatDisplayItem> &items)
 
 static bool looksLikeInjectedStartupContext(const QString &text)
 {
-    // Старые чаты без hide_in_ui: служебный префикс воркера.
+    // Old chats without hide_in_ui: the worker's service prefix.
     return text.startsWith(QString::fromUtf8("Worker tree limits:"))
            || text.startsWith(QString::fromUtf8("You are a shared tool outside"))
            || text.contains(QString::fromUtf8("Available worker presets (pick preset_id"))
@@ -1865,8 +1865,8 @@ void ConversationWidget::sltToolCallFinished(const QString &name, const QString 
                    false, false, false, kind);
     _pendingToolName.clear();
     _pendingToolArgs.clear();
-    // Media-executor вызывает invokeTool без setBusy — иначе таймер
-    // «Выполняется функция …» продолжает тикать после завершения.
+    // A media executor calls invokeTool without setBusy; otherwise the
+    // running-function timer keeps ticking after completion.
     if (_agent && _agent->isBusy())
         setActivity(tr("Ожидание ответа модели"));
     else
@@ -1955,7 +1955,7 @@ bool ConversationWidget::isNearBottom() const
     QScrollBar *bar = _scroll->verticalScrollBar();
     if (!bar)
         return true;
-    // Небольшой порог: лёгкое отставание от края всё ещё считается «в конце».
+    // A small threshold: a slight lag from the edge still counts as being at the end.
     return bar->value() >= bar->maximum() - 48;
 }
 
@@ -1975,8 +1975,8 @@ void ConversationWidget::trimOldBubbles()
 {
     if (!_messagesLayout)
         return;
-    // В layout есть растяжка и служебные строки — удаляем только
-    // самый старый пузырь ChatMessageFrame.
+    // The layout has a stretch and service rows; remove only
+    // the oldest ChatMessageFrame bubble.
     while (_messagesLayout->count() > kMaxVisibleBubbles + 2)
     {
         int index = -1;
@@ -2015,8 +2015,8 @@ void ConversationWidget::sltScrollRangeChanged(int, int)
 
 void ConversationWidget::sltScrollValueChanged(int)
 {
-    // Пока ждём отложенную подкрутку вниз, value ещё не у края —
-    // не сбрасываем _pinBottom, иначе лента «отлипнет».
+    // While a deferred scroll-to-bottom is pending, value is not yet at the edge.
+    // Do not clear _pinBottom, or the feed will unstick.
     if (_scrollScheduled)
         return;
     _pinBottom = isNearBottom();
@@ -2028,8 +2028,8 @@ QWidget *ConversationWidget::addBubble(QString title, QString html, QString prev
                                        QString objectName, bool alignRight, bool collapsed,
                                        QString authorKey)
 {
-    // Фиксируем «прилипание» ДО изменения layout: иначе после вставки
-    // maximum уже больше value и лента всегда считалась бы не в конце.
+    // Capture the stuck-to-bottom flag BEFORE the layout change: after an insert
+    // maximum is already greater than value and the feed would always look not-at-end.
     if (!_restoring)
         _pinBottom = isNearBottom();
 

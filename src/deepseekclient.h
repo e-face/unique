@@ -6,7 +6,7 @@
 //----------------------------------------------
 
 /**
- * @brief Клиент DeepSeek Chat Completions (формат OpenAI).
+ * @brief DeepSeek Chat Completions client (OpenAI format).
  */
 class DeepSeekClient : public OpenAiCompatibleClient
 {

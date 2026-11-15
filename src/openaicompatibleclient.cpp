@@ -409,7 +409,7 @@ void OpenAiCompatibleClient::decorateRequestBody(QJsonObject *root, const LlmReq
     }
     if (qwen)
         root->insert(QString::fromUtf8("enable_thinking"), request.reasoning);
-    // Grok 4.5 и новее не выключает рассуждение. Снятая галочка — наименьшая глубина.
+    // Grok 4.5 and newer cannot turn reasoning off. An unchecked box means the smallest depth.
     if (grok)
         root->insert(QString::fromUtf8("reasoning_effort"),
                      request.reasoning ? QString::fromUtf8("high")
@@ -507,7 +507,7 @@ static QJsonArray redactContentPartsForInspect(const QJsonArray &parts)
 
 QString OpenAiCompatibleClient::encodeRequestText(const LlmRequest &request) const
 {
-    // Без редактирования base64 Inspect/логи съедают сотни МБ (32-bit → OOM).
+    // Without rewriting base64, Inspect and the logs eat hundreds of MB (32-bit runs out of memory).
     LlmRequest view = request;
     for (int i = 0; i < view.messages.size(); ++i)
     {
@@ -532,8 +532,8 @@ void OpenAiCompatibleClient::abort()
         LlmNetworkWorker::instance()->abortRequest(_activeRequestId);
         _activeRequestId = 0;
     }
-    // Иначе после Stop клиент остаётся busy=true, а сетевой callback
-    // с «aborted» отбрасывается (id уже обнулён) — следующий send падает.
+    // Otherwise after Stop the client stays busy, and the network callback
+    // with "aborted" is dropped because the id is already cleared, so the next send fails.
     setBusy(false);
 }
 
@@ -835,7 +835,7 @@ bool OpenAiCompatibleClient::parseResponse(const QByteArray &data, LlmResponse *
     response->usage.promptTokens = usage.value(QString::fromUtf8("prompt_tokens")).toInt();
     response->usage.completionTokens = usage.value(QString::fromUtf8("completion_tokens")).toInt();
     response->usage.totalTokens = usage.value(QString::fromUtf8("total_tokens")).toInt();
-    // Кеш префикса: OpenAI/Groq/Qwen — prompt_tokens_details.cached_tokens,
+    // Prefix cache: OpenAI, Groq, and Qwen use prompt_tokens_details.cached_tokens.
     // DeepSeek — prompt_cache_hit_tokens.
     int cached = usage.value(QString::fromUtf8("prompt_tokens_details")).toObject()
                      .value(QString::fromUtf8("cached_tokens")).toInt();

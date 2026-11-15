@@ -14,10 +14,10 @@ class QThread;
 //----------------------------------------------
 
 /**
- * @brief HTTP-запросы к LLM в отдельном потоке.
+ * @brief HTTP requests to the LLM on a separate thread.
  *
- * У каждого запроса есть сторожевой таймер: если сервер не ответил за
- * заданное время, запрос прерывается с ошибкой "timeout", а не висит вечно.
+ * Each request has a watchdog: if the server does not answer within
+ * the given time, the request is aborted with "timeout" instead of hanging forever.
  */
 class LlmNetworkWorker : public QObject
 {

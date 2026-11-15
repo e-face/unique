@@ -21,7 +21,7 @@ const int ProjectWorkspace::maxListEntries       = 1000;
 
 //----------------------------------------------
 
-/** Строго проверить, что байты — валидный UTF-8; при успехе вернуть текст. */
+/** Strictly check that the bytes are valid UTF-8; on success return the text. */
 static bool tryDecodeUtf8(const QByteArray &bytes, QString *out)
 {
     QTextCodec *utf8 = QTextCodec::codecForName("UTF-8");
@@ -54,8 +54,8 @@ QString ProjectWorkspace::decodeConsoleOutput(const QByteArray &bytes)
     if (tryDecodeUtf8(bytes, &text))
         return text;
 #ifdef Q_OS_WIN
-    // cmd.exe и системные утилиты пишут в OEM-странице (866 для русской
-    // Windows), а fromLocal8Bit ждёт ANSI (1251) — отсюда кракозябры.
+    // cmd.exe and system utilities write in the OEM code page (866 on a Russian
+    // Windows), while fromLocal8Bit expects ANSI (1251), which produces mojibake.
     static QTextCodec *oem = 0;
     static bool oemResolved = false;
     if (!oemResolved)

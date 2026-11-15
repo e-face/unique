@@ -57,7 +57,7 @@ void LlmNetworkWorker::ensureStarted()
 
 int LlmNetworkWorker::requestTimeoutMs() const
 {
-    // Читается в потоке вызывающего (GUI), где живут настройки.
+    // Read on the caller's thread (the GUI), where the settings live.
     return AppSettings::instance()->llmTimeoutSec() * 1000;
 }
 
@@ -102,8 +102,8 @@ void LlmNetworkWorker::trackReply(QNetworkReply *reply, int requestId, int timeo
 
     if (timeoutMs <= 0)
         return;
-    // Таймер — ребёнок ответа: умирает вместе с ним. Пока тело запроса
-    // ещё уходит на сервер, отсчёт перезапускается.
+    // The timer is a child of the reply and dies with it. While the request body
+    // is still going to the server, the countdown restarts.
     QTimer *watchdog = new QTimer(reply);
     watchdog->setSingleShot(true);
     watchdog->setInterval(timeoutMs);

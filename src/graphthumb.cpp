@@ -112,7 +112,7 @@ void GraphThumb::resizeEvent(QResizeEvent *event)
 void GraphThumb::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
-    // Фон даёт родительский dock-panel; лёгкий hover без второй «карточки».
+    // The background comes from the parent dock panel; a light hover without a second card.
     if (!_hover)
         return;
     QPainter p(this);

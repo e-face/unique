@@ -7,9 +7,9 @@
 //----------------------------------------------
 
 static const int kMessageOverheadTokens = 8;
-/** Результат функции длиннее этого в сводку идёт обрезанным. */
+/** A function result longer than this is truncated in the summary. */
 static const int kSummaryToolClipChars  = 6000;
-/** Прочие сообщения (ответы модели, реплики) режем мягче. */
+/** Other messages (model replies, utterances) are cut more gently. */
 static const int kSummaryTextClipChars  = 20000;
 
 //----------------------------------------------
@@ -68,7 +68,7 @@ int ContextOptimizer::estimateMessage(const LlmMessage &message) const
     tokens += estimateText(message.reasoningContent);
     tokens += estimateText(message.name);
     tokens += estimateText(message.toolCallId);
-    // Multimodal: грубая оценка image_url (base64 ≈ 0.75 байта/символ, ~1 ток/4 символа).
+    // Multimodal: a rough estimate of image_url (base64 is about 0.75 bytes per char, about 1 token per 4 chars).
     for (int i = 0; i < message.contentParts.size(); ++i)
     {
         const QJsonObject part = message.contentParts.at(i).toObject();
@@ -79,7 +79,7 @@ int ContextOptimizer::estimateMessage(const LlmMessage &message) const
         {
             const QString url = part.value(QString::fromUtf8("image_url")).toObject()
                                     .value(QString::fromUtf8("url")).toString();
-            // Верхняя граница ~1024 ток/картинка у DeepSeek Flash; не раздуваем смету.
+            // Upper bound of about 1024 tokens per image on DeepSeek Flash; do not inflate the estimate.
             tokens += qMin(1200, qMax(256, url.size() / 64));
         }
         else
@@ -305,8 +305,8 @@ QStringList ContextOptimizer::splitForSummary(const QList<LlmMessage> &oldPart,
     QStringList chunks;
     if (chunkTokenBudget < 500)
         chunkTokenBudget = 500;
-    // Одно сообщение не должно занимать больше порции: символов на токен
-    // в худшем случае около двух, берём с запасом.
+    // One message must not exceed a chunk: characters per token
+    // are about two in the worst case, so a margin is kept.
     const int hardClipChars = chunkTokenBudget * 2;
 
     QString current;
@@ -514,7 +514,7 @@ QString ContextOptimizer::messageAsPlain(const LlmMessage &message, int maxChars
         return QString();
     if (maxChars > 0 && body.size() > maxChars)
     {
-        // Голова и хвост: в конце вывода команд обычно итог (ошибка/успех).
+        // Head and tail: the end of command output is usually the result (error or success).
         const int head = maxChars * 2 / 3;
         const int tail = maxChars - head;
         body = body.left(head)

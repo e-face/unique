@@ -7,7 +7,7 @@ import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
 
-# Один литерал или несколько соседних "..." / '...' внутри tr(...).
+# One literal, or several adjacent "..." / '...' strings inside tr(...).
 TR_CALL_RE = re.compile(
     r'\btr\s*\(\s*((?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')(?:\s*(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'))*)',
     re.UNICODE,
@@ -147,7 +147,7 @@ def decode_c(s):
 
 
 def join_c_string_literals(blob):
-    """Склеить соседние C-литералы как делает компилятор."""
+    """Join adjacent C string literals the way the compiler does."""
     parts = []
     for lit in STR_LIT_RE.findall(blob):
         inner = lit[1:-1]

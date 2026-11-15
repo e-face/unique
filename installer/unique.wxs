@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+    <Package Name="Unique ($(var.ArchLabel))"
+             Manufacturer="e-face"
+             Version="0.2.1.0"
+             UpgradeCode="$(var.UpgradeCode)"
+             Scope="perMachine"
+             Compressed="yes">
+
+        <MajorUpgrade AllowSameVersionUpgrades="yes"
+                      DowngradeErrorMessage="A newer version of Unique is already installed." />
+        <MediaTemplate EmbedCab="yes" />
+
+        <Icon Id="UniqueIcon" SourceFile="$(var.Repo)/icon/unique.ico" />
+        <Property Id="ARPPRODUCTICON" Value="UniqueIcon" />
+
+        <StandardDirectory Id="$(var.ProgramFilesId)">
+            <Directory Id="INSTALLFOLDER" Name="Unique" />
+        </StandardDirectory>
+
+        <StandardDirectory Id="ProgramMenuFolder">
+            <Component Id="StartMenu" Guid="$(var.ShortcutGuid)">
+                <Shortcut Id="StartMenuShortcut"
+                          Name="Unique ($(var.ArchLabel))"
+                          Description="Unique"
+                          Target="[INSTALLFOLDER]Unique.exe"
+                          WorkingDirectory="INSTALLFOLDER"
+                          Icon="UniqueIcon" />
+                <RegistryValue Root="HKLM"
+                               Key="Software\\e-face\\Unique-$(var.ArchId)"
+                               Name="installed"
+                               Type="integer"
+                               Value="1"
+                               KeyPath="yes" />
+            </Component>
+        </StandardDirectory>
+
+        <Feature Id="Main">
+            <ComponentGroupRef Id="AppFiles" />
+            <ComponentRef Id="StartMenu" />
+        </Feature>
+    </Package>
+
+    <?include $(var.FilesWxi) ?>
+</Wix>

@@ -10,7 +10,7 @@
 //----------------------------------------------
 
 /**
- * @brief Роль сообщения в диалоге с языковой моделью.
+ * @brief Role of a message in the dialogue with the language model.
  */
 enum LlmRole
 {
@@ -23,7 +23,7 @@ enum LlmRole
 //----------------------------------------------
 
 /**
- * @brief Вызов функции, запрошенный моделью.
+ * @brief A function call requested by the model.
  */
 struct LlmToolCall
 {
@@ -39,11 +39,11 @@ struct LlmToolCall
 //----------------------------------------------
 
 /**
- * @brief Сообщение диалога.
+ * @brief A dialogue message.
  *
- * @a content — текст (UI, сводки, эвристика токенов).
- * @a contentParts — multimodal content для Chat Completions (text / image_url);
- *                   если не пусто, в API уходит массив parts вместо строки content.
+ * @a content is the text (UI, summaries, token heuristic).
+ * @a contentParts is multimodal content for Chat Completions (text / image_url);
+ *                   if non-empty, the API receives a parts array instead of the content string.
  */
 struct LlmMessage
 {
@@ -61,8 +61,8 @@ struct LlmMessage
     QString            reasoningContent;
     QList<LlmToolCall> toolCalls;
     /**
-     * @brief Служебный контекст для модели (injectContext): в API уходит,
-     *        в ленте чата не показывается.
+     * @brief Service context for the model (injectContext): it goes to the API
+     *        and is not shown in the chat feed.
      */
     bool               hideInUi;
 };
@@ -70,9 +70,9 @@ struct LlmMessage
 //----------------------------------------------
 
 /**
- * @brief Описание инструмента (функции) для модели.
+ * @brief Description of a tool (function) for the model.
  *
- * Поле @a parameters — JSON Schema объекта аргументов.
+ * The @a parameters field is a JSON Schema of the arguments object.
  */
 struct LlmTool
 {
@@ -88,10 +88,10 @@ struct LlmTool
 //----------------------------------------------
 
 /**
- * @brief Запрос к языковой модели.
+ * @brief A request to the language model.
  *
- * @a temperature < 0 означает «не передавать параметр».
- * @a maxTokens == 0 — не ограничивать явно.
+ * @a temperature below 0 means the parameter is not sent.
+ * @a maxTokens of 0 means no explicit limit.
  */
 struct LlmRequest
 {
@@ -107,14 +107,14 @@ struct LlmRequest
     QString           model;
     double            temperature;
     int               maxTokens;
-    /** Галочка в поле ввода: модель сначала рассуждает. По умолчанию выключено. */
+    /** Checkbox in the input field: the model reasons first. Off by default. */
     bool              reasoning;
 };
 
 //----------------------------------------------
 
 /**
- * @brief Учёт токенов в ответе провайдера.
+ * @brief Token accounting in the provider response.
  */
 struct LlmUsage
 {
@@ -129,14 +129,14 @@ struct LlmUsage
     int promptTokens;
     int completionTokens;
     int totalTokens;
-    /** Часть prompt-токенов, отданная провайдером из кеша префикса (дешевле). */
+    /** Part of the prompt tokens served by the provider from the prefix cache (cheaper). */
     int cachedPromptTokens;
 };
 
 //----------------------------------------------
 
 /**
- * @brief Ответ языковой модели.
+ * @brief The language model's reply.
  */
 struct LlmResponse
 {

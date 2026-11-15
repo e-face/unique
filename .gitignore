@@ -27,6 +27,17 @@ bin/
 *.Debug
 *.Release
 *.zip
+*.msi
+*.mp4
+*.pyc
+__pycache__/
 config/
+dist/
+ignore/
+.gitverse/
+# User settings and access tokens.
+settings.ini
+___project___/
+**/ai/*.ini
 .DS_Store
 Thumbs.db

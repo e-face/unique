@@ -10,7 +10,7 @@ class QLabel;
 //----------------------------------------------
 
 /**
- * @brief Миниатюра схемы воркеров (содержимое dock); клик открывает вкладку схемы.
+ * @brief Thumbnail of the worker schema (dock contents); a click opens the schema tab.
  */
 class GraphThumb : public QFrame
 {

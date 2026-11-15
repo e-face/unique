@@ -6,9 +6,9 @@
 //----------------------------------------------
 
 /**
- * @brief Клиент Qwen Cloud Chat Completions (OpenAI-совместимый DashScope).
+ * @brief Qwen Cloud Chat Completions client (OpenAI-compatible DashScope).
  *
- * Ключ: https://www.qwencloud.com/ (переменная DASHSCOPE_API_KEY или QWENCLOUD_API_KEY)
+ * Key: https://www.qwencloud.com/ (variable DASHSCOPE_API_KEY or QWENCLOUD_API_KEY).
  * API: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
  */
 class QwenCloudClient : public OpenAiCompatibleClient

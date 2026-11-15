@@ -7,11 +7,11 @@
 //----------------------------------------------
 
 /**
- * @brief Кешированный обзор проекта: дерево каталогов и ключевые файлы.
+ * @brief Cached project overview: the directory tree and key files.
  *
- * Собирается детерминированно, без вызова модели. Инвалидируется при
- * смене корня или записи файлов воркерами. Вкладывается в первое
- * сообщение ребёнка, чтобы тот не тратил токены на разведку.
+ * Built deterministically, without calling the model. Invalidated when
+ * the root changes or workers write files. Inserted into the child's first
+ * message so it does not spend tokens on scouting.
  */
 class ProjectBrief
 {

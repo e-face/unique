@@ -8,7 +8,7 @@ class QLabel;
 //----------------------------------------------
 
 /**
- * @brief Плоский заголовок дока в стиле остального UI (вместо native title bar).
+ * @brief Flat dock title in the style of the rest of the UI, instead of the native title bar.
  */
 class DockTitleBar : public QWidget
 {

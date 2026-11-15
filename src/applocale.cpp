@@ -10,7 +10,7 @@
 
 //----------------------------------------------
 
-static const char *kKnownLanguages[] = { "ru", "en", "zh" };
+static const char *kKnownLanguages[] = { "en", "ru", "zh" };
 
 //----------------------------------------------
 
@@ -23,7 +23,7 @@ void IniSourceTranslator::setMap(const QHash<QString, QString> &map)
 
 bool IniSourceTranslator::isEmpty() const
 {
-    // Без false Qt считает переводчик пустым и не вызывает translate().
+    // Without false, Qt treats the translator as empty and never calls translate().
     return _map.isEmpty();
 }
 
@@ -48,7 +48,7 @@ QString IniSourceTranslator::translate(const char *context, const char *sourceTe
 
 AppLocale::AppLocale(QObject *parent)
     : QObject(parent)
-    , _language(QString::fromUtf8("ru"))
+    , _language(QString::fromUtf8("en"))
     , _legacyInstalled(false)
 {
 }
@@ -78,7 +78,7 @@ QString AppLocale::normalizeLanguageCode(QString code)
     if (code == QString::fromUtf8("zh-cn") || code == QString::fromUtf8("zh_tw"))
         code = QString::fromUtf8("zh");
     if (code.isEmpty())
-        code = QString::fromUtf8("ru");
+        code = QString::fromUtf8("en");
     return code;
 }
 
@@ -140,8 +140,8 @@ void AppLocale::loadGuiIni(const QString &dir)
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return;
-    // Не QSettings: точки в ключах (settings.hint.presets) он режет на группы,
-    // и L() начинает возвращать сам ключ вместо текста.
+    // Not QSettings: it splits dots in keys (settings.hint.presets) into groups,
+    // and L() starts returning the key itself instead of the text.
     QTextStream stream(&file);
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     stream.setCodec("UTF-8");
@@ -234,14 +234,14 @@ void AppLocale::loadLegacyTranslator(const QString &dir)
             continue;
         QString source = line.left(sep);
         QString translation = line.mid(sep + 1);
-        // В файле переносы — \\n, обратный слэш — \\\\.
+        // In the file, a newline is the two characters backslash-n, and a backslash is doubled.
         source.replace(QString::fromUtf8("\\\\"), QString::fromUtf8("\x01"));
         translation.replace(QString::fromUtf8("\\\\"), QString::fromUtf8("\x01"));
         source.replace(QString::fromUtf8("\\n"), QString::fromUtf8("\n"));
         translation.replace(QString::fromUtf8("\\n"), QString::fromUtf8("\n"));
         source.replace(QString::fromUtf8("\x01"), QString::fromUtf8("\\"));
         translation.replace(QString::fromUtf8("\x01"), QString::fromUtf8("\\"));
-        // Пробелы по краям — часть ключа tr() (« с», « · собеседник», «, »).
+        // Spaces at the edges are part of the tr() key.
         if (!source.isEmpty() && !translation.isEmpty())
             map.insert(source, translation);
     }
@@ -265,9 +265,9 @@ void AppLocale::installLegacyTranslator()
         app->installTranslator(&_legacyTranslator);
         _legacyInstalled = true;
     }
-    // Не рассылаем LanguageChange каждому виджету: пузыри чата — это тоже
-    // виджеты, и полный обход заново пересчитывает всю ленту. Тексты
-    // обновляют retranslateUi по сигналу languageChanged.
+    // Do not broadcast LanguageChange to every widget: chat bubbles are widgets
+    // too, and a full walk recalculates the whole feed. Texts are
+    // updated by retranslateUi on the languageChanged signal.
 }
 
 //----------------------------------------------
@@ -288,7 +288,7 @@ bool AppLocale::setLanguage(QString code)
     code = normalizeLanguageCode(code);
     QStringList codes = availableLanguages();
     if (!codes.contains(code))
-        code = QString::fromUtf8("ru");
+        code = QString::fromUtf8("en");
     const bool changed = (code != _language);
     _language = code;
     reload();

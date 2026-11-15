@@ -1091,7 +1091,7 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
     const QString workerId = args.value(QString::fromUtf8("worker_id")).toString();
     const QString subtaskName = args.value(QString::fromUtf8("subtask")).toString();
     const QString presetId = args.value(QString::fromUtf8("preset_id")).toString().trimmed();
-    // Имя воркера: явный title, иначе имя подзадачи из плана, иначе суть из текста.
+    // Worker name: an explicit title, otherwise the subtask name from the plan, otherwise the gist of the text.
     QString title = args.value(QString::fromUtf8("title")).toString().simplified();
     if (title.isEmpty())
         title = subtaskName.simplified();
@@ -1175,7 +1175,7 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
             child->setTitle(title);
         child->markUsed();
         const QString previousState = workerStateToString(child->state());
-        // Завершённый ребёнок снова берёт задачу — родитель ждёт новый отчёт.
+        // A finished child takes the task again, and the parent waits for a new report.
         child->beginFollowUp(task);
         if (ok)
             *ok = true;
@@ -1500,14 +1500,14 @@ QString CompleteTaskTool::invoke(QString argumentsJson, bool *ok)
     }
     else if (evidenceVal.isString())
     {
-        // Совместимость: свободный текст → output, command помечаем legacy.
+        // Compatibility: free text becomes output, and command is marked legacy.
         evOutput = evidenceVal.toString().trimmed();
         if (!evOutput.isEmpty())
             evCommand = QString::fromUtf8("(unstructured evidence)");
     }
     const bool evidenceOk = (evCommand.size() >= 3 && evOutput.size() >= 20);
 
-    // Сдача своей части — не просьба родителю или пользователю доделать её.
+    // Handing in your own part is not a request for the parent or the user to finish it.
     if (!_owner->isCheckOnly() && reportHandsWorkUpward(result))
     {
         if (ok)
@@ -1519,7 +1519,7 @@ QString CompleteTaskTool::invoke(QString argumentsJson, bool *ok)
             "finished part.");
     }
 
-    // Независимая проверка закрывается только со структурированным свидетельством.
+    // An independent check closes only with structured evidence.
     if (_owner->isCheckOnly())
     {
         if (!hasVerified || !evidenceOk)
@@ -2281,8 +2281,8 @@ void RunCommandAgentTool::killProcessTree(QProcess *process)
     if (!process || process->state() == QProcess::NotRunning)
         return;
 #ifdef Q_OS_WIN
-    // kill() снимает только cmd.exe; сама программа (компилятор, сервер,
-    // запущенный exe) остаётся жить и держит файлы. Валим всё дерево.
+    // kill() stops only cmd.exe. The program itself (a compiler, a server,
+    // or a launched executable) stays alive and holds files. Kill the whole tree.
     const qint64 pid = process->processId();
     if (pid > 0)
     {
@@ -2396,7 +2396,7 @@ QString RunCommandAgentTool::invoke(QString argumentsJson, bool *ok)
             commandList.append(single);
     }
 
-    // Стоп прошлого вызова не должен отменять эту команду, не запустив её.
+    // Stopping the previous call must not cancel this command before it starts.
     _interrupted = false;
 
     if (commandList.isEmpty())
@@ -2457,8 +2457,8 @@ static bool looksLikeConsolePrompt(const QString &output)
 {
     if (output.isEmpty())
         return false;
-    // Вопрос почти всегда без завершающего перевода строки.
-    // «file.cpp:» в конце полной строки — обычный вывод компилятора.
+    // The question almost never ends with a trailing newline.
+    // "file.cpp:" at the end of a full line is ordinary compiler output.
     const bool incomplete = !output.endsWith(QChar('\n'))
                             && !output.endsWith(QChar('\r'));
     QString trimmed = output;
@@ -2561,8 +2561,8 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
     else if (outside && appSettings->outsideFilesControlEnabled()
              && appSettings->shellControlEnabled())
     {
-        // «Вне проекта» для shell имеет смысл только когда включён общий
-        // контроль командной строки; иначе срабатывало на конвейеры и env.
+        // "Outside the project" for the shell matters only when general
+        // command-line control is on. Otherwise it fired on pipelines and environment variables.
         decision = _owner->askPermission(action, rememberable, programKey);
     }
     else if (appSettings->shellControlEnabled())
@@ -2581,13 +2581,13 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
     QProcess process;
     process.setWorkingDirectory(workDir);
     process.setProcessChannelMode(QProcess::MergedChannels);
-    // Фоновый запуск не читает ввод. У обычной команды stdin — канал:
-    // вопрос в консоли показывается пользователю, ответ пишется сюда.
+    // A background launch does not read input. For an ordinary command, stdin is a channel:
+    // a console question is shown to the user, and the answer is written here.
     if (background)
         process.setStandardInputFile(QProcess::nullDevice());
     _runningProcess = &process;
-    // Фоновый запуск: cmd отдаёт программу системе через start и сразу выходит,
-    // а мы возвращаемся к модели, не дожидаясь завершения GUI/сервера.
+    // A background launch: cmd hands the program to the system via start and exits at once,
+    // and we return to the model without waiting for the GUI or the server to finish.
     QString shellCommand = command;
 #ifdef Q_OS_WIN
     if (background)
@@ -2717,7 +2717,7 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
     bytes += process.readAll();
     QString output = ProjectWorkspace::decodeConsoleOutput(bytes);
 
-    // Полный лог — в ___project___/tmp; в ответ модели — exit + file:line и ссылка.
+    // The full log is in ___project___/tmp. The model reply gets the exit code, file:line, and a link.
     QString logRel;
     if (_workspace && _workspace->ensureTempDir() && !output.isEmpty())
     {
@@ -2768,7 +2768,7 @@ QString RunCommandAgentTool::runOne(QJsonObject args, bool *ok)
         }
         else
         {
-            // Нет file:line — короткий превью начала/конца.
+            // When there is no file:line, use a short preview of the start and the end.
             const int budget = ProjectWorkspace::maxCommandReplyChars;
             if (output.size() <= budget)
                 replyBody = output;

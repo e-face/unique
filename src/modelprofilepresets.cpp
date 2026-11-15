@@ -424,7 +424,7 @@ QList<ModelProfilePreset> knownModelProfilePresets()
                        WorkerTaskKindEmbedding, QString::fromUtf8("https://api.mistral.ai/v1"),
                        QString::fromUtf8("mistral-embed"));
 
-    // Дефолтное назначение по классу задач, если не задано явно.
+    // Default purpose by task class when none was set explicitly.
     for (int i = 0; i < list.size(); ++i)
     {
         if (!list[i].purpose.trimmed().isEmpty())
@@ -459,7 +459,7 @@ QList<ModelProfilePreset> knownModelProfilePresets()
         }
     }
 
-    // Уточнения для известных специализаций внутри одного modality.
+    // Refinements for known specializations inside one modality.
     for (int i = 0; i < list.size(); ++i)
     {
         const QString m = list[i].model.toLower();

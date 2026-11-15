@@ -379,8 +379,8 @@ QString ChatStore::filePath()
 
 static QJsonArray contentPartsForStorage(const QJsonArray &parts)
 {
-    // На диск не пишем base64 media — иначе save-поток и JSON чата раздуваются
-    // до десятков МБ и на 32-bit часто валят процесс.
+    // Do not write base64 media to disk: the save thread and chat JSON would swell
+    // to tens of MB and often kill the process on 32-bit.
     QJsonArray out;
     for (int i = 0; i < parts.size(); ++i)
     {
@@ -472,7 +472,7 @@ LlmMessage ChatStore::messageFromJson(const QJsonObject &object)
     if (contentVal.isArray())
     {
         message.contentParts = contentVal.toArray();
-        // Текст для UI: склеить text-части.
+        // Text for the UI: join the text parts.
         QStringList texts;
         for (int i = 0; i < message.contentParts.size(); ++i)
         {
@@ -791,7 +791,7 @@ bool ChatStore::save(const QList<ChatSnapshot> &chats, QString activeId)
     root.insert(QString::fromUtf8("activeId"), activeId);
     root.insert(QString::fromUtf8("chats"), list);
 
-    // Индекс пишем только когда он реально изменился.
+    // Write the index only when it actually changed.
     static QString    s_lastIndexPath;
     static QByteArray s_lastIndexBytes;
     const QString path = indexPath();

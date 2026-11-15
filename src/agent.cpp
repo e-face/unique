@@ -13,19 +13,19 @@
 //----------------------------------------------
 
 static const int kDefaultMaxToolIterations = 1000;
-/** Заполнение окна, при котором перед запросом запускается сжатие. */
+/** Window fill at which compression runs before a request. */
 static const int kCompactRatioPermille     = 950;
-/** Заполнение, при котором сжимаем жёстче (меньше свежего хвоста). */
+/** Fill at which compression is harder (a shorter fresh tail). */
 static const int kEmergencyRatioPermille   = 980;
-/** Доля окна, оставляемая дословно как свежий хвост при обычном сжатии. */
+/** Share of the window kept verbatim as the fresh tail during normal compression. */
 static const int kTailKeepPermille         = 200;
-/** То же при аварийном сжатии. */
+/** The same share during emergency compression. */
 static const int kEmergencyTailPermille    = 80;
-/** Доля окна под одну порцию истории, отдаваемую модели на сводку. */
+/** Share of the window given to one history chunk sent to the model for a summary. */
 static const int kSummaryChunkPermille     = 450;
-/** Когда окно модели неизвестно: условный размер окна в токенах. */
+/** Assumed window size in tokens when the model window is unknown. */
 static const int kFallbackWindowTokens     = 32000;
-/** Потолок длины ответа-сводки. */
+/** Cap on the length of a summary reply. */
 static const int kSummaryMaxTokens         = 3000;
 
 static const QString kAnchorTaskPrefix = QString::fromUtf8(
@@ -268,10 +268,10 @@ Agent::Agent(QObject *parent)
 Agent::~Agent()
 {
     endModelWork();
-    // Клиент — соседний ребёнок ChatSession, созданный раньше агента, поэтому
-    // при разрушении сессии он удаляется первым. disconnect() по мёртвому
-    // указателю читал освобождённую память (падение в QObject::disconnect);
-    // соединения Qt рвёт сама при удалении любой из сторон.
+    // The client is a sibling child of ChatSession, created before the agent, so
+    // it is destroyed first when the session is torn down. disconnect() on a dead
+    // pointer read freed memory (a crash in QObject::disconnect);
+    // Qt itself drops connections when either side is destroyed.
     _client = 0;
 }
 
@@ -576,8 +576,8 @@ void Agent::setSystemPrompt(QString prompt)
     if (_systemPrompt == prompt)
         return;
     _systemPrompt = prompt;
-    // Уже идущий диалог не трогаем: смена system ломает префикс кеша
-    // провайдера. Новое значение попадёт в историю только при reset.
+    // An in-progress dialogue is left alone: changing system breaks the provider
+    // cache prefix. The new value enters history only on reset.
     if (!historyIsOnlySystem())
         return;
     if (!_busy)
@@ -666,8 +666,8 @@ void Agent::applyProfileLimits(const LlmProfile &profile)
         iterations = kDefaultMaxToolIterations;
     _toolBudgetChunk = iterations > 0 ? iterations : kDefaultMaxToolIterations;
     setMaxToolIterations(iterations);
-    // Сжимает и считает контекст только воркер с языковой моделью.
-    // Медиа-исполнитель ходит в API генерации и окна контекста не имеет.
+    // Only a worker with a language model compresses and counts context.
+    // A media executor calls the generation API and has no context window.
     _tracksContext = !workerTaskKindIsMediaExecutor(profile.modality);
     setContextCap(profile.contextCap);
     if (_tracksContext)
@@ -728,8 +728,8 @@ void Agent::resolveToolBudget(bool continueWork)
         _history.append(nudge);
     }
 
-    // Иначе сжатие контекста на этом ходе завершит агента, не запросив модель,
-    // и воркер отправит родителю промежуточный текст вместо продолжения.
+    // Otherwise context compression on this turn would finish the agent without
+    // asking the model, and the worker would send the parent intermediate text instead of continuing.
     _compactThenChat = true;
     setBusy(true);
     setPhase(PhaseChat);
@@ -787,8 +787,8 @@ bool Agent::isAnchorMessage(const LlmMessage &message) const
     if (!_followUpAnchor.isEmpty()
         && (text == _followUpAnchor || text == (kAnchorFollowUpPrefix + _followUpAnchor)))
         return true;
-    // Якорь прошлого follow-up (задача сменилась) — обычная история:
-    // уходит в сводку вместе со всем остальным.
+    // An anchor from a previous follow-up (the task changed) is ordinary history:
+    // it goes into the summary with everything else.
     return false;
 }
 
@@ -883,7 +883,7 @@ void Agent::setHistory(const QList<LlmMessage> &history)
         resetHistory();
     else
     {
-        // Промпт на диске мог устареть: всегда подставляем актуальный.
+        // The prompt on disk may be stale: always substitute the current one.
         if (_history.first().role == LlmRoleSystem && !_systemPrompt.trimmed().isEmpty())
             _history[0].content = effectiveSystemPrompt();
         _optimizer.repairToolTurns(&_history);
@@ -991,7 +991,7 @@ void Agent::beginUserTurn(QString text, int ingress, QJsonArray contentParts)
     user.role = LlmRoleUser;
     user.content = text;
     user.contentParts = contentParts;
-    // Служебный пинг видит только модель. В чат и в сохранённую ленту он не попадает.
+    // A service ping is visible only to the model. It does not enter the chat or the saved feed.
     user.hideInUi = (ingress == AgentUserIngressSystem);
     _history.append(user);
     if (!user.hideInUi)
@@ -1028,14 +1028,14 @@ void Agent::sendUserMessageAfterCompact(QString text, int ingress)
     if (_history.isEmpty())
         resetHistory();
 
-    // У медиа-воркера нет окна контекста — сводку моделью не запрашиваем.
+    // A media worker has no context window, so the model is not asked for a summary.
     if (!_tracksContext)
     {
         sendUserMessage(trimmed, ingress);
         return;
     }
 
-    // Сжимать нечего — обычная отправка.
+    // Nothing to compress: send as usual.
     int movable = 0;
     for (int i = (_history.first().role == LlmRoleSystem) ? 1 : 0; i < _history.size(); ++i)
     {
@@ -1102,8 +1102,8 @@ void Agent::abort()
     endModelWork();
     if (_client)
         _client->abort();
-    // Сжатие прервано: история осталась нетронутой, промежуточная сводка
-    // и отложенное сообщение не нужны.
+    // Compression was interrupted: history stayed intact; the intermediate summary
+    // and the deferred message are not needed.
     clearCompactState();
     setPhase(PhaseIdle);
     setBusy(false);
@@ -1220,7 +1220,7 @@ void Agent::sltResponseReceived(const LlmResponse &response)
 void Agent::sltClientFailed(const QString &error)
 {
     endModelWork();
-    // Поздний callback после Stop (или отмена, когда агент уже Idle).
+    // A late callback after Stop (or a cancel when the agent is already Idle).
     if (!_busy && _phase == PhaseIdle)
         return;
 
@@ -1345,15 +1345,15 @@ void Agent::runCompact(CompactMode mode)
         return;
     }
 
-    // Условное окно, когда модель его не сообщила: сжимать всё равно надо.
+    // Assumed window when the model did not report one: compression is still required.
     int window = contextLimit();
     if (window <= 0)
         window = kFallbackWindowTokens;
 
     const int oldBegin = (_history.first().role == LlmRoleSystem) ? 1 : 0;
 
-    // Свежий хвост, который остаётся дословно. При смене задачи — ничего:
-    // вся прежняя работа сворачивается в сводку.
+    // The fresh tail kept verbatim. On a task change, nothing is kept:
+    // all previous work is folded into the summary.
     int tailBudget = 0;
     if (mode == CompactRegular)
         tailBudget = window * kTailKeepPermille / 1000;
@@ -1365,8 +1365,8 @@ void Agent::runCompact(CompactMode mode)
     if (keepFrom < oldBegin)
         keepFrom = oldBegin;
 
-    // Хвост съел весь бюджет одним раундом (огромный результат функции):
-    // оставляем только последний раунд, остальное — в сводку.
+    // The tail ate the whole budget in one round (a huge function result):
+    // keep only the last round; the rest goes into the summary.
     if (keepFrom <= oldBegin && mode != CompactFull && _history.size() - oldBegin > 2)
     {
         keepFrom = _optimizer.expandKeepIndexForTools(_history, _history.size() - 1);
@@ -1379,8 +1379,8 @@ void Agent::runCompact(CompactMode mode)
     for (int i = oldBegin; i < _history.size(); ++i)
     {
         const LlmMessage &message = _history.at(i);
-        // Закреплённая формулировка задачи в сводку не идёт: она вернётся
-        // в историю дословно.
+        // The pinned task wording does not go into the summary: it returns
+        // to history verbatim.
         if (isAnchorMessage(message))
             continue;
         if (i < keepFrom)
@@ -1441,8 +1441,8 @@ void Agent::requestNextSummaryChunk()
                                                          !_taskAnchor.isEmpty());
     request.maxTokens = kSummaryMaxTokens;
     _lastEstimated = _optimizer.estimatePrompt(request.messages, QList<LlmTool>());
-    // Не вызывать requestAsText(), пока Inspect выключен: аргумент считается
-    // до входа в gateInspect и на multimodal (base64) раздувает память до OOM.
+    // Do not call requestAsText() while Inspect is off: the argument is built
+    // before the gateInspect check, and multimodal base64 blows memory up to OOM.
     if (_inspectIo)
         gateInspect(tr("Запрос сводки"), requestAsText(request));
     if (!_client)
@@ -1455,8 +1455,8 @@ void Agent::requestNextSummaryChunk()
 
 void Agent::finishCompactFallback(QString reason)
 {
-    // Модель не смогла: чтобы воркер не встал, оставшиеся порции уходят
-    // в историю текстовой выжимкой. Это исключение, а не режим работы.
+    // The model failed: so the worker does not stall, the remaining chunks go
+    // into history as a text extract. This is an exception, not the normal mode.
     QString summary = _runningSummary;
     if (!_summaryChunks.isEmpty())
     {
@@ -1502,8 +1502,8 @@ void Agent::continueAfterCompact()
         const int ingress = _pendingUserIngress;
         _pendingUserMessage.clear();
         _pendingUserIngress = AgentUserIngressHuman;
-        // Новая задача от родителя закрепляется: следующее сжатие оставит
-        // её дословно, а прежний follow-up уйдёт в сводку.
+        // A new task from the parent is pinned: the next compression keeps
+        // it verbatim, and the previous follow-up goes into the summary.
         _followUpAnchor = text;
         beginUserTurn(text, ingress);
     }
@@ -1592,7 +1592,7 @@ void Agent::requestCompletion()
         _lastEstimated = _optimizer.estimatePrompt(request.messages, request.tools);
         emitContextUsage();
     }
-    // См. requestNextSummaryChunk: requestAsText только при Inspect.
+    // See requestNextSummaryChunk: requestAsText only when Inspect is on.
     if (_inspectIo)
         gateInspect(tr("Запрос"), requestAsText(request));
     if (!_client)
@@ -1783,8 +1783,8 @@ void Agent::handleToolCalls(LlmMessage message)
         emit toolBudgetExhausted(chunk);
         return;
     }
-    // Между раундами функций контекст растёт быстрее всего: те же пороги,
-    // что и перед новым сообщением пользователя.
+    // Between function rounds context grows fastest: the same thresholds
+    // as before a new user message.
     maybeOptimizeThenComplete();
 }
 

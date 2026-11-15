@@ -89,7 +89,7 @@ static void collectTaskLinks(const QJsonValue &value, const QString &key, QStrin
         && !text.startsWith(QString::fromUtf8("https://"), Qt::CaseInsensitive))
         return;
     const QString low = key.toLower();
-    // Ссылка на статус задачи: ключ говорит об этом, или путь содержит /tasks/.
+    // A link to the task status: the key says so, or the path contains /tasks/.
     const bool linkKey = low.contains(QString::fromUtf8("status"))
                          || low.contains(QString::fromUtf8("poll"))
                          || low.contains(QString::fromUtf8("task"))
@@ -157,7 +157,7 @@ QStringList ModalityApiClient::taskStatusUrls(const QJsonObject &submitResponse,
     if (id.isEmpty())
         return urls;
 
-    // Рядом с путём запроса: /x/y/generations → /x/y/tasks/{id}, затем /x/tasks/{id} …
+    // Next to the request path: /x/y/generations becomes /x/y/tasks/{id}, then /x/tasks/{id}.
     QString rel = submitPath.trimmed();
     if (rel.startsWith(QString::fromUtf8("http://"), Qt::CaseInsensitive)
         || rel.startsWith(QString::fromUtf8("https://"), Qt::CaseInsensitive))
@@ -172,7 +172,7 @@ QStringList ModalityApiClient::taskStatusUrls(const QJsonObject &submitResponse,
         rel.remove(0, 1);
     QStringList parts = rel.split(QChar('/'), QString::SkipEmptyParts);
     if (!parts.isEmpty())
-        parts.removeLast(); // сам endpoint (generations, speech, …)
+        parts.removeLast(); // the endpoint itself (generations, speech, ...)
     QStringList derived;
     while (!parts.isEmpty())
     {
@@ -180,7 +180,7 @@ QStringList ModalityApiClient::taskStatusUrls(const QJsonObject &submitResponse,
         parts.removeLast();
     }
     const QString root = QString::fromUtf8("/tasks/%1").arg(id);
-    // Сначала корневой вариант, затем вложенные: у большинства API задачи общие.
+    // The root variant first, then nested ones: most APIs share tasks.
     QStringList ordered;
     ordered.append(root);
     ordered.append(derived);
@@ -228,7 +228,7 @@ QString ModalityApiClient::resolveUrl(QString relativeOrAbsolutePath) const
     QString rel = path;
     while (rel.startsWith(QChar('/')))
         rel.remove(0, 1);
-    // База уже кончается на /v1, а путь снова начинается с v1/.
+    // The base already ends in /v1, and the path starts with v1/ again.
     if (base.endsWith(QString::fromUtf8("/v1"), Qt::CaseInsensitive)
         && (rel == QString::fromUtf8("v1")
             || rel.startsWith(QString::fromUtf8("v1/"), Qt::CaseInsensitive)))

@@ -652,8 +652,8 @@ QString ReadFileAgentTool::readOne(QString relPath, int offset, int limit, bool 
     const QString text = ProjectWorkspace::decodeText(file.readAll());
     file.close();
 
-    // Куски с готовой командой продолжения: модель не должна перечитывать файл
-    // целиком — один следующий read_file с offset восстанавливает хвост.
+    // Chunks with a ready continuation command: the model must not reread the whole
+    // file. One next read_file with an offset restores the tail.
     const int startOffset = qMax(1, offset);
     const int lineLimit = qMax(0, limit);
     const QStringList lines = text.split(QChar('\n'));

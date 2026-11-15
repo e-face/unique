@@ -9,10 +9,10 @@
 //----------------------------------------------
 
 /**
- * @brief Общий интерфейс клиента языковой модели.
+ * @brief Common interface of a language-model client.
  *
- * Конкретные провайдеры (DeepSeek и др.) наследуются от этого класса
- * и реализуют отправку запросов через свой HTTP API.
+ * Concrete providers (DeepSeek and others) inherit this class
+ * and send requests through their own HTTP API.
  */
 class LlmClient : public QObject
 {
@@ -35,21 +35,21 @@ public:
     virtual bool isBusy() const = 0;
 
     /**
-     * @brief Размер окна контекста текущей модели (токены).
+     * @brief Context-window size of the current model, in tokens.
      */
     virtual int contextWindowTokens() const = 0;
     virtual void refreshModelCatalog();
 
     /**
-     * @brief Отправить запрос к модели.
+     * @brief Send a request to the model.
      *
-     * Результат приходит сигналом responseReceived() либо failed().
+     * The result arrives as responseReceived() or failed().
      */
     virtual void send(const LlmRequest &request) = 0;
     virtual void abort() = 0;
 
     /**
-     * @brief Тело запроса так, как оно уходит по сети (для просмотра).
+     * @brief The request body as it goes on the wire, for inspection.
      */
     virtual QString encodeRequestText(const LlmRequest &request) const;
 

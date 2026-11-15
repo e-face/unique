@@ -6,25 +6,25 @@
 //----------------------------------------------
 
 /**
- * @brief Вид воркера.
+ * @brief Kind of worker.
  *
- * В дереве только исполнитель. Инструмент — общий специалист вне дерева.
- * Manager и Tester оставлены в перечислении, чтобы старые файлы читались,
- * и сразу приводятся к исполнителю.
+ * In the tree, only an executor. A tool is a shared specialist outside the tree.
+ * Manager and Tester stay in the enum so old files can be read,
+ * and are immediately treated as an executor.
  */
 enum WorkerType
 {
     WorkerTypeManager,
     WorkerTypeExecutor,
     WorkerTypeTester,
-    /** Инструмент: исполнитель без родителя, общий для всех, многоразовый. */
+    /** A tool: an executor with no parent, shared by everyone, and reusable. */
     WorkerTypeTool
 };
 
 //----------------------------------------------
 
 /**
- * @brief Состояние воркера на схеме и в цикле задачи.
+ * @brief Worker state on the schema and in the task loop.
  */
 enum WorkerState
 {
@@ -41,14 +41,14 @@ enum WorkerState
 //----------------------------------------------
 
 /**
- * @brief Роль воркера в группе обсуждения.
+ * @brief A worker's role in a discussion group.
  */
 enum GroupRole
 {
     GroupRoleNone = 0,
-    /** Принимает задачи от родителя/пользователя, может ставить задачи детям. */
+    /** Accepts tasks from the parent or the user, and may assign tasks to children. */
     GroupRoleChief,
-    /** Собеседник: обсуждает и действует, но не ставит задачи детям. */
+    /** A peer: discusses and acts, but does not assign tasks to children. */
     GroupRoleInterlocutor
 };
 
@@ -82,7 +82,7 @@ inline GroupRole groupRoleFromString(QString value)
 //----------------------------------------------
 
 /**
- * @brief Класс задач, которые решает пресет / профиль модели.
+ * @brief Task class solved by a preset or a model profile.
  */
 enum WorkerTaskKind
 {
@@ -158,7 +158,7 @@ inline WorkerTaskKind workerTaskKindFromString(QString value)
 //----------------------------------------------
 
 /**
- * @brief Медиа/векторные modality: без chat tool_calls — прямой executor.
+ * @brief Media and vector modalities: no chat tool calls, a direct executor.
  */
 inline bool workerTaskKindIsMediaExecutor(WorkerTaskKind kind)
 {
@@ -178,7 +178,7 @@ inline bool workerTaskKindIsMediaExecutor(WorkerTaskKind kind)
 //----------------------------------------------
 
 /**
- * @brief Нужен обычный LLM chat-цикл (tool_calls).
+ * @brief An ordinary LLM chat cycle (tool calls) is required.
  */
 inline bool workerTaskKindUsesAgentChat(WorkerTaskKind kind)
 {
@@ -188,10 +188,10 @@ inline bool workerTaskKindUsesAgentChat(WorkerTaskKind kind)
 //----------------------------------------------
 
 /**
- * @brief Заранее заданный шаблон воркера: роль + профиль модели.
+ * @brief A predefined worker template: a role and a model profile.
  *
- * Класс задач (taskKind) наследуется от modality выбранного профиля.
- * Уникальна комбинация type + profileId.
+ * The task class (taskKind) is inherited from the chosen profile's modality.
+ * The combination of type and profileId is unique.
  */
 struct WorkerPreset
 {
@@ -204,13 +204,13 @@ struct WorkerPreset
     QString         id;
     WorkerType      type;
     QString         profileId;
-    /** Копия modality профиля; при сохранении/загрузке синхронизируется. */
+    /** A copy of the profile modality, kept in sync on save and load. */
     WorkerTaskKind  taskKind;
 };
 
 //----------------------------------------------
 
-/** Менеджер и тестировщик из старых проектов — это исполнитель. */
+/** A manager and a tester from old projects are an executor. */
 inline WorkerType normalizeWorkerType(WorkerType type)
 {
     if (type == WorkerTypeTool)

@@ -1,0 +1,43 @@
+[Version]
+Class=IEXPRESS
+SEDVersion=3
+[Options]
+PackagePurpose=InstallApp
+ShowInstallProgramWindow=1
+HideExtractAnimation=0
+UseLongFileName=1
+InsideCompressed=1
+CAB_FixedSize=0
+CAB_ResvCodeSigning=0
+RebootMode=N
+InstallPrompt=%InstallPrompt%
+DisplayLicense=%DisplayLicense%
+FinishMessage=%FinishMessage%
+TargetName=%TargetName%
+FriendlyName=%FriendlyName%
+AppLaunched=%AppLaunched%
+PostInstallCmd=%PostInstallCmd%
+AdminQuietInstCmd=%AdminQuietInstCmd%
+UserQuietInstCmd=%UserQuietInstCmd%
+SourceFiles=SourceFiles
+[Strings]
+InstallPrompt=Install Unique 0.2.1 (64-bit)?
+DisplayLicense=
+FinishMessage=Unique 0.2.1 (64-bit) setup finished.
+TargetName=D:\PROJECTS\github\unique\dist\Unique-0.2.1-win64-setup.exe
+FriendlyName=Unique 0.2.1 (64-bit)
+AppLaunched=setup.cmd
+PostInstallCmd=<None>
+AdminQuietInstCmd=
+UserQuietInstCmd=
+FILE0="setup.cmd"
+FILE1="setup.ps1"
+FILE2="arch.txt"
+FILE3="payload.zip"
+[SourceFiles]
+SourceFiles0=D:\PROJECTS\github\unique\dist\iexpress-win64\
+[SourceFiles0]
+%FILE0%=
+%FILE1%=
+%FILE2%=
+%FILE3%=

@@ -268,7 +268,7 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
             this, &SettingsPage::loadControlFlags);
     connect(settings, SIGNAL(projectSettingsChanged()),
             this, SLOT(sltProjectSettingsChanged()));
-    // profilesChanged не трогаем: правка URL/токена не должна пересобирать списки.
+    // Do not touch profilesChanged: editing a URL or a token must not rebuild the lists.
     connect(settings, SIGNAL(workerPresetsChanged()), this, SLOT(scheduleLoadPresets()));
     connect(OpenAiCompatibleClient::catalogHub(), SIGNAL(contextWindowChanged()),
             this, SLOT(sltCatalogWindowsUpdated()));

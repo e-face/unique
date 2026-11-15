@@ -21,8 +21,8 @@ class QWheelEvent;
 //----------------------------------------------
 
 /**
- * @brief Дерево воркеров: состояние, связи.
- *        Короткий клик открывает чат, сдвиг мыши двигает схему.
+ * @brief Worker tree: state and links.
+ *        A short click opens the chat; a mouse drag moves the schema.
  */
 class WorkerGraphWidget : public QGraphicsView
 {
@@ -33,20 +33,20 @@ public:
     void rebuild(WorkerManager *manager);
     void applyTheme();
     /**
-     * @brief Миниатюра текущей сцены для превью у композера.
-     *        Пустой pixmap, если граф ещё не построен.
+     * @brief Thumbnail of the current scene for the preview by the composer.
+     *        An empty pixmap if the graph is not built yet.
      */
     QPixmap overviewPixmap(QSize size) const;
 
 signals:
     void workerActivated(const QString &id);
-    /** Пользователь запросил удаление инструмента (контекстное меню). */
+    /** The user asked to delete a tool (context menu). */
     void toolRemoveRequested(const QString &id);
-    /** Удалить завершённого воркера (не root) с графа. */
+    /** Remove a finished worker (not the root) from the graph. */
     void workerRemoveRequested(const QString &id);
     void workerInterruptRequested(const QString &id);
     void reportToParentRequested(const QString &id);
-    /** Смена профиля модели воркера с схемы (на лету). */
+    /** Change a worker's model profile from the schema, while it is running. */
     void workerProfileChangeRequested(const QString &workerId, const QString &profileId);
 
 protected:

@@ -6,7 +6,7 @@
 //----------------------------------------------
 
 /**
- * @brief Возвращает текущие дату и время.
+ * @brief Returns the current date and time.
  */
 class DateTimeAgentTool : public AgentTool
 {
@@ -22,7 +22,7 @@ public:
 //----------------------------------------------
 
 /**
- * @brief Сведения о системе — для проверки вызова функций.
+ * @brief System information, for checking function calls.
  */
 class SystemInfoAgentTool : public AgentTool
 {

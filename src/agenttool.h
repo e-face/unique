@@ -8,7 +8,7 @@
 //----------------------------------------------
 
 /**
- * @brief Инструмент (функция), который агент может выполнить по запросу модели.
+ * @brief A tool (function) the agent can run when the model asks.
  */
 class AgentTool : public QObject
 {
@@ -27,14 +27,14 @@ public:
     virtual QJsonObject parametersSchema() const = 0;
 
     /**
-     * @brief Выполнить функцию.
-     * @param argumentsJson JSON-объект аргументов от модели.
-     * @param ok false, если вызов завершился ошибкой (текст ошибки — в возврате).
+     * @brief Run the function.
+     * @param argumentsJson JSON object of arguments from the model.
+     * @param ok false if the call failed (the error text is the return value).
      */
     virtual QString invoke(QString argumentsJson, bool *ok) = 0;
 
     /**
-     * @brief Прервать зависший вызов (команда, вложенный цикл).
+     * @brief Interrupt a stuck call (a command or a nested loop).
      */
     virtual void interrupt()
     {

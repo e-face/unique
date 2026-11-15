@@ -87,7 +87,7 @@ QString BalanceDialog::resolveUrl(QString baseUrl, QString balanceUrl)
     if (!rel.startsWith(QChar('/')))
         rel.prepend(QChar('/'));
 
-    // Путь баланса всегда от корня хоста (не от /compatible-mode/v1).
+    // The balance path is always from the host root, not from /compatible-mode/v1.
     QUrl out;
     out.setScheme(base.scheme().isEmpty() ? QString::fromUtf8("https") : base.scheme());
     out.setHost(base.host());
@@ -241,7 +241,7 @@ QString BalanceDialog::parseBalance(QByteArray data, QString jsonPath, QString *
                 *failReason = msg.isEmpty()
                                   ? QString::fromUtf8("API code=%1").arg(code)
                                   : QString::fromUtf8("%1 (%2)").arg(msg, code);
-            // ещё попробуем вытащить баланс ниже — иногда code и данные вместе
+            // Still try to pull the balance below: sometimes code and data arrive together.
         }
     }
 
@@ -447,7 +447,7 @@ void BalanceDialog::sltRefresh()
         QHash<QByteArray, QByteArray> headers;
         headers.insert("Authorization",
                        QByteArray("Bearer ") + profile.apiKey.toUtf8());
-        // DashScope quotas иногда требует этот заголовок.
+        // DashScope quotas sometimes require this header.
         if (isDashScopeProfile(profile))
             headers.insert("Content-Type", "application/json");
         const int id = LlmNetworkWorker::instance()->get(url, headers);

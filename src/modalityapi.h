@@ -15,9 +15,9 @@ class ProjectWorkspace;
 //----------------------------------------------
 
 /**
- * @brief Синхронный HTTP к OpenAI-совместимым media/embeddings endpoint'ам.
+ * @brief Synchronous HTTP to OpenAI-compatible media and embeddings endpoints.
  *
- * Блокирует вызывающий поток через QEventLoop (как run_command).
+ * Blocks the calling thread through QEventLoop, like run_command.
  */
 class ModalityApiClient
 {
@@ -45,19 +45,19 @@ public:
     QString requestPath() const;
 
     /**
-     * @brief Куда слать генерацию. Заполненный путь профиля — единственный.
-     *        Пустой — каталог провайдера, затем стандартные пути класса задач.
+     * @brief Where to send generation. A filled profile path is the only one.
+     *        Empty means the provider catalog, then the standard paths for the task class.
      */
     QStringList requestPaths(const QStringList &standardPaths) const;
 
     /**
-     * @brief URL опроса задачи: из ответа провайдера, из шаблона профиля,
-     *        иначе /tasks/{id} рядом с путём запроса и у корня API.
+     * @brief Task poll URL: from the provider response, from the profile template,
+     *        otherwise /tasks/{id} next to the request path and at the API root.
      */
     QStringList taskStatusUrls(const QJsonObject &submitResponse, QString taskId,
                                QString submitPath) const;
 
-    /** Добавить постоянные поля запроса из профиля (не перекрывая заданные). */
+    /** Add the profile's constant request fields, without overriding ones already set. */
     void applyBodyDefaults(QJsonObject *body) const;
 
     Result postJson(QString relativeOrAbsolutePath, const QJsonObject &body) const;

@@ -10,7 +10,7 @@
 class AppIcons
 {
 public:
-    /** Иконка приложения Unique (окно / taskbar). */
+    /** Unique application icon (window / taskbar). */
     static QIcon appIcon();
     static QIcon clearAll();
     static QIcon mainChat();
@@ -19,7 +19,7 @@ public:
     static QIcon prevConfirm();
     static QIcon nextConfirm();
     /**
-     * @brief Иконка по типу воркера (вкладки чатов и схема).
+     * @brief Icon for a worker type (chat tabs and the schema).
      */
     static QIcon forWorkerType(WorkerType type);
     static QIcon manager();

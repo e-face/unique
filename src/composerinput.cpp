@@ -34,7 +34,7 @@
 
 //----------------------------------------------
 
-/** Длиннее этого текст из буфера уходит вложением, а не в поле запроса. */
+/** Text from the clipboard longer than this is attached as a file, not inserted into the query. */
 static const int kPasteAsFileChars = 2000;
 static const int kPasteAsFileLines = 40;
 
@@ -243,7 +243,7 @@ ComposerInput::ComposerInput(QWidget *parent)
     _editor->setTabChangesFocus(false);
     _editor->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     _editor->viewport()->setAutoFillBackground(false);
-    // Иначе Qt вставляет пути файлов текстом вместо наших чипов.
+    // Otherwise Qt inserts file paths as text instead of our chips.
     _editor->setAcceptDrops(false);
     _editor->viewport()->setAcceptDrops(false);
     _editor->installEventFilter(this);
@@ -353,7 +353,7 @@ void ComposerInput::setPlaceholder(QString text)
 
 void ComposerInput::retranslateUi()
 {
-    // Placeholder подставляет MainWindow::updateComposerState() по состоянию.
+    // The placeholder is set by MainWindow::updateComposerState() from the session state.
     if (_plusButton)
         _plusButton->setToolTip(L("composer.attachTip"));
     if (_schemaButton)
@@ -378,7 +378,7 @@ void ComposerInput::retranslateUi()
     }
     if (_sendButton)
     {
-        // Стрелка — визуал; доступное имя — локализованный Send.
+        // The arrow is visual; the accessible name is the localized Send.
         _sendButton->setToolTip(L("composer.send"));
         _sendButton->setAccessibleName(L("composer.send"));
     }
@@ -510,7 +510,7 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
         "QPushButton#composerStop:disabled { color:%5; border-color:%5; }"
         "QFrame#composerChip { background:transparent; border:none; }")
                       .arg(input, border, text, accent, muted, hover));
-    // Чипы: заливка как у поля ввода, чтобы полоса вложений не отличалась.
+    // Chips use the input-field fill so the attachment strip does not stand out.
     setProperty("chipFill", input);
     update();
 }
@@ -600,7 +600,7 @@ void ComposerInput::updateAttachStripVisible()
 {
     if (!_attachScroll || !_attachLayout)
         return;
-    const bool has = _attachLayout->count() > 1; // stretch всегда есть
+    const bool has = _attachLayout->count() > 1; // the stretch is always there
     _attachScroll->setVisible(has);
 }
 
@@ -731,7 +731,7 @@ QStringList ComposerInput::absolutePathsFromMime(const QMimeData *mime) const
                 out.append(path);
         }
     }
-    // Некоторые источники (в т.ч. текст из проводника) отдают только пути строкой.
+    // Some sources, including text from Explorer, provide only paths as a string.
     if (out.isEmpty() && mime->hasText())
     {
         const QStringList lines = mime->text().split(QRegExp(QString::fromUtf8("[\\r\\n]+")),

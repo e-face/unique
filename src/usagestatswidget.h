@@ -9,7 +9,7 @@
 //----------------------------------------------
 
 /**
- * @brief Визуальная сводка UsageStats: KPI, состав токенов, доли по ролям.
+ * @brief Visual summary of UsageStats: KPIs, token mix, and shares by role.
  */
 class UsageStatsWidget : public QWidget
 {
@@ -19,7 +19,7 @@ public:
 
     void setStats(const UsageStats &stats);
     /**
-     * @brief Доп. строки под графиком («ключ», «значение»).
+     * @brief Extra rows under the chart ("key", "value").
      */
     void setExtraRows(const QStringList &labels, const QStringList &values);
 

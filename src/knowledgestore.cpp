@@ -21,14 +21,14 @@ static const int    kMaxEntries        = 300;
 static const int    kMaxLessonChars    = 2000;
 static const int    kMaxTaskChars      = 600;
 static const double kMergeThreshold    = 0.80;
-/** Порог похожести задач для подсказки: ниже — шум, который только тратит токены. */
+/** Task-similarity threshold for a hint: below it is noise that only spends tokens. */
 static const double kRecallThreshold   = 0.25;
 static const int    kMinCommonTokens   = 2;
-/** Сколько записей попадает в подсказку новому воркеру. */
+/** How many records go into the hint for a new worker. */
 static const int    kHintMaxEntries    = 3;
-/** Суммарный размер подсказки (символов), включая заголовок. */
+/** Total hint size in characters, including the header. */
 static const int    kHintMaxChars      = 1800;
-/** TTL урока без использований: 90 суток. */
+/** TTL of a lesson with no uses: 90 days. */
 static const qint64 kLessonTtlMs       = 90LL * 24 * 3600 * 1000;
 
 //----------------------------------------------
@@ -282,7 +282,7 @@ void KnowledgeStore::remember(WorkerType type, QString task, QString lessons, bo
     KnowledgeEntry parsed;
     parseLessonFields(text, &parsed);
 
-    // Дедуп: похожая задача / тот же CMD / похожий ERR.
+    // Dedup: a similar task, the same CMD, or a similar ERR.
     int bestIndex = -1;
     double bestScore = 0;
     for (int i = 0; i < _entries.size(); ++i)
@@ -382,7 +382,7 @@ QList<KnowledgeEntry> KnowledgeStore::recall(WorkerType type, QString task, int 
         return out;
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    // Вытесняем устаревшие без повторных использований.
+    // Evict stale entries that were never used again.
     for (int i = _entries.size() - 1; i >= 0; --i)
     {
         const KnowledgeEntry &e = _entries.at(i);
@@ -399,8 +399,8 @@ QList<KnowledgeEntry> KnowledgeStore::recall(WorkerType type, QString task, int 
     for (int i = 0; i < _entries.size(); ++i)
     {
         const KnowledgeEntry &entry = _entries.at(i);
-        // Fail-closed recall: failed lessons только как слабый сигнал.
-        // Теги/CMD участвуют до порога — иначе индекс по типу ошибки не срабатывает.
+        // Fail-closed recall: failed lessons are only a weak signal.
+        // Tags and CMD count up to the threshold; otherwise the error-type index does not fire.
         double score = similarity(want, tokens(entry.task));
         score = qMax(score, 0.8 * similarity(want, tokens(entry.lessons)));
         if (!entry.tags.isEmpty())
@@ -444,8 +444,8 @@ QString KnowledgeStore::hintFor(WorkerType type, QString task)
     if (found.isEmpty())
         return QString();
 
-    // Подсказка попадает в первое сообщение каждого воркера, поэтому её
-    // размер ограничен жёстко: лучшую запись даём полнее, остаток — по бюджету.
+    // The hint goes into every worker's first message, so its
+    // size is capped hard: the best record is given more fully, the rest by budget.
     QString text = QString::fromUtf8(
         "Experience of previous workers (retrieval-first; prefer these lessons before "
         "re-discovering commands/paths). Verified entries are marked; treat failed ones "

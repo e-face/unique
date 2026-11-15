@@ -44,11 +44,11 @@ class WorkerManager;
 //----------------------------------------------
 
 /**
- * @brief Главное окно: чаты и схема воркеров текущего проекта.
+ * @brief Main window: chats and the worker schema of the current project.
  *
- * Работа ведётся только внутри открытого или созданного проекта.
- * Чаты сохраняются в ___project___ этого каталога. При старте
- * проект не открывается — его выбирают из меню «Файл».
+ * Work happens only inside an opened or created project.
+ * Chats are saved in that directory's ___project___. At startup
+ * no project is opened; it is chosen from the File menu.
  */
 class MainWindow : public QMainWindow
 {
@@ -158,9 +158,9 @@ private slots:
 
 private:
     /**
-     * @brief Переключить проект, когда ни один инструмент не выполняется
-     *        во вложенном цикле событий: иначе удаление сессий из-под
-     *        живого стека invoke() роняет программу.
+     * @brief Switch projects when no tool is running
+     *        inside a nested event loop: deleting sessions from under
+     *        a live invoke() stack crashes the program.
      */
     void requestProjectSwitch(QString root, bool loadExisting, QString retireStore);
     bool anyAgentInsideToolCall() const;

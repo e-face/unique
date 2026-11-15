@@ -498,7 +498,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
-    // Один автозапрос после показа окна: в конструкторе окно ещё не видно.
+    // One automatic check after the window is shown: in the constructor the window is not visible yet.
     if (!_updateCheckScheduled && _updateChecker)
     {
         _updateCheckScheduled = true;
@@ -626,7 +626,7 @@ void MainWindow::sltResetWorkspace()
     if (_projectDock)
         _projectDock->releaseFileModel();
 
-    // Как при создании проекта: убираем ___project___ и поднимаем заново.
+    // As when creating a project: remove ___project___ and bring it up again.
     if (!retireProjectStore(store))
     {
         QMessageBox box(this);
@@ -647,7 +647,7 @@ void MainWindow::sltResetWorkspace()
                                    s->inputColor().name(),
                                    s->borderColor().name()));
         box.exec();
-        // Частичный сброс UI уже сделан — поднимаем пустой сеанс без wipe.
+        // A partial UI reset is already done; bring up an empty session without a wipe.
         AppSettings::instance()->reseedOpenProject();
         AppSettings::instance()->resetUsage();
     }
@@ -829,7 +829,7 @@ void MainWindow::switchToProject(QString workspaceRoot, bool loadExisting)
     if (!loadExisting)
     {
         ensureProjectStore();
-        // Новый проект: не переносим счётчики с ранее открытого.
+        // A new project: do not carry counters over from the one that was open before.
         AppSettings::instance()->resetUsage();
     }
     rememberRecentProject(hasOpenProject() ? _workspace->root() : clean);
@@ -854,9 +854,9 @@ void MainWindow::switchToProject(QString workspaceRoot, bool loadExisting)
     pumpUi(true);
 
     _loadingProject = false;
-    // Дерево уже построено. Дальше идёт восстановление воркеров (чтение их
-    // чатов с диска, пересборка графа) — показываем это отдельной подписью,
-    // иначе «Дерево файлов» висит на экране всё время восстановления.
+    // The tree is already built. Next is restoring workers (reading their
+    // chats from disk, rebuilding the graph). Show that as a separate caption,
+    // otherwise the file-tree caption stays on screen for the whole restore.
     updateStatusProgress(0, 0, tr("Восстановление воркеров"));
     if (loadExisting)
         restoreProjectUiState(false);
@@ -1010,8 +1010,8 @@ void MainWindow::requestProjectSwitch(QString root, bool loadExisting, QString r
     _pendingSwitchTries = 0;
     if (anyAgentInsideToolCall())
     {
-        // Мы сами вызваны из вложенного цикла (команда, ожидание разрешения).
-        // Останавливаем воркеров и даём стеку размотаться, потом переключаем.
+        // Called from a nested loop (a command, or waiting for permission).
+        // Stop the workers and let the stack unwind, then switch.
         statusBar()->showMessage(tr("Остановка воркеров перед сменой проекта…"));
         if (_workers)
             _workers->stopAll();
@@ -1274,8 +1274,8 @@ void MainWindow::sltBusyChanged(bool)
 void MainWindow::sltUsageUpdated(int promptTokens, int completionTokens, int totalTokens,
                                  int cachedPromptTokens)
 {
-    // Разбивка по ролям: видно, где именно тратятся токены
-    // (менеджеры vs исполнители) и работает ли кеш префикса у провайдера.
+    // Breakdown by role: it shows where tokens are spent
+    // (managers versus executors) and whether the provider's prefix cache is working.
     QString role = QString::fromUtf8("other");
     ChatSession *session = sessionByAgent(sender());
     if (session && session->worker())
@@ -1648,15 +1648,15 @@ void MainWindow::applyWorkerUi(Worker *worker)
     if (worker->session()->agent())
         worker->session()->widget()->setContextMeterVisible(
             worker->session()->agent()->tracksContext());
-    // Главный чат называем так, как модель сама озаглавила задание в plan_work:
-    // это точнее первых 48 символов запроса пользователя.
+    // Name the main chat the way the model titled the assignment in plan_work:
+    // that is more accurate than the first 48 characters of the user query.
     if (root && !worker->title().isEmpty()
         && worker->session()->title() != worker->title())
     {
         worker->session()->setTitle(worker->title());
         worker->session()->setAutoTitle(false);
     }
-    // Паузы, о которых агент не знает: пользователь видит, чего именно ждёт чат.
+    // Pauses the agent does not know about: the user sees exactly what the chat is waiting for.
     QString external;
     switch (worker->state())
     {
@@ -1677,7 +1677,7 @@ void MainWindow::applyWorkerUi(Worker *worker)
     }
     worker->session()->widget()->setExternalActivity(external);
     updateSessionTabTitle(worker->session());
-    // Подпись автора в чате = та же, что в журнале (уникальный цвет по имени).
+    // The author caption in chat matches the journal (a unique color by name).
     worker->session()->widget()->setAuthorLabels(
         tr("Пользователь"), workerWindowTitle(worker));
     if (_journal && worker->session()->agent())
@@ -1768,8 +1768,8 @@ void MainWindow::sltWorkerFinished()
 
 void MainWindow::sltWorkerTreeChanged()
 {
-    // Изменения состояний приходят пачками от десятков воркеров;
-    // тяжёлую перерисовку делаем один раз на итерацию цикла событий.
+    // State changes arrive in batches from dozens of workers;
+    // the heavy redraw runs once per event-loop iteration.
     _uiRefreshTree = true;
     _graphDirty = true;
     scheduleUiRefresh();
@@ -1819,7 +1819,7 @@ void MainWindow::sltRefreshWorkerUi()
 
 void MainWindow::rebuildGraphIfVisible()
 {
-    // Сцену держим актуальной и для вкладки, и для миниатюры у композера.
+    // Keep the scene current for both the tab and the thumbnail by the composer.
     createGraphWindow();
     if (!_graph || !_graphDirty)
         return;
@@ -1954,12 +1954,12 @@ void MainWindow::sltWorkerProfileChangeRequested(const QString &workerId,
     if (worker->session())
     {
         applyClientToSession(worker->session());
-        // Tools зависят от modality профиля — перевешиваем после смены модели.
+        // Tools depend on the profile modality; reinstall them after a model change.
         if (_workers)
             _workers->installTools(worker);
         applyWorkerUi(worker);
     }
-    // Заново определить входы модели (OpenRouter /images/models и т.п.).
+    // Detect model inputs again (OpenRouter /images/models and similar).
     const ModelCapabilities caps =
         ModelCapabilityService::instance()->capabilitiesFor(profile, true);
     if (_graph)
@@ -2679,8 +2679,8 @@ void MainWindow::sltComposerSend()
         return;
     }
 
-    // LLM-чат: картинки → image_url; аудио → input_audio; текст → text;
-    // PDF/file → file; иначе путь для инструментов.
+    // LLM chat: images become image_url, audio becomes input_audio, text stays text,
+    // PDF and file become file, otherwise a path is left for the tools.
     QString message = text;
     QJsonArray mediaParts;
     QStringList pathOnly;
@@ -2688,7 +2688,7 @@ void MainWindow::sltComposerSend()
     QStringList embeddedAudio;
     QStringList embeddedFiles;
     QStringList embeddedTexts;
-    // 32-bit процесс: тело запроса + копии QByteArray/QString; держим запас.
+    // A 32-bit process holds the request body plus QByteArray and QString copies; keep a margin.
     const int kMaxInlineBody = 8 * 1024 * 1024;
     const int kMaxTextBytes = ProjectWorkspace::maxReadBytes;
     const QString baseUrlLower = profile.baseUrl.toLower();
@@ -2787,7 +2787,7 @@ void MainWindow::sltComposerSend()
             continue;
         }
 
-        // Текст/код — вшиваем в content (работает на любой chat API).
+        // Text and code are inlined into content (works on any chat API).
         {
             QString readError;
             const QString body = readProjectTextAttachment(path, kMaxTextBytes, &readError);
@@ -2805,12 +2805,12 @@ void MainWindow::sltComposerSend()
                 mediaParts.append(part);
                 continue;
             }
-            // Текст не вышел (бинарь / ошибка) — пробуем file part ниже.
+            // If the text did not come out (binary or an error), try a file part below.
             if (statusBar() && !readError.isEmpty() && isTextLikeAttachmentPath(path))
                 statusBar()->showMessage(readError);
         }
 
-        // Прочий бинарь: если модель «принимает file» — file part, иначе путь.
+        // Other binary: a file part if the model accepts file, otherwise a path.
         if (caps.acceptsFile())
         {
             QString encodeError;
@@ -3234,7 +3234,7 @@ bool MainWindow::isTextLikeAttachmentPath(QString path)
         if (lower.endsWith(QString::fromUtf8(kExt[i])))
             return true;
     }
-    // Файлы без расширения / с редким расширением — по MIME text/*
+    // Files with no extension or a rare extension are judged by a text/* MIME type.
     return false;
 }
 
@@ -3279,7 +3279,7 @@ QString MainWindow::readProjectTextAttachment(QString relativePath, int maxBytes
     const bool truncated = bytes.size() > maxBytes;
     if (truncated)
         bytes = bytes.left(maxBytes);
-    // Бинарный мусор (нулевые байты) — не вшиваем как текст.
+    // Binary junk (zero bytes) is not inlined as text.
     if (bytes.contains('\0'))
     {
         if (error)
@@ -3383,7 +3383,7 @@ QString MainWindow::encodeProjectImageDataUrl(QString relativePath, QString *err
     }
 
     QString mime = QString::fromUtf8("image/jpeg");
-    // Сжимаем крупные кадры: иначе base64 + копии тела на 32-bit валят процесс.
+    // Compress large frames; otherwise base64 plus body copies kill the process on 32-bit.
     QImage image;
     if (image.loadFromData(bytes))
     {
@@ -3576,7 +3576,7 @@ void MainWindow::setupUi()
             this, SLOT(sltAppearanceApplied()));
     connect(_settingsPage, SIGNAL(removeWorkersForProfile(QString)),
             this, SLOT(sltRemoveWorkersForProfile(QString)));
-    // Один канал: AppSettings уже debounce'ит profilesChanged.
+    // One channel: AppSettings already debounces profilesChanged.
     connect(AppSettings::instance(), SIGNAL(profilesChanged()),
             this, SLOT(sltProfilesChanged()));
 
@@ -3653,7 +3653,7 @@ void MainWindow::setupUi()
             this, SLOT(sltComposerPasteHint(QString,bool)));
 
     QVBoxLayout *root = new QVBoxLayout(central);
-    // Отступ центральной области от доков и краёв окна — 2px со всех сторон.
+    // Inset of the central area from docks and window edges: 2 px on every side.
     root->setContentsMargins(2, 2, 2, 2);
     root->setSpacing(12);
     root->addWidget(_tabs, 1);
@@ -3681,9 +3681,9 @@ void MainWindow::setupUi()
     _graphThumbDock->setWidget(graphHost);
     connect(_graphThumb, SIGNAL(clicked()), this, SLOT(sltShowGraph()));
     addDockWidget(Qt::LeftDockWidgetArea, _graphThumbDock);
-    // По умолчанию — под деревом файлов.
+    // By default, under the file tree.
     splitDockWidget(_projectDock, _graphThumbDock, Qt::Vertical);
-    // Дефолтные размеры только если ещё нет сохранённых в настройках.
+    // Default sizes only when nothing is saved in settings yet.
     {
         AppSettings *settings = AppSettings::instance();
         const bool haveSplit = settings->leftDockWidth() > 0
@@ -3960,7 +3960,7 @@ void MainWindow::retranslateUi()
         if (title)
             title->setTitle(tr("Команда"));
     }
-    // Placeholder/кнопки композера зависят от языка и состояния сессии.
+    // Composer placeholder and buttons depend on the language and the session state.
     updateComposerState();
 }
 
@@ -4329,8 +4329,8 @@ void MainWindow::loadOpenChats()
     }
     foreach (const ChatSnapshot &shot, shots)
         _workers->linkParent(_workers->workerById(shot.id), shot.parentId);
-    // groupId/role выставляются после createWorker→installTools — перевешиваем
-    // инструменты и поднимаем сохранённый диалог группы.
+    // groupId and role are set after createWorker then installTools; reinstall
+    // the tools and raise the saved group dialogue.
     _workers->reinstallToolsAndResumeGroups();
     endStatusProgress();
     if (!wasLoading)
@@ -4459,8 +4459,8 @@ void MainWindow::scheduleSaveOpenChats()
         _saveChatsTimer->setSingleShot(true);
         connect(_saveChatsTimer, SIGNAL(timeout()), this, SLOT(sltFlushSaveChats()));
     }
-    // Не перезапускаем активный таймер: иначе при постоянном потоке событий
-    // запись откладывалась бы бесконечно либо шла слишком часто.
+    // Do not restart an active timer: a constant stream of events
+    // would postpone the write forever or make it too frequent.
     if (!_saveChatsTimer->isActive())
         _saveChatsTimer->start(2500);
 }
@@ -4750,7 +4750,7 @@ void MainWindow::restoreAppWindowLayout()
     AppSettings *settings = AppSettings::instance();
     QByteArray geometry = settings->mainWindowGeometry();
     QByteArray state = settings->mainWindowState();
-    // Миграция: старые проекты хранили геометрию в ___project___/ui.json.
+    // Migration: old projects stored geometry in ___project___/ui.json.
     if (geometry.isEmpty() || state.isEmpty())
     {
         ProjectUiState legacy;
@@ -4769,7 +4769,7 @@ void MainWindow::restoreAppWindowLayout()
     if (!state.isEmpty())
         restoreState(state);
 
-    // Явные размеры сплиттеров левой колонки (поверх restoreState).
+    // Explicit splitter sizes of the left column, applied on top of restoreState.
     if (_projectDock)
     {
         const int leftW = settings->leftDockWidth();
@@ -4806,7 +4806,7 @@ void MainWindow::saveProjectUiState()
     if (!hasOpenProject() || !_projectStoreEnabled)
         return;
     ProjectUiState ui;
-    // Геометрия окна и доки — в настройках программы; в проекте только вкладки.
+    // Window geometry and docks live in program settings; the project stores only tabs.
     if (_tabs)
     {
         for (int i = 0; i < _tabs->count(); ++i)
@@ -4843,7 +4843,7 @@ void MainWindow::restoreProjectUiState(bool preferJournalIfEmpty)
         return;
     }
 
-    // Сначала открываем сохранённые вкладки без жёсткого фокуса.
+    // Open the saved tabs first, without forcing focus.
     foreach (const QString &key, ui.openTabs)
         openTabByKey(key, false);
 
@@ -5453,7 +5453,7 @@ void MainWindow::updateComposerState()
     const LlmProfile profile = profileForComposerTarget();
     ModelCapabilities caps =
         ModelCapabilityService::instance()->cachedOrHeuristic(profile);
-    // Если ещё только эвристика — один раз спросить каталог API (для любой modality).
+    // If it is still only a heuristic, ask the API catalog once, for any modality.
     if (canSend && !profile.model.trimmed().isEmpty()
         && caps.source == QString::fromUtf8("heuristic"))
         caps = ModelCapabilityService::instance()->capabilitiesFor(profile);
@@ -5534,9 +5534,9 @@ void MainWindow::refreshBusyTabs()
         {
             if (!session || !session->widget() || !session->agent())
                 continue;
-            // «Работает» — не только когда идёт запрос к модели: воркер в
-            // состоянии Running/WaitingChildren тоже занят делом, даже если
-            // агент между запросами свободен.
+            // Working is not only while a model request is in flight: a worker in
+            // Running or WaitingChildren is busy even when
+            // the agent is idle between requests.
             bool working = session->agent()->isBusy();
             if (!working && session->worker())
             {

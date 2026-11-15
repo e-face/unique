@@ -23,7 +23,7 @@ class QWidget;
 //----------------------------------------------
 
 /**
- * @brief Дерево файлов проекта: подсветка недавно изменённых файлов.
+ * @brief Project file tree: highlight recently changed files.
  */
 class ProjectTreeDock : public QDockWidget
 {

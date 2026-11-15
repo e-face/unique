@@ -13,9 +13,9 @@ class QTreeWidgetItem;
 //----------------------------------------------
 
 /**
- * @brief Диалог баланса по всем профилям моделей.
- *        При открытии и по кнопке «Обновить» запрашивает баланс;
- *        если получить нельзя — показывает причину.
+ * @brief Balance dialog for every model profile.
+ *        Requests balances when opened and when Refresh is pressed;
+ *        if a balance cannot be read, shows the reason.
  */
 class BalanceDialog : public QDialog
 {

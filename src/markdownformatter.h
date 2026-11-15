@@ -6,10 +6,10 @@
 //----------------------------------------------
 
 /**
- * @brief Простое преобразование Markdown в HTML для отображения в чате.
+ * @brief A simple Markdown-to-HTML conversion for display in chat.
  *
- * Поддерживаются заголовки, списки, жирный/курсив, инлайн-код,
- * блоки кода и ссылки. Без внешних библиотек.
+ * Headings, lists, bold and italic, inline code,
+ * code blocks, and links are supported. No external libraries.
  */
 class MarkdownFormatter
 {

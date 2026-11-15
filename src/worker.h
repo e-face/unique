@@ -34,11 +34,11 @@ struct WorkSubtask
 //----------------------------------------------
 
 /**
- * @brief Единица работы: чат, задача, родитель и дети.
+ * @brief A unit of work: a chat, a task, a parent, and children.
  *
- * Вход — задача от родителя (или пользователя для корня).
- * Выход — результат родителю. Корень родителя не имеет.
- * Родитель продолжает работу только после ответов всех детей.
+ * Input is a task from the parent, or from the user for the root.
+ * Output is a result to the parent. The root has no parent.
+ * The parent continues only after every child has answered.
  */
 class Worker : public QObject
 {
@@ -78,28 +78,28 @@ public:
     QString task() const;
     void setTask(QString task);
     /**
-     * @brief Короткое название задачи (2–6 слов) — задаёт модель
-     *        через delegate_task/plan_work. Пусто — берётся из текста задачи.
+     * @brief Short task title (2 to 6 words), set by the model
+     *        through delegate_task or plan_work. Empty means it is taken from the task text.
      */
     QString title() const;
     void setTitle(QString title);
     /**
-     * @brief Уникальное «человеческое» имя воркера (Алексей, Мария…).
+     * @brief A unique human name of the worker.
      */
     QString personName() const;
     void setPersonName(QString name);
     /**
-     * @brief Короткое имя для журнала: имя человека, имя инструмента или роль.
+     * @brief Short name for the journal: a person's name, a tool name, or a role.
      */
     QString shortName() const;
-    /** Автор следующего входящего сообщения, если это не родитель. */
+    /** Author of the next incoming message, when it is not the parent. */
     void setIncomingAuthor(const QString &name);
     QString groupId() const;
     void setGroupId(QString id);
     GroupRole groupRole() const;
     void setGroupRole(GroupRole role);
     /**
-     * @brief Профиль модели из пресета; пусто — профиль роли по умолчанию.
+     * @brief Model profile from the preset. Empty means the role's default profile.
      */
     QString llmProfileId() const;
     void setLlmProfileId(QString id);
@@ -107,11 +107,11 @@ public:
     bool isGroupInterlocutor() const;
     bool canSpawnChildren() const;
     /**
-     * @brief Подпись для вкладки и схемы: имя · роль — задача.
+     * @brief Caption for the tab and the schema: name, role, and task.
      */
     QString displayLabel() const;
     /**
-     * @brief Вытащить из длинного текста задачи одну строку с её сутью.
+     * @brief Pull one line with the gist out of a long task text.
      */
     static QString shortLabelFromTask(QString task);
     QString result() const;
@@ -123,7 +123,7 @@ public:
     int depth() const;
     bool isRoot() const;
     bool isTool() const;
-    /** Независимая проверка: читать и запускать команды, без записи и без детей. */
+    /** Independent check: read and run commands, with no writes and no children. */
     bool isCheckOnly() const;
     void setCheckOnly(bool on);
     bool hasAnswered() const;
@@ -138,8 +138,8 @@ public:
     bool waitingForTool() const;
     void setWaitingForTool(bool waiting);
     /**
-     * @brief После текущего batch инструментов остановиться (holdForExternal),
-     *        пока group-диалог не пришлёт follow-up на ваш ход/голос.
+     * @brief After the current tool batch, stop (holdForExternal)
+     *        until the group dialogue sends a follow-up for your turn or vote.
      */
     void parkForGroupDialogue();
     void setVerification(bool present, bool passed, QString command, QString output,
@@ -158,8 +158,8 @@ public:
     int subtreeBatchLimit() const;
     qint64 subtreeMsLimit() const;
     /**
-     * @brief Спросить пользователя: сбросить бюджет поддерева или запретить спавн.
-     *        Блокирует (QEventLoop), как askPermission.
+     * @brief Ask the user to reset the subtree budget or to forbid spawning.
+     *        Blocks on QEventLoop, like askPermission.
      */
     bool requestSubtreeBudgetGrant(int grantBatches, qint64 grantMs);
     void resolveSubtreeBudget(bool granted);
@@ -189,15 +189,15 @@ public:
     QString askPermission(QString action, bool offerAlways = false,
                           QString alwaysKey = QString(), bool forceDialog = false);
     /**
-     * @brief Спросить пользователя и дождаться ответа.
-     * @return false, если вопрос отменён или воркер остановлен.
+     * @brief Ask the user and wait for the answer.
+     * @return false if the question was cancelled or the worker was stopped.
      */
     bool askUserQuestion(QString question, QString *answer);
     bool isAskingUser() const;
     void resolvePermission(bool approved, bool always, QString comment);
     /**
-     * @brief Показать хвост вывода команды и дождаться строки для stdin.
-     * @return false, если пользователь пропустил вопрос или воркер остановлен.
+     * @brief Show the tail of command output and wait for a line for stdin.
+     * @return false if the user skipped the question or the worker was stopped.
      */
     bool askConsoleInput(QString transcript, QString *line);
     void resolveConsoleInput(bool sent, QString line);

@@ -10,7 +10,7 @@
 //----------------------------------------------
 
 /**
- * @brief Урок, оставленный воркером после выполнения задачи.
+ * @brief A lesson left by a worker after finishing a task.
  */
 struct KnowledgeEntry
 {
@@ -38,11 +38,11 @@ struct KnowledgeEntry
 //----------------------------------------------
 
 /**
- * @brief База опыта проекта: что узнали воркеры, решая похожие задачи.
+ * @brief The project's experience base: what workers learned on similar tasks.
  *
- * Хранится в каталоге сессий проекта (___project___/knowledge.json).
- * При запуске нового воркера подходящие записи подмешиваются в его задачу,
- * чтобы он не повторял чужие ошибки и сразу знал рабочие команды.
+ * Stored in the project session directory (___project___/knowledge.json).
+ * When a new worker starts, matching records are mixed into its task
+ * so it does not repeat others' mistakes and already knows working commands.
  */
 class KnowledgeStore
 {
@@ -50,22 +50,22 @@ public:
     static KnowledgeStore *instance();
 
     /**
-     * @brief Запомнить урок. Похожая запись того же типа обновляется, а не дублируется.
+     * @brief Remember a lesson. A similar record of the same type is updated, not duplicated.
      */
     void remember(WorkerType type, QString task, QString lessons, bool ok);
 
     /**
-     * @brief Подобрать записи, релевантные задаче (сначала того же типа).
+     * @brief Pick records relevant to the task (same type first).
      */
     QList<KnowledgeEntry> recall(WorkerType type, QString task, int maxCount = 4);
 
     /**
-     * @brief Готовый текстовый блок для вставки в контекст воркера (или пусто).
+     * @brief A ready text block to insert into the worker context, or empty.
      */
     QString hintFor(WorkerType type, QString task);
 
     int count();
-    /** Сбросить кэш (после очистки/пересоздания ___project___). */
+    /** Drop the cache after clearing or recreating ___project___. */
     void invalidate();
 
 private:

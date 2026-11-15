@@ -16,20 +16,20 @@ class LlmClient;
 
 //----------------------------------------------
 
-/** Источник сообщения роли user (лента/журнал). */
+/** Where a user-role message came from (chat feed / journal). */
 enum AgentUserIngress
 {
-    AgentUserIngressHuman      = 0, /**< Реальный пользователь. */
-    AgentUserIngressAssignment = 1, /**< Задание от родителя / старт задачи. */
-    AgentUserIngressFollowUp   = 2, /**< Уточнение от родителя. */
-    AgentUserIngressGroup      = 3, /**< Ход группового обсуждения. */
-    AgentUserIngressSystem     = 4  /**< Служебный пинг (не для журнала). */
+    AgentUserIngressHuman      = 0, /**< A real user. */
+    AgentUserIngressAssignment = 1, /**< Task from the parent / task start. */
+    AgentUserIngressFollowUp   = 2, /**< Clarification from the parent. */
+    AgentUserIngressGroup      = 3, /**< A turn in a group discussion. */
+    AgentUserIngressSystem     = 4  /**< Service ping (not for the journal). */
 };
 
 //----------------------------------------------
 
 /**
- * @brief Агент: диалог, вызов функций и удержание истории в окне контекста.
+ * @brief Agent: dialogue, function calls, and keeping history inside the context window.
  */
 class Agent : public QObject
 {
@@ -44,15 +44,15 @@ public:
     void addTool(AgentTool *tool);
     void clearTools();
     /**
-     * @brief Прямой вызов установленного tool (media-executor и тесты).
+     * @brief Call an installed tool directly (media executor and tests).
      */
     QString invokeTool(QString name, QString argumentsJson, bool *ok);
     /**
-     * @brief Заметка в чат/журнал (прогресс media-tools и т.п.).
+     * @brief Note in the chat/journal (media-tool progress and similar).
      */
     void postNotice(QString text);
     /**
-     * @brief Записать ход media-executor в историю и ленту без вызова LLM.
+     * @brief Record a media-executor turn in history and the feed without calling the LLM.
      */
     void recordLocalExchange(QString userText, QString assistantText, int ingress = 1);
     void setSystemPrompt(QString prompt);
@@ -61,62 +61,62 @@ public:
     QString projectDirectory() const;
     void setMaxToolIterations(int count);
     /**
-     * @brief Дополнительный потолок контекста (токены). 0 — окно модели.
+     * @brief Extra context ceiling (tokens). 0 means the model window.
      */
     void setContextCap(int tokens);
     /**
-     * @brief Лимиты из профиля модели: вызовы функций и потолок контекста.
+     * @brief Limits from the model profile: function calls and the context ceiling.
      */
     void applyProfileLimits(const LlmProfile &profile);
     /**
-     * @brief Закрепить исходную формулировку задачи: при сжатии контекста она
-     *        не сворачивается в сводку, а остаётся в истории дословно.
+     * @brief Pin the original task wording: context compression keeps it
+     *        verbatim in history instead of folding it into the summary.
      */
     void setTaskAnchor(QString text);
     QString taskAnchor() const;
 
     /**
-     * @brief Если включено, каждый запрос и каждый ответ показываются
-     *        сигналом inspectRequested() до продолжения обмена с моделью.
+     * @brief When enabled, each request and each reply is shown via
+     *        inspectRequested() before the exchange with the model continues.
      */
     void setInspectIo(bool enabled);
     bool inspectIo() const;
 
     bool isBusy() const;
     /**
-     * @brief Сейчас на стеке выполняется invoke() инструмента (вложенный
-     *        цикл событий). Удалять агента в этот момент нельзя.
+     * @brief A tool invoke() is on the stack (nested event loop).
+     *        The agent must not be deleted at that moment.
      */
     bool isInsideToolCall() const;
     bool hasPendingContinue() const;
     int  estimatedPromptTokens() const;
     int  contextLimit() const;
-    /** Медиа-воркер не ведёт окно контекста: ни сжатие, ни подсчёт. */
+    /** A media worker does not track a context window: no compression and no counting. */
     bool tracksContext() const;
     QList<LlmMessage> history() const;
     void setHistory(const QList<LlmMessage> &history);
     void requestStopAfterTools();
     void appendContextNote(QString text);
     /**
-     * @brief Добавить текст в историю модели, не показывая его в чате.
+     * @brief Add text to the model history without showing it in the chat.
      */
     void injectContext(QString text);
     void holdForExternal();
     void sealIncompleteToolCalls(QString reason);
     /**
-     * @brief Ждём ответа пользователя: продолжить с доп. вызовами или прекратить.
+     * @brief Waiting for the user: continue with more calls, or stop.
      */
     bool isWaitingToolBudget() const;
     int  toolBudgetChunk() const;
 
     /**
-     * @brief Источник последнего сообщения роли user (для журнала/ленты).
+     * @brief Source of the last user-role message (journal / feed).
      */
     int lastUserIngress() const;
-    /** Кто отправил последний user-ход (короткое имя воркера или «Пользователь»). */
+    /** Who sent the last user turn (short worker name, or the user). */
     QString turnAuthor() const;
     void setTurnAuthor(const QString &name);
-    /** Кому этот воркер отвечает в журнале: родитель или пользователь. */
+    /** Who this worker replies to in the journal: the parent or the user. */
     QString journalReplyTo() const;
     void setJournalReplyTo(const QString &name);
 
@@ -126,20 +126,20 @@ public slots:
      */
     void sendUserMessage(QString text, int ingress = 0);
     /**
-     * @brief User-сообщение с multimodal content (text + image_url и т.п.).
-     * @a text — подпись для UI/сводок; @a contentParts уходит в API как content[].
+     * @brief User message with multimodal content (text + image_url and similar).
+     * @a text is the caption for the UI and summaries; @a contentParts is sent to the API as content[].
      */
     void sendUserMultimodal(QString text, QJsonArray contentParts, int ingress = 0);
     /**
-     * @brief Ответ на исчерпание лимита вызовов функций.
-     * @param continueWork true — добавить ещё столько же вызовов и продолжить;
-     *                     false — запросить финальный ответ / complete_task.
+     * @brief Answer when the function-call limit is exhausted.
+     * @param continueWork true — add another chunk of calls and continue;
+     *                     false — ask for a final reply / complete_task.
      */
     void resolveToolBudget(bool continueWork);
     /**
-     * @brief Сначала свернуть всю накопленную историю в сводку силами модели,
-     *        затем отправить сообщение. Так дочерний воркер получает новую
-     *        задачу от родителя с чистым, но не забытым контекстом.
+     * @brief First fold the accumulated history into a model summary,
+     *        then send the message. A child worker then receives a new
+     *        parent task with a clean context that has not forgotten the past.
      */
     void sendUserMessageAfterCompact(QString text, int ingress = 0);
     void continueChat();
@@ -154,9 +154,9 @@ signals:
     void toolCallStarted(const QString &name, const QString &arguments);
     void toolCallFinished(const QString &name, const QString &result, bool ok);
     void notice(const QString &text);
-    /** Служебная заметка: только лента чата, без журнала. */
+    /** Service note: chat feed only, not the journal. */
     void serviceNotice(const QString &text);
-    /** Пересланный между воркерами контекст (отчёты детей и т.п.). */
+    /** Context forwarded between workers (child reports and similar). */
     void forwardedContext(const QString &text);
     void failed(const QString &error);
     void busyChanged(bool busy);
@@ -167,11 +167,11 @@ signals:
     void inspectRequested(const QString &title, const QString &text);
     void toolBatchFinished();
     /**
-     * @brief Лимит вызовов функций исчерпан: спросить продолжить (+chunk) или прекратить.
+     * @brief Function-call limit reached: ask to continue (+chunk) or stop.
      */
     void toolBudgetExhausted(int chunk);
     /**
-     * @brief История изменилась и её стоит сохранить на диск.
+     * @brief History changed and should be saved to disk.
      */
     void historyChanged();
 

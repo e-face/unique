@@ -30,11 +30,11 @@
 
 //----------------------------------------------
 
-/** Бюджет: не больше стольких незавершённых детей у одного родителя. */
+/** Budget: no more than this many unfinished children of one parent. */
 static const int kMaxChildrenPerParent = 5;
-/** Бюджет поддерева: суммарные tool-batch'и (вызовы модели с инструментами). */
+/** Subtree budget: total tool batches (model calls that use tools). */
 static const int kMaxSubtreeToolBatches = 120;
-/** Бюджет поддерева по времени (45 минут). */
+/** Subtree budget by time (45 minutes). */
 static const qint64 kMaxSubtreeMs = 45LL * 60 * 1000;
 
 //----------------------------------------------
@@ -76,8 +76,8 @@ int WorkerManager::activeCount() const
     {
         if (!worker)
             continue;
-        // Воркер, заблокированный в ожидании инструмента, слот не занимает —
-        // иначе инструмент мог бы никогда не получить слот (взаимная блокировка).
+        // A worker blocked waiting for a tool does not hold a slot.
+        // Otherwise the tool might never get a slot (a deadlock).
         if (worker->waitingForTool())
             continue;
         const WorkerState state = worker->state();
@@ -233,8 +233,8 @@ void WorkerManager::requestStart(Worker *worker)
 {
     if (!worker || !_workers.contains(worker))
         return;
-    // Уже ответивших не стартуем, пока родитель не сбросит complete
-    // через beginFollowUp/sendFollowUp (там _completed=false).
+    // Do not start workers that already answered until the parent clears complete
+    // through beginFollowUp or sendFollowUp (there _completed is false).
     if (worker->hasAnswered())
         return;
     if (canStartNow())
@@ -599,7 +599,7 @@ QString WorkerManager::runTool(Worker *caller, QString toolKey, QString message,
     ToolRun run;
     run.id = QString::fromUtf8("run-%1").arg(++_runCounter);
     run.caller = caller;
-    // Media-tools: задача = чистый prompt (без обёртки LLM-инструкций).
+    // Media tools: the task is a plain prompt, with no LLM-instruction wrapper.
     if (workerTaskKindIsMediaExecutor(modalityOf(tool)))
         run.message = trimmed;
     else
@@ -612,8 +612,8 @@ QString WorkerManager::runTool(Worker *caller, QString toolKey, QString message,
     _toolQueues[tool->id()].append(run);
     pumpTool(tool);
 
-    // Ждём результат, не занимая слот параллельности: инструмент должен
-    // иметь возможность стартовать, даже если все слоты держат ожидающие.
+    // Wait for the result without holding a concurrency slot. The tool must
+    // be able to start even if every slot is held by waiters.
     QPointer<Worker> callerPtr(caller);
     QPointer<Worker> toolPtr(tool);
     caller->setWaitingForTool(true);
@@ -645,8 +645,8 @@ QString WorkerManager::runTool(Worker *caller, QString toolKey, QString message,
         return _finishedRuns.take(run.id);
     }
 
-    // Прервано: снимаем запрос из очереди, текущий запуск инструмента
-    // доработает сам, результат никому не нужен.
+    // Interrupted: drop the request from the queue. The current tool run
+    // finishes on its own, and nobody needs the result.
     if (toolPtr)
     {
         QList<ToolRun> &queue = _toolQueues[toolPtr->id()];
@@ -741,8 +741,8 @@ void WorkerManager::sltToolFinished()
             result = QString::fromUtf8("TOOL FAILED: ") + result;
         finishToolRun(current.id, result);
     }
-    // Следующий в очереди — после того, как инструмент действительно
-    // освободится (агент ещё занят, состояние обновится асинхронно).
+    // The next in the queue waits until the tool is actually
+    // free. The agent is still busy, and the state updates asynchronously.
     QMetaObject::invokeMethod(this, "sltPumpTools", Qt::QueuedConnection);
 }
 
@@ -877,7 +877,7 @@ Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QStr
             *error = QString::fromUtf8("Task text is empty.");
         return 0;
     }
-    // CONTEXT HANDOFF уходит в injectContext при startTask (не в текст задания).
+    // CONTEXT HANDOFF goes into injectContext at startTask, not into the assignment text.
     if (checkOnly)
     {
         const QString files = changedFilesForChildren(parent);
@@ -997,7 +997,7 @@ Worker *WorkerManager::addGroupMember(Worker *chief, QString presetId, QString *
         return 0;
     }
 
-    // В группе у каждого участника — свой профиль модели.
+    // In a group, each member has their own model profile.
     const QString wantProfile = preset.profileId.trimmed();
     if (!wantProfile.isEmpty())
     {
@@ -1108,7 +1108,7 @@ void WorkerManager::syncDialogueOrder(GroupDialogue *dialogue) const
         if (worker && !worker->isGroupChief())
             order.append(worker->id());
     }
-    // Сохраняем известный порядок, добавляем новых в конец.
+    // Keep the known order and append new members at the end.
     QStringList merged;
     foreach (const QString &id, dialogue->order)
     {
@@ -1434,7 +1434,7 @@ void WorkerManager::deliverGroupAction(Worker *worker, GroupDialogue *dialogue)
         && dialogue->terminalDelivered.contains(worker->id()))
         return;
 
-    // Сбрасываем устаревшие «чужие» follow-up, чтобы не копить narrator/vote/DONE.
+    // Drop stale foreign follow-ups so narrator, vote, and DONE do not pile up.
     worker->clearPendingFollowUps();
 
     // Incremental delivery: no repeat of the whole transcript each turn.
@@ -1524,7 +1524,7 @@ void WorkerManager::finishGroupDialogue(QString groupId, QString outcome)
             continue;
         if (d.terminalDelivered.contains(member->id()))
             continue;
-        // Собеседников завершаем без лишнего LLM-хода; chief получает один DONE.
+        // Peers finish without an extra LLM turn; the chief gets one DONE.
         if (member->isGroupInterlocutor())
         {
             d.terminalDelivered.insert(member->id());
@@ -1591,7 +1591,7 @@ void WorkerManager::startGroupDialogue(QString groupId)
     _groupDialogues.insert(id, d);
     saveGroupDialogues();
 
-    // Только кто должен действовать (обычно chief-narrator) — без бродкаста всем.
+    // Only whoever must act (usually the chief narrator), with no broadcast to everyone.
     advanceDialogueAfterChange(id);
 }
 
@@ -1612,7 +1612,7 @@ bool WorkerManager::reopenGroupDialogue(QString groupId, Worker *starter, QStrin
             *error = QString::fromUtf8("Group dialogue needs at least 2 members.");
         return false;
     }
-    // Принудительно новый раунд: phase=Done → startGroupDialogue сбросит состояние.
+    // Force a new round: phase Done makes startGroupDialogue reset the state.
     if (_groupDialogues.contains(id))
     {
         GroupDialogue &d = _groupDialogues[id];
@@ -1628,7 +1628,7 @@ bool WorkerManager::reopenGroupDialogue(QString groupId, Worker *starter, QStrin
             d.outcome = d.lastOutcome;
     }
     startGroupDialogue(id);
-    // Стартер (обычно chief) становится первым рассказчиком.
+    // The starter (usually the chief) becomes the first narrator.
     if (_groupDialogues.contains(id) && starter)
     {
         GroupDialogue &d = _groupDialogues[id];
@@ -1952,8 +1952,8 @@ QString WorkerManager::groupAwait(Worker *from, QString *error)
             *error = QString::fromUtf8("Not in a group.");
         return QString();
     }
-    // Idle / отсутствующий раунд — поднять speaking, иначе все запаркуются
-    // с workerShouldAct=false и никто не ответит.
+    // Idle, or a missing round: raise speaking, otherwise everyone parks
+    // with workerShouldAct false and nobody answers.
     if (!_groupDialogues.contains(from->groupId())
         || _groupDialogues.value(from->groupId()).phase == GroupDialogueIdle)
         startGroupDialogue(from->groupId());
@@ -1990,7 +1990,7 @@ QString WorkerManager::groupAwait(Worker *from, QString *error)
             "Call group_speak / group_end_turn / group_propose / group_vote as instructed.");
     }
 
-    // Ack cursor: реплики до park уже в status; при просыпании придут только новые.
+    // Ack cursor: lines from before the park are already in status; on wake only new ones arrive.
     const QString status = resumeMessageFor(from, &d, true);
     _groupAwaiting.insert(from->id());
     from->parkForGroupDialogue();
@@ -2262,7 +2262,7 @@ bool WorkerManager::talkWaitReachable(Worker *from, Worker *to) const
 
 bool WorkerManager::wouldCreateTalkCycle(Worker *from, Worker *peer) const
 {
-    // Ребро from→peer замыкает цикл, если peer уже может дойти до from.
+    // An edge from a worker to a peer closes a cycle if that peer can already reach the worker.
     return talkWaitReachable(peer, from);
 }
 
@@ -2348,8 +2348,8 @@ QString WorkerManager::talkTo(Worker *from, QString peerId, QString message, QSt
     Q_UNUSED(from);
     Q_UNUSED(peerId);
     Q_UNUSED(message);
-    // Обсуждение только в группе (group_*). Вне группы — задание от родителя /
-    // ответ complete_task и делегирование детям; talk_to запрещён.
+    // Discussion happens only inside a group (group_*). Outside a group there is an assignment from the parent,
+    // a complete_task reply, and delegation to children. talk_to is forbidden.
     if (error)
     {
         *error = QString::fromUtf8(
@@ -2662,7 +2662,7 @@ int WorkerManager::removeWorkersUsingProfile(QString profileId)
     }
 
     int removed = 0;
-    // Сначала листья/инструменты: destroyWorkerNow сносит и детей.
+    // Leaves and tools first: destroyWorkerNow also removes children.
     for (int i = doomed.size() - 1; i >= 0; --i)
     {
         Worker *worker = doomed.at(i);
@@ -2949,8 +2949,8 @@ QString WorkerManager::runMediaExecutor(Worker *worker, bool *ok)
     case WorkerTaskKindImageGeneration:
     {
         toolName = QString::fromUtf8("generate_image");
-        // JSON с полями из params (prompt, output_path, size, …).
-        // В обычном тексте имя файла — куда сохранить, не входная картинка.
+        // JSON with the fields from params (prompt, output_path, size, and so on).
+        // In ordinary text a file name is where to save, not an input image.
         if (takeMediaJson(task, &args))
             ensureMediaPrompt(&args);
         else
@@ -2996,7 +2996,7 @@ QString WorkerManager::runMediaExecutor(Worker *worker, bool *ok)
             args = buildTextToSpeechToolArgs(task, 0);
             break;
         }
-        // Имя файла — куда сохранить речь. Распознавание только если об этом сказано.
+        // A file name is where to save speech. Transcribe only if the text says so.
         const QString fileName = mediaFileInTask(
             task, QString::fromUtf8("wav|mp3|m4a|ogg|flac|webm|aac"));
         if (!fileName.isEmpty() && taskAsksToTranscribe(task))
@@ -3130,13 +3130,13 @@ void WorkerManager::installTools(Worker *worker)
     }
     else
     {
-        // Исполнитель и делает работу, и при необходимости зовёт детей.
+        // The executor both does the work and calls children when needed.
         addFileAndShellTools(agent, _workspace, worker);
         addLlmRoleTools(this, agent, worker);
     }
 
-    // Настройки читаются и правятся только с подтверждения пользователя.
-    // Медиа-воркер не ведёт чат и эти инструменты не вызывает.
+    // Settings are read and edited only with the user's confirmation.
+    // A media worker does not run a chat and does not call these tools.
     if (!workerTaskKindIsMediaExecutor(modality))
     {
         agent->addTool(new ReadSettingsTool(worker, agent));

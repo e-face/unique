@@ -112,7 +112,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Зафиксировать решение (варианты, выбор, обоснование) в файл проекта.
+ * @brief Record a decision (options, choice, rationale) into a project file.
  */
 class ProposeDecisionTool : public AgentTool
 {
@@ -133,7 +133,7 @@ private:
 
 LlmProfile modalityProfileForWorker(Worker *owner);
 
-/** Аргументы text_to_speech: в text — только строка для озвучки, не метаданные задачи. */
+/** text_to_speech arguments: text is only the line to speak, not task metadata. */
 QJsonObject buildTextToSpeechToolArgs(const QString &taskText,
                                       const QJsonObject *toolArgs = 0);
 

@@ -10,7 +10,7 @@ class WorkerManager;
 //----------------------------------------------
 
 /**
- * @brief Поручить задачу дочернему воркеру; результат придёт после всех детей.
+ * @brief Assign a task to a child worker. The result arrives after every child.
  */
 class DelegateTaskTool : public AgentTool
 {
@@ -30,7 +30,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Свой план исполнителя: что сделать самому, что отдать, что вынести в инструмент.
+ * @brief The executor's own plan: what to do itself, what to hand off, and what to turn into a tool.
  */
 class PlanWorkTool : public AgentTool
 {
@@ -49,7 +49,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Спросить пользователя о недостающей детали и дождаться ответа.
+ * @brief Ask the user about a missing detail and wait for the answer.
  */
 class AskUserTool : public AgentTool
 {
@@ -67,7 +67,7 @@ private:
 
 //----------------------------------------------
 /**
- * @brief Список прямых дочерних воркеров владельца.
+ * @brief List of the owner's direct child workers.
  */
 class ListChildWorkersTool : public AgentTool
 {
@@ -86,7 +86,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Полный отчёт дочернего воркера по запросу (в контекст попадает обрезанный).
+ * @brief Full report of a child worker on request. Context receives a truncated copy.
  */
 class GetChildResultTool : public AgentTool
 {
@@ -105,7 +105,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Удалить временного дочернего воркера вместе с его потомками.
+ * @brief Delete a temporary child worker together with its descendants.
  */
 class DismissChildWorkerTool : public AgentTool
 {
@@ -125,7 +125,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Создать инструмент: общий многоразовый специалист. Вызывает исполнитель.
+ * @brief Create a tool: a shared reusable specialist. An executor calls it.
  */
 class CreateToolTool : public AgentTool
 {
@@ -145,7 +145,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Список инструментов проекта с их занятостью.
+ * @brief List of the project's tools and whether they are busy.
  */
 class ListToolsTool : public AgentTool
 {
@@ -167,7 +167,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Пресеты воркеров, которых исполнитель может создать.
+ * @brief Worker presets an executor may create.
  */
 class ListWorkerPresetsTool : public AgentTool
 {
@@ -187,7 +187,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Запустить инструмент и дождаться его ответа (очередь — по одному).
+ * @brief Run a tool and wait for its reply. The queue runs one at a time.
  */
 class RunToolTool : public AgentTool
 {
@@ -207,7 +207,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Команда в каталоге проекта; каждое выполнение подтверждает пользователь.
+ * @brief A command in the project directory. The user confirms every run.
  */
 class QEventLoop;
 class QProcess;
@@ -237,7 +237,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Вернуть результат родителю и остановить цикл агента.
+ * @brief Return the result to the parent and stop the agent loop.
  */
 class CompleteTaskTool : public AgentTool
 {
@@ -256,7 +256,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Запросить у пользователя разрешение на действие в дочернем чате.
+ * @brief Ask the user for permission to act in a child chat.
  */
 class RequestPermissionTool : public AgentTool
 {
@@ -275,7 +275,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Добавить собеседника в группу по preset_id из настроек.
+ * @brief Add a peer to the group by a preset_id from settings.
  */
 class AddGroupMemberTool : public AgentTool
 {
@@ -295,7 +295,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Сообщение прямому родителю/ребёнку (не для группы).
+ * @brief A message to the direct parent or child (not for a group).
  */
 class TalkToTool : public AgentTool
 {
@@ -315,7 +315,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Ждать своей очереди оратора / голосования / конца диалога группы.
+ * @brief Wait for your turn to speak, to vote, or for the group dialogue to end.
  */
 class GroupAwaitTool : public AgentTool
 {
@@ -335,7 +335,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Реплика текущего оратора — рассылается всем членам группы.
+ * @brief The current speaker's line, broadcast to every group member.
  */
 class GroupSpeakTool : public AgentTool
 {
@@ -355,7 +355,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Передать роль оратора следующему участнику.
+ * @brief Pass the speaker role to the next member.
  */
 class GroupEndTurnTool : public AgentTool
 {
@@ -375,7 +375,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Предложить итоговый результат группы на единогласное голосование.
+ * @brief Propose the group's final result for a unanimous vote.
  */
 class GroupProposeTool : public AgentTool
 {
@@ -395,7 +395,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Голос за/против текущего предложения группы.
+ * @brief A vote for or against the group's current proposal.
  */
 class GroupVoteTool : public AgentTool
 {
@@ -415,7 +415,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Список участников своей группы.
+ * @brief List of members of your own group.
  */
 class ListGroupMembersTool : public AgentTool
 {

@@ -45,7 +45,7 @@ bool ModelCapabilities::acceptsVideo() const
 bool ModelCapabilities::acceptsFile() const
 {
     return inputModalities.contains(QString::fromUtf8("file"), Qt::CaseInsensitive)
-           || acceptsText(); // агент может прочитать файл инструментами
+           || acceptsText(); // the agent can read the file with tools
 }
 
 //----------------------------------------------
@@ -371,12 +371,12 @@ ModelCapabilities ModelCapabilityService::heuristicFor(const LlmProfile &profile
     case WorkerTaskKindOther:
     default:
         caps.inputModalities << QString::fromUtf8("text");
-        caps.inputModalities << QString::fromUtf8("file"); // пути → read_file / инструменты
+        caps.inputModalities << QString::fromUtf8("file"); // paths go to read_file and the tools
         caps.outputModalities << QString::fromUtf8("text");
 
         // Vision / multimodal LLM.
-        // DeepSeek V4.1 Flash (и алиасы deepseek-flash / deepseek-v4-flash*) —
-        // нативный image+text; deepseek-chat / reasoner — только текст.
+        // DeepSeek V4.1 Flash (and aliases deepseek-flash / deepseek-v4-flash*)
+        // is native image plus text; deepseek-chat and reasoner are text only.
         const bool deepseekVision =
             model == QString::fromUtf8("deepseek-flash")
             || model.startsWith(QString::fromUtf8("deepseek-v4-flash"))
@@ -504,7 +504,7 @@ static void appendModality(QStringList *list, QString modality)
     const QString m = modality.trimmed().toLower();
     if (m.isEmpty() || list->contains(m))
         return;
-    // Нормализация синонимов каталогов.
+    // Normalize catalog synonyms.
     if (m == QString::fromUtf8("images") || m == QString::fromUtf8("vision"))
     {
         if (!list->contains(QString::fromUtf8("image")))
@@ -566,18 +566,18 @@ static void applyArchitecture(ModelCapabilities *caps, const QJsonObject &arch)
 //----------------------------------------------
 
 /**
- * @brief Modalities с корня объекта модели (DeepSeek /models) и из architecture (OpenRouter).
+ * @brief Modalities from the model-object root (DeepSeek /models) and from architecture (OpenRouter).
  */
 static void applyModelModalities(ModelCapabilities *caps, const QJsonObject &obj)
 {
     if (!caps)
         return;
-    // DeepSeek: input_modalities / output_modalities на корне.
+    // DeepSeek: input_modalities and output_modalities at the root.
     applyModalityArray(&caps->inputModalities,
                        obj.value(QString::fromUtf8("input_modalities")));
     applyModalityArray(&caps->outputModalities,
                        obj.value(QString::fromUtf8("output_modalities")));
-    // Иногда modalities / supported_input_modalities.
+    // Sometimes modalities or supported_input_modalities.
     applyModalityArray(&caps->inputModalities,
                        obj.value(QString::fromUtf8("modalities")));
     applyModalityArray(&caps->inputModalities,
@@ -589,7 +589,7 @@ static void applyModelModalities(ModelCapabilities *caps, const QJsonObject &obj
     if (!arch.isEmpty())
         applyArchitecture(caps, arch);
 
-    // Старый OpenRouter: architecture.modality = "text+image->text"
+    // Old OpenRouter: architecture.modality = "text+image->text".
     const QString modality = arch.value(QString::fromUtf8("modality")).toString().toLower();
     if (!modality.isEmpty()
         && caps->inputModalities.isEmpty())
@@ -930,7 +930,7 @@ static void applySupportedParameters(ModelCapabilities *caps, const QJsonValue &
 
 static QString catalogRequestEndpoint(const QJsonObject &model)
 {
-    // Каталог может сообщить путь запроса рядом со схемой параметров.
+    // The catalog may report a request path next to the parameter schema.
     const QJsonObject params = model.value(QString::fromUtf8("parameters")).toObject();
     QString endpoint = params.value(QString::fromUtf8("endpoint")).toString().trimmed();
     if (endpoint.isEmpty())
@@ -1037,8 +1037,8 @@ static void applySupportedParameters(ModelCapabilities *caps, const QJsonValue &
             const QJsonObject n = params.value(QString::fromUtf8("n")).toObject();
             caps->nMin = n.value(QString::fromUtf8("min")).toInt(-1);
             caps->nMax = n.value(QString::fromUtf8("max")).toInt(-1);
-            // n max==1 часто отвергается провайдером как параметр — считаем
-            // supportsN только если можно запросить больше одной картинки.
+            // An n maximum of 1 is often rejected by the provider as a parameter. Count
+            // supportsN only if more than one image can be requested.
             caps->supportsN = (caps->nMax > 1);
         }
         if (params.contains(QString::fromUtf8("size")))
@@ -1058,7 +1058,7 @@ static void applySupportedParameters(ModelCapabilities *caps, const QJsonValue &
         }
         return;
     }
-    // LLM /models: supported_parameters часто массив строк.
+    // LLM /models: supported_parameters is often an array of strings.
     if (paramsVal.isArray())
     {
         const QJsonArray arr = paramsVal.toArray();
@@ -1098,8 +1098,8 @@ static ModelCapabilities parseLlmModelObject(const QJsonObject &obj)
     caps.source = QString::fromUtf8("provider_models");
     applyModelModalities(&caps, obj);
     applyProviderCatalog(&caps, obj);
-    // Если провайдер отдал только id без modalities — не помечаем known,
-    // чтобы сработали OpenRouter enrich / эвристика.
+    // If the provider returned only an id with no modalities, do not mark it known,
+    // so OpenRouter enrichment and the heuristic can still run.
     const bool hadModalities = !caps.inputModalities.isEmpty()
                                || !caps.outputModalities.isEmpty()
                                || obj.contains(QString::fromUtf8("input_modalities"))
@@ -1120,7 +1120,7 @@ static ModelCapabilities parseLlmModelObject(const QJsonObject &obj)
     if (caps.outputModalities.isEmpty())
         caps.outputModalities << QString::fromUtf8("text");
     caps.known = true;
-    // DeepSeek и др.: корень объекта — надёжнее OpenRouter-обёртки.
+    // DeepSeek and others: the object root is more reliable than the OpenRouter wrapper.
     if (obj.contains(QString::fromUtf8("input_modalities"))
         || obj.contains(QString::fromUtf8("output_modalities")))
         caps.source = QString::fromUtf8("provider_models");
@@ -1181,7 +1181,7 @@ static bool modelIdMatches(QString catalogId, QString wanted)
         return true;
     if (a.endsWith(QChar('/') + b) || b.endsWith(QChar('/') + a))
         return true;
-    // slug без провайдера
+    // A slug with no provider.
     const int slashA = a.lastIndexOf(QChar('/'));
     const int slashB = b.lastIndexOf(QChar('/'));
     const QString slugA = slashA >= 0 ? a.mid(slashA + 1) : a;
@@ -1253,8 +1253,8 @@ static QString catalogUrlWithParameterSchema(QString url)
     const QString sep = url.contains(QChar('?'))
                             ? QString::fromUtf8("&")
                             : QString::fromUtf8("?");
-    // Каталоги вроде списка моделей отдают имена без контракта.
-    // expand=parameters — необязательный запрос схемы; чужой сервер его игнорирует.
+    // Catalogs that are model lists return names without a contract.
+    // expand=parameters is an optional schema request; a foreign server ignores it.
     return url + sep + QString::fromUtf8("expand=parameters");
 }
 
@@ -1282,7 +1282,7 @@ ModelCapabilities ModelCapabilityService::fetchOpenRouterModels(const LlmProfile
     }
     if (found.isEmpty() && !profile.catalogUrl.trimmed().isEmpty())
     {
-        // Свой каталог не знает модель — обычный /models хотя бы даст modalities.
+        // Our catalog does not know the model; a plain /models at least yields modalities.
         const QString plain = joinApi(profile.baseUrl, QString::fromUtf8("/models"));
         if (plain != url)
             found = modelObjectFromCatalog(httpGetSync(plain, profile.apiKey, &status, &error),
@@ -1310,14 +1310,14 @@ ModelCapabilities ModelCapabilityService::fetchOpenRouterPublicByModel(QString m
     ModelCapabilities empty;
     if (modelId.trimmed().isEmpty())
         return empty;
-    // Публичный каталог OpenRouter — у многих провайдеров нет architecture в /models.
+    // The public OpenRouter catalog: many providers have no architecture in /models.
     LlmProfile probe;
     probe.baseUrl = QString::fromUtf8("https://openrouter.ai/api/v1");
     probe.model = modelId.trimmed();
     ModelCapabilities caps = fetchOpenRouterModels(probe);
     if (!caps.known)
     {
-        // Попробовать с типичными префиксами провайдера.
+        // Try the usual provider prefixes.
         static const char *kPrefixes[] = {
             "qwen/", "deepseek/", "openai/", "google/", "anthropic/", "meta-llama/", 0
         };
@@ -1381,12 +1381,12 @@ ModelCapabilities ModelCapabilityService::capabilitiesFor(const LlmProfile &prof
     }
     else if (!profile.baseUrl.trimmed().isEmpty())
     {
-        // Совместимые каталоги /models у своего провайдера
+        // Compatible /models catalogs at our own provider.
         caps = fetchOpenRouterModels(profile);
     }
 
-    // DeepSeek/DashScope: если /models без modalities или только text —
-    // добираем image/audio/video из OpenRouter и эвристики по имени.
+    // DeepSeek and DashScope: if /models has no modalities or only text,
+    // take image, audio, and video from OpenRouter and the name heuristic.
     const ModelCapabilities guessed = heuristicFor(profile);
     if (!openRouter && (!caps.known || onlyTextLikeInputs(caps)))
     {
@@ -1407,8 +1407,8 @@ ModelCapabilities ModelCapabilityService::capabilitiesFor(const LlmProfile &prof
              && (guessed.acceptsImage() || guessed.acceptsAudio()
                  || guessed.acceptsVideo()))
     {
-        // Алиасы вроде deepseek-v4-flash → V4.1-Flash (vision), пока каталог
-        // ещё отдаёт только text: подмешиваем эвристику.
+        // Aliases such as deepseek-v4-flash map to V4.1-Flash (vision) while the catalog
+        // still returns only text: mix in the heuristic.
         mergeMissingModalities(&caps, guessed);
         if (caps.source.isEmpty())
             caps.source = QString::fromUtf8("heuristic_merge");
@@ -1416,7 +1416,7 @@ ModelCapabilities ModelCapabilityService::capabilitiesFor(const LlmProfile &prof
             caps.source += QString::fromUtf8("+heuristic");
     }
 
-    // У LLM-агента файлы всегда доступны через инструменты проекта.
+    // An LLM agent always reaches files through the project tools.
     if ((profile.modality == WorkerTaskKindLlm
          || profile.modality == WorkerTaskKindDecisions
          || profile.modality == WorkerTaskKindOther)

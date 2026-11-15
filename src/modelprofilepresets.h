@@ -9,7 +9,7 @@
 //----------------------------------------------
 
 /**
- * @brief Шаблон профиля модели (без токена): провайдер + endpoint + модель.
+ * @brief Model-profile template with no token: provider, endpoint, and model.
  */
 struct ModelProfilePreset
 {
@@ -25,19 +25,19 @@ struct ModelProfilePreset
     QString        model;
     QString        balanceUrl;
     QString        balanceJsonPath;
-    /** Краткое назначение модели — копируется в LlmProfile.purpose. */
+    /** Short purpose of the model. Copied into LlmProfile.purpose. */
     QString        purpose;
 };
 
 //----------------------------------------------
 
 /**
- * @brief Каталог известных OpenAI-совместимых провайдеров (LLM / image / speech / embedding).
+ * @brief Catalog of known OpenAI-compatible providers (LLM, image, speech, embedding).
  */
 QList<ModelProfilePreset> knownModelProfilePresets();
 
 /**
- * @brief Подпись для списка: «Провайдер · имя · modality · model».
+ * @brief Label for the list: provider, name, modality, and model.
  */
 QString modelProfilePresetLabel(const ModelProfilePreset &preset);
 

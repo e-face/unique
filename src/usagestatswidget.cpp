@@ -89,7 +89,7 @@ void UsageStatsWidget::setExtraRows(const QStringList &labels, const QStringList
 
 static int statsPaintHeight(int roles, int extras)
 {
-    // Совпадает с вертикальными шагами paintEvent, плюс нижний отступ.
+    // Matches the vertical steps of paintEvent, plus the bottom margin.
     const int pad = 8;
     int y = pad;
     y += 62 + 14;

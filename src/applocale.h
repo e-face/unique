@@ -11,7 +11,7 @@
 //----------------------------------------------
 
 /**
- * @brief Перевод tr(): ключ — исходная русская строка из исходников.
+ * @brief tr() translation: the key is the original Russian string from the sources.
  */
 class IniSourceTranslator : public QTranslator
 {
@@ -29,7 +29,7 @@ private:
 //----------------------------------------------
 
 /**
- * @brief Локализация GUI (gui.ini) и текстов промптов модели.
+ * @brief Localization of the GUI (gui.ini) and model prompt texts.
  */
 class AppLocale : public QObject
 {

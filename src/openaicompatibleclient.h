@@ -12,10 +12,10 @@ class QNetworkReply;
 //----------------------------------------------
 
 /**
- * @brief Общая реализация Chat Completions в формате OpenAI.
+ * @brief Shared Chat Completions implementation in the OpenAI format.
  *
- * DeepSeek, Groq и другие совместимые провайдеры задают URL, модели
- * и отличия JSON (имя в сообщениях, reasoning_content).
+ * DeepSeek, Groq, and other compatible providers set the URL, the models,
+ * and the JSON differences (a name in messages, reasoning_content).
  */
 class OpenAiCompatibleClient : public LlmClient
 {
@@ -36,10 +36,10 @@ public:
     virtual QString model() const;
     void            setIdentity(QString id, QString name);
     /**
-     * @brief Оценка окна контекста по URL провайдера и имени модели.
+     * @brief Context-window estimate from the provider URL and the model name.
      *
-     * Нужна, когда каталог /models не отдаёт длину окна, а чат всё равно
-     * должен уметь взять полный контекст модели.
+     * Needed when the /models catalog does not report the window length, but the chat
+     * still has to be able to take the model's full context.
      */
     static int estimatedContextWindow(QString baseUrl, QString model);
     static int resolvedContextWindow(QString baseUrl, QString model);
