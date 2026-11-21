@@ -42,6 +42,7 @@ public slots:
 
 private slots:
     void sltFinished();
+    void sltReadyRead();
     void sltWatchdog();
 
 private:
@@ -53,6 +54,7 @@ private:
     QNetworkAccessManager *_nam;
     QHash<QNetworkReply *, int> _replyIds;
     QHash<int, QNetworkReply *> _activeReplies;
+    QHash<QNetworkReply *, QByteArray> _received;
     QSet<QNetworkReply *>    _timedOut;
     int                      _nextId;
     QThread                 *_thread;

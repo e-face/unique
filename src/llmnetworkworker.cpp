@@ -109,7 +109,23 @@ void LlmNetworkWorker::trackReply(QNetworkReply *reply, int requestId, int timeo
     watchdog->setInterval(timeoutMs);
     connect(watchdog, SIGNAL(timeout()), this, SLOT(sltWatchdog()));
     connect(reply, SIGNAL(uploadProgress(qint64,qint64)), watchdog, SLOT(start()));
+    // Read each chunk. A reasoning stream stays quiet only between tokens;
+    // the limit is that silence, not the whole answer.
+    connect(reply, SIGNAL(readyRead()), this, SLOT(sltReadyRead()));
     watchdog->start();
+}
+
+//----------------------------------------------
+
+void LlmNetworkWorker::sltReadyRead()
+{
+    QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
+    if (!reply || !_replyIds.contains(reply))
+        return;
+    _received[reply].append(reply->readAll());
+    QTimer *watchdog = reply->findChild<QTimer *>();
+    if (watchdog)
+        watchdog->start();
 }
 
 //----------------------------------------------
@@ -192,7 +208,8 @@ void LlmNetworkWorker::sltFinished()
     _activeReplies.remove(requestId);
     const bool timedOut = _timedOut.remove(reply);
 
-    const QByteArray data = reply->readAll();
+    QByteArray data = _received.take(reply);
+    data.append(reply->readAll());
     const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     QString errorText = reply->errorString();
     if (reply->error() == QNetworkReply::NoError)
@@ -202,10 +219,11 @@ void LlmNetworkWorker::sltFinished()
         emit replyNetworkError(requestId, QString::fromUtf8("timeout"));
     else if (reply->error() == QNetworkReply::OperationCanceledError)
         emit replyNetworkError(requestId, QString::fromUtf8("aborted"));
-    else if (reply->error() != QNetworkReply::NoError)
+    else if (reply->error() != QNetworkReply::NoError && httpStatus <= 0)
         emit replyNetworkError(requestId, errorText);
     else
-        emit replyReady(requestId, data, httpStatus, errorText);
+        // HTTP status is enough. The Qt string starts with the URL and hides the reason.
+        emit replyReady(requestId, data, httpStatus, QString());
 
     reply->deleteLater();
 }

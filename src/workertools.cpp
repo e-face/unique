@@ -103,6 +103,171 @@ static QStringList splitCommandTokens(QString command)
 
 //----------------------------------------------
 
+static bool isIdentChar(QChar c)
+{
+    return c.isLetterOrNumber() || c == QChar('_');
+}
+
+static bool hasToken(const QString &text, const QString &token)
+{
+    int from = 0;
+    while (from < text.size())
+    {
+        const int at = text.indexOf(token, from, Qt::CaseInsensitive);
+        if (at < 0)
+            return false;
+        const bool left = at == 0 || !isIdentChar(text.at(at - 1));
+        const int end = at + token.size();
+        const bool right = end >= text.size() || !isIdentChar(text.at(end));
+        if (left && right)
+            return true;
+        from = end;
+    }
+    return false;
+}
+
+static bool namesSpecialized(const QString &task, const QStringList &specialized)
+{
+    foreach (const QString &name, specialized)
+    {
+        if (hasToken(task, name))
+            return true;
+    }
+    return false;
+}
+
+static bool ordersOwnImplementation(const QString &task)
+{
+    const QString text = task.toLower();
+    if (text.contains(QString::fromUtf8("напиши программ"))
+        || text.contains(QString::fromUtf8("писать программ"))
+        || text.contains(QString::fromUtf8("свою программ"))
+        || text.contains(QString::fromUtf8("своей программ"))
+        || text.contains(QString::fromUtf8("write a program"))
+        || text.contains(QString::fromUtf8("скомпили"))
+        || text.contains(QString::fromUtf8("своим кодом"))
+        || text.contains(QString::fromUtf8("свой код"))
+        || text.contains(QString::fromUtf8("напиши код"))
+        || text.contains(QString::fromUtf8("писать код"))
+        || text.contains(QString::fromUtf8("write code"))
+        || text.contains(QString::fromUtf8("own code")))
+        return true;
+    if (hasToken(text, QString::fromUtf8("скрипт")))
+        return true;
+    if (hasToken(text, QString::fromUtf8("script")))
+        return true;
+    if (hasToken(text, QString::fromUtf8("compile")))
+        return true;
+    return false;
+}
+
+static bool isGenericFunction(const QString &name)
+{
+    if (name.startsWith(QString::fromUtf8("group_")))
+        return true;
+    const QString generic[] = {
+        QString::fromUtf8("read_file"),
+        QString::fromUtf8("list_directory"),
+        QString::fromUtf8("search_files"),
+        QString::fromUtf8("find_in_files"),
+        QString::fromUtf8("create_file"),
+        QString::fromUtf8("write_file"),
+        QString::fromUtf8("replace_in_file"),
+        QString::fromUtf8("delete_file"),
+        QString::fromUtf8("rename_file"),
+        QString::fromUtf8("read_pdf"),
+        QString::fromUtf8("pdf_page_image"),
+        QString::fromUtf8("run_command"),
+        QString::fromUtf8("request_permission"),
+        QString::fromUtf8("web_search"),
+        QString::fromUtf8("complete_task"),
+        QString::fromUtf8("ask_user"),
+        QString::fromUtf8("read_settings"),
+        QString::fromUtf8("edit_settings"),
+        QString::fromUtf8("list_tools"),
+        QString::fromUtf8("list_worker_presets"),
+        QString::fromUtf8("plan_work"),
+        QString::fromUtf8("delegate_task"),
+        QString::fromUtf8("create_tool"),
+        QString::fromUtf8("run_tool"),
+        QString::fromUtf8("list_child_workers"),
+        QString::fromUtf8("get_child_result"),
+        QString::fromUtf8("dismiss_child_worker"),
+        QString::fromUtf8("propose_decision")
+    };
+    for (int i = 0; i < 28; ++i)
+    {
+        if (name == generic[i])
+            return true;
+    }
+    return false;
+}
+
+static QStringList specializedFrom(const QStringList &names)
+{
+    QStringList special;
+    foreach (const QString &name, names)
+    {
+        const QString clean = name.trimmed();
+        if (clean.isEmpty() || isGenericFunction(clean))
+            continue;
+        if (!special.contains(clean))
+            special.append(clean);
+    }
+    return special;
+}
+
+static QStringList specializedOfWorker(const Worker *worker)
+{
+    QStringList names;
+    if (worker && worker->session() && worker->session()->agent())
+        names = worker->session()->agent()->toolNames();
+    if (names.isEmpty() && worker)
+    {
+        const WorkerPreset preset = AppSettings::instance()->workerPresetById(worker->presetId());
+        if (preset.toolIdsSet)
+            names = preset.toolIds;
+    }
+    return specializedFrom(names);
+}
+
+static QStringList specializedOfPreset(const WorkerPreset &preset)
+{
+    if (!preset.toolIdsSet)
+        return QStringList();
+    return specializedFrom(preset.toolIds);
+}
+
+static QString blockProgramTask(const QString &task, const QStringList &specialized)
+{
+    if (specialized.isEmpty())
+        return QString();
+    QStringList shown = specialized;
+    if (shown.size() > 24)
+        shown = shown.mid(0, 24);
+    const QString list = shown.join(QString::fromUtf8(", "));
+    if (!namesSpecialized(task, specialized))
+    {
+        return QString::fromUtf8(
+                   "This task does not name a specialized function of this worker. "
+                   "Functions: %1. "
+                   "Rewrite the task so it calls those functions. "
+                   "Do not tell the worker to implement the operation itself, in any language.")
+            .arg(list);
+    }
+    if (ordersOwnImplementation(task))
+    {
+        return QString::fromUtf8(
+                   "This task tells the worker to implement the operation itself. "
+                   "Call its specialized functions instead: %1. "
+                   "Do not add an implementation in any language.")
+            .arg(list);
+    }
+    return QString();
+}
+
+//----------------------------------------------
+
 static QStringList commandSegments(QString command)
 {
     QStringList parts;
@@ -697,8 +862,18 @@ QString PlanWorkTool::description() const
         "edit_settings and wait for confirmation before planning around it. "
         "Save tokens and time. Default every part to how=self and do it yourself. "
         "how=delegate or how=tool only for a complex task where you judge that a child "
-        "or a tool will cost less than doing the work here. You decide; a short or "
-        "ordinary task is one how=self subtask. After the plan is accepted, do the work "
+        "or a tool will cost less than doing the work here. "
+        "If a specialized worker or a specialized tool exists for a part, you "
+        "must use it. Do not do that part yourself. A specialized tool has "
+        "priority over doing that part yourself and over a worker that does "
+        "not have the tool's functions. Reuse an already created "
+        "worker, or run the existing tool with run_tool. Create a new child "
+        "only when no such worker exists. "
+        "If your own specialization matches, how=self. "
+        "A tool marked stopped was interrupted. That part is how=tool: resume it "
+        "with run_tool. Do not do that tool's work yourself. "
+        "You decide; a short or ordinary task with no matching specialization "
+        "is one how=self subtask. After the plan is accepted, do the work "
         "in this same turn.");
 }
 
@@ -724,9 +899,11 @@ QJsonObject PlanWorkTool::parametersSchema() const
     how.insert(QString::fromUtf8("description"),
                QString::fromUtf8(
                    "self — you do this part (default; saves tokens and time). "
-                   "delegate — a child, only if you judge that split cheaper. "
-                   "tool — a repeated utilitarian step, only if a tool is cheaper "
-                   "than doing it inline."));
+                   "delegate — required when a specialized worker matches this part. "
+                   "Reuse one that is already created. "
+                   "tool — required when a specialized tool for this part already "
+                   "exists (run_tool). Also a repeated utilitarian step when a new "
+                   "tool is cheaper than doing it inline."));
     QJsonObject reason;
     reason.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     reason.insert(QString::fromUtf8("description"),
@@ -954,10 +1131,16 @@ QString DelegateTaskTool::description() const
         "why=independent (large piece that does not need the other parts' text; "
         "because says what it owns and returns), why=context (this part does not "
         "fit one chat; pass because), why=other_modality (another model API; pass "
-        "preset_id), why=check (the user asked for an independent check; "
-        "check_only=true). A lookup, a list, or one piece stays here. "
-        "Prefer worker_id of a child you already have, including COMPLETED children, for "
-        "follow-ups of the same part. A repeated command is create_tool/run_tool, not "
+        "preset_id), why=specialization (required when a preset's specialization "
+        "matches this part; if that worker is already created, reuse its "
+        "worker_id; pass preset_id only to create a new child when none exists; "
+        "do not do the part yourself), "
+        "why=check (the user asked for an independent check; "
+        "check_only=true). A lookup, a list, or one piece stays here "
+        "when no preset specialization matches it. "
+        "If a specialized worker or tool exists for the part, you must use it. "
+        "Reuse an already created worker with worker_id, including a COMPLETED "
+        "child. An existing tool is run_tool. A repeated command is create_tool/run_tool, not "
         "another executor. Pass preset_id to match modality AND purpose. Several calls "
         "run in parallel; you continue after ALL children of the batch answer.");
 }
@@ -974,12 +1157,17 @@ QJsonObject DelegateTaskTool::parametersSchema() const
     QJsonObject task;
     task.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     task.insert(QString::fromUtf8("description"),
-                QString::fromUtf8("Self-contained task, or follow-up instructions for an existing child."));
+                QString::fromUtf8(
+                    "Self-contained task, or follow-up instructions for an existing child. "
+                    "Name the functions it must call. Do not tell it to implement "
+                    "that operation itself, in any language."));
 
     QJsonObject workerId;
     workerId.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     workerId.insert(QString::fromUtf8("description"),
-                    QString::fromUtf8("Optional id of an existing direct child to reuse."));
+                    QString::fromUtf8(
+                        "Id of an existing direct child. If this worker is the specialist "
+                        "for the part, you must reuse it."));
 
     QJsonObject subtask;
     subtask.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
@@ -990,8 +1178,10 @@ QJsonObject DelegateTaskTool::parametersSchema() const
     why.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     why.insert(QString::fromUtf8("description"),
                QString::fromUtf8(
-                   "Required for a new child: other_modality, context, independent, or check. "
-                   "Omit only when reusing worker_id."));
+                   "Required for a new child: other_modality, context, independent, "
+                   "specialization, or check. "
+                   "why=specialization needs preset_id only when creating a new child. "
+                   "Reuse worker_id when that worker already exists."));
 
     QJsonObject because;
     because.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
@@ -1018,10 +1208,10 @@ QJsonObject DelegateTaskTool::parametersSchema() const
     presetId.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     presetId.insert(QString::fromUtf8("description"),
                     QString::fromUtf8(
-                        "Optional worker preset_id (from first-message list). Selects the "
-                        "child's model by modality and purpose. type must match the "
-                        "preset's type. Omit only if reusing worker_id or accepting the "
-                        "default for type."));
+                        "Worker preset_id from list_worker_presets. Required for "
+                        "why=specialization: the preset whose specialization matches "
+                        "the part, only when creating a new child. Also selects "
+                        "modality and purpose. Omit when reusing worker_id."));
 
     QJsonObject properties;
     properties.insert(QString::fromUtf8("type"), type);
@@ -1118,8 +1308,14 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
         {
             if (ok)
                 *ok = false;
+            QString spec = preset.specialization.trimmed().simplified();
+            if (spec.isEmpty())
+                spec = QString::fromUtf8("-");
             return QString::fromUtf8(
-                "Tool presets are for create_tool / run_tool, not delegate_task.");
+                "preset_id=%1 is a tool preset (specialization=\"%2\"), not an executor. "
+                "Call create_tool with this preset_id, then run_tool. "
+                "Do not spawn an executor for this part: it would not have this preset's functions.")
+                .arg(presetId, spec);
         }
         if (normalizeWorkerType(preset.type) != type)
         {
@@ -1171,6 +1367,13 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
         _owner->noteWorkAction();
         _owner->markSubtaskDelegated(subtaskName);
         _owner->markSubtaskDelegated(title);
+        const QString programBlock = blockProgramTask(task, specializedOfWorker(child));
+        if (!programBlock.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return programBlock;
+        }
         if (!title.isEmpty() && child->title().isEmpty())
             child->setTitle(title);
         child->markUsed();
@@ -1206,14 +1409,47 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
     if (why != QString::fromUtf8("other_modality")
         && why != QString::fromUtf8("context")
         && why != QString::fromUtf8("independent")
+        && why != QString::fromUtf8("specialization")
         && why != QString::fromUtf8("check"))
     {
         if (ok)
             *ok = false;
         return QString::fromUtf8(
-            "A new child needs why=other_modality, context, independent, or check. "
+            "A new child needs why=other_modality, context, independent, "
+            "specialization, or check. "
+            "why=specialization is the preset whose specialization matches the part. "
             "Do the work yourself when none of these apply. "
-            "Reuse worker_id for a follow-up of a child you already have.");
+            "If a specialized worker already exists, you must reuse it: pass its worker_id.");
+    }
+    if (why == QString::fromUtf8("specialization"))
+    {
+        if (presetId.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "why=specialization needs preset_id of the executor whose "
+                "specialization matches this part.");
+        }
+        const WorkerPreset chosen = AppSettings::instance()->workerPresetById(presetId);
+        if (chosen.specialization.trimmed().isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "preset_id=%1 has no specialization. "
+                "Use why=context or why=independent, or do the part yourself.")
+                .arg(presetId);
+        }
+        if (!_owner->presetId().trimmed().isEmpty()
+            && chosen.id == _owner->presetId().trimmed())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "preset_id=%1 is your own preset. Do this part yourself.")
+                .arg(presetId);
+        }
     }
     if ((why == QString::fromUtf8("context") || why == QString::fromUtf8("independent"))
         && because.size() < 20)
@@ -1261,7 +1497,59 @@ QString DelegateTaskTool::invoke(QString argumentsJson, bool *ok)
         }
     }
 
-    Worker *spawned = _manager->spawn(_owner, type, task, &error, llmProfileId, checkOnly);
+    // A new executor does not inherit a tool preset's functions. If a tool
+    // preset already matches this part, spawning a plain child drops them.
+    {
+        const QString hay = task + QString::fromUtf8("\n") + title;
+        QStringList toolHits;
+        foreach (const WorkerPreset &preset, AppSettings::instance()->workerPresets())
+        {
+            if (normalizeWorkerType(preset.type) != WorkerTypeTool)
+                continue;
+            if (!Worker::specializationHits(preset.specialization, hay))
+                continue;
+            QString spec = preset.specialization.trimmed().simplified();
+            if (spec.size() > 80)
+                spec = spec.left(77) + QString::fromUtf8("...");
+            QString live;
+            foreach (Worker *tool, _manager->tools())
+            {
+                if (!tool || tool->presetId() != preset.id)
+                    continue;
+                live = QString::fromUtf8(" existing tool_id=%1 name=\"%2\"")
+                           .arg(tool->id(), tool->toolName());
+                break;
+            }
+            toolHits << QString::fromUtf8("preset_id=%1 specialization=\"%2\"%3")
+                           .arg(preset.id, spec, live);
+        }
+        if (!toolHits.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "This part matches a tool preset: %1. "
+                "Do not create an executor for it. An executor does not get that "
+                "preset's functions. If the tool already exists, call run_tool. "
+                "Otherwise call create_tool with that preset_id, then run_tool.")
+                .arg(toolHits.join(QString::fromUtf8("; ")));
+        }
+    }
+
+    if (!presetId.isEmpty())
+    {
+        const QString programBlock = blockProgramTask(
+            task, specializedOfPreset(AppSettings::instance()->workerPresetById(presetId)));
+        if (!programBlock.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return programBlock;
+        }
+    }
+
+    Worker *spawned = _manager->spawn(_owner, type, task, &error, llmProfileId, checkOnly,
+                                      presetId);
     if (!spawned)
     {
         if (ok)
@@ -1839,7 +2127,13 @@ QString CreateToolTool::description() const
         "executor for a repetition. Pass preset_id to bind the model: match "
         "modality AND purpose from the "
         "presets list (e.g. text-to-image vs object segmentation). Without preset_id the "
-        "default Tool LLM profile is used (cannot generate images). Call list_tools first. "
+        "default Tool LLM profile is used (cannot generate images). Call list_tools "
+        "and list_worker_presets first. Before you create the tool and before you "
+        "give it a task, read functions= and write the purpose and the task only "
+        "from those functions. The same model answers as a worker and does not "
+        "answer as a tool when the task needs a function the tool does not have. "
+        "Name the functions the purpose and the task must call. Do not tell it "
+        "to implement that operation itself, in any language. "
         "Only the user can delete tools.");
 }
 
@@ -1939,6 +2233,13 @@ QString CreateToolTool::invoke(QString argumentsJson, bool *ok)
             return QString::fromUtf8("Preset %1 points to unknown profileId=%2.")
                 .arg(presetId, llmProfileId);
         }
+        const QString programBlock = blockProgramTask(purpose, specializedOfPreset(preset));
+        if (!programBlock.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return programBlock;
+        }
         modalityNote = QString::fromUtf8(
                            " modality=%1 profile=\"%2\" model=%3 purpose=\"%4\" (preset_id=%5)")
                            .arg(workerTaskKindToString(profile.modality),
@@ -1958,7 +2259,7 @@ QString CreateToolTool::invoke(QString argumentsJson, bool *ok)
     }
 
     _owner->noteWorkAction();
-    Worker *tool = _manager->createTool(_owner, name, purpose, &error, llmProfileId);
+    Worker *tool = _manager->createTool(_owner, name, purpose, &error, llmProfileId, presetId);
     if (!tool)
     {
         if (ok)
@@ -2001,9 +2302,19 @@ QString ListToolsTool::name() const
 QString ListToolsTool::description() const
 {
     return QString::fromUtf8(
-        "List shared tools: tool_id, name, busy/free, queue, purpose. "
-        "Call this before plan_work. A repeated utilitarian step may become a tool "
-        "when you judge that cheaper; you decide.");
+        "List shared tools: tool_id, name, busy/free/stopped, queue, purpose. "
+        "Call this before plan_work. "
+        "If a specialized tool for the part already exists, you must run_tool. "
+        "Do not do that part yourself. A specialized tool has priority over "
+        "doing that part yourself and over a worker that does not have the "
+        "tool's functions. "
+        "Each line has functions=. Before create_tool and before the task, write "
+        "only from those functions. The same model answers as a worker and does "
+        "not answer as a tool when the task needs a function the tool does not have. "
+        "A repeated utilitarian step may become a tool "
+        "when you judge that cheaper; you decide. "
+        "A tool marked stopped was interrupted. Resume it with run_tool. "
+        "Do not do that tool's work yourself.");
 }
 
 //----------------------------------------------
@@ -2055,10 +2366,16 @@ QString ListWorkerPresetsTool::name() const
 QString ListWorkerPresetsTool::description() const
 {
     return QString::fromUtf8(
-        "List the worker presets you can create: preset_id, type, modality, model, purpose. "
+        "List the worker presets you can create: preset_id, type, modality, model, "
+        "purpose, specialization. specialization is what that text worker is for. "
         "Call this before plan_work, together with list_tools. "
-        "Creating a child or a tool is your decision and only worth it when it "
-        "saves tokens and time. Pass preset_id if you do.");
+        "If a specialized worker exists for the assignment, you must use it. "
+        "Do not do that part yourself. Reuse an already created worker with "
+        "worker_id. Create a new child with that preset_id and why=specialization "
+        "only when no such worker exists yet. "
+        "A preset line includes functions=. A tool made from that preset has only "
+        "those functions. Write its task from that list. "
+        "If your own specialization matches, do it here.");
 }
 
 //----------------------------------------------
@@ -2110,6 +2427,14 @@ QString RunToolTool::description() const
 {
     return QString::fromUtf8(
         "Run a shared tool and wait for its report. One caller at a time (others queue). "
+        "If this tool is the specialist for the part, you must use this call. "
+        "Before you write the task, read this tool's functions= from list_tools. "
+        "Name the functions the task must call. Do not tell it to implement "
+        "that operation itself, in any language. "
+        "The task may use only those functions. The same model answers as a worker "
+        "and does not answer as a tool when the task needs a function the tool "
+        "does not have. "
+        "A tool marked stopped is resumed by this call; do not redo its work here. "
         "An llm tool gets a plain-language task. "
         "An image, audio, video, speech or embedding tool is not a chat model. "
         "request is one JSON object. The keys are that tool's params from list_tools "
@@ -2182,6 +2507,16 @@ QString RunToolTool::invoke(QString argumentsJson, bool *ok)
     const QString toolId = args.value(QString::fromUtf8("tool_id")).toString();
     const QString request = args.value(QString::fromUtf8("request")).toString();
     Worker *tool = _manager->toolByIdOrName(toolId);
+    if (tool)
+    {
+        const QString programBlock = blockProgramTask(request, specializedOfWorker(tool));
+        if (!programBlock.isEmpty())
+        {
+            if (ok)
+                *ok = false;
+            return programBlock;
+        }
+    }
     const QString toolName = tool ? tool->toolName() : toolId.trimmed();
     const QString result = _manager->runTool(_owner, toolId, request, &error);
     if (!error.isEmpty())
@@ -2192,6 +2527,7 @@ QString RunToolTool::invoke(QString argumentsJson, bool *ok)
     }
     if (ok)
         *ok = true;
+    _owner->noteToolRan();
     return QString::fromUtf8("Tool \"%1\" answered:\n%2").arg(toolName, result);
 }
 

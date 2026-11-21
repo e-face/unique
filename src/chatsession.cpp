@@ -255,6 +255,7 @@ ChatSnapshot ChatSession::snapshot(bool sealing) const
         shot.groupId = _worker->groupId();
         shot.groupRole = groupRoleToString(_worker->groupRole());
         shot.llmProfileId = _worker->llmProfileId();
+        shot.presetId = _worker->presetId();
         shot.result = _worker->result();
         shot.lastError = _worker->lastError();
         shot.lastAssistant = _worker->lastAssistant();
@@ -390,6 +391,7 @@ static QJsonArray contentPartsForStorage(const QJsonArray &parts)
         {
             QJsonObject imageUrl = part.value(QString::fromUtf8("image_url")).toObject();
             const QString url = imageUrl.value(QString::fromUtf8("url")).toString();
+            // source_path stays so the next request can read the file again.
             imageUrl.insert(QString::fromUtf8("url"),
                             QString::fromUtf8("[omitted image, %1 chars]").arg(url.size()));
             part.insert(QString::fromUtf8("image_url"), imageUrl);
@@ -568,6 +570,8 @@ QJsonObject ChatStore::snapshotMetaToJson(const ChatSnapshot &shot)
         object.insert(QString::fromUtf8("groupRole"), shot.groupRole);
     if (!shot.llmProfileId.isEmpty())
         object.insert(QString::fromUtf8("llmProfileId"), shot.llmProfileId);
+    if (!shot.presetId.isEmpty())
+        object.insert(QString::fromUtf8("presetId"), shot.presetId);
     object.insert(QString::fromUtf8("result"), shot.result);
     object.insert(QString::fromUtf8("workerState"), shot.workerState);
     object.insert(QString::fromUtf8("lastError"), shot.lastError);
@@ -612,6 +616,7 @@ ChatSnapshot ChatStore::snapshotMetaFromJson(const QJsonObject &object)
     shot.groupId = object.value(QString::fromUtf8("groupId")).toString();
     shot.groupRole = object.value(QString::fromUtf8("groupRole")).toString();
     shot.llmProfileId = object.value(QString::fromUtf8("llmProfileId")).toString();
+    shot.presetId = object.value(QString::fromUtf8("presetId")).toString();
     shot.result = object.value(QString::fromUtf8("result")).toString();
     shot.workerState = object.value(QString::fromUtf8("workerState")).toString();
     shot.lastError = object.value(QString::fromUtf8("lastError")).toString();

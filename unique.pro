@@ -40,6 +40,10 @@ HEADERS += \
     src/llmclient.h \
     src/llmnetworkworker.h \
     src/llmtypes.h \
+    src/lookuptools.h \
+    src/inflate.h \
+    src/pdftext.h \
+    src/pdfpage.h \
     src/mainwindow.h \
     src/markdownformatter.h \
     src/modalityapi.h \
@@ -56,6 +60,8 @@ HEADERS += \
     src/settingspage.h \
     src/settingstools.h \
     src/teamschemaeditor.h \
+    src/toolcatalog.h \
+    src/toolplugin.h \
     src/updatechecker.h \
     src/worker.h \
     src/workergraphwidget.h \
@@ -83,6 +89,10 @@ SOURCES += \
     src/journalwidget.cpp \
     src/knowledgestore.cpp \
     src/llmclient.cpp \
+    src/lookuptools.cpp \
+    src/inflate.cpp \
+    src/pdftext.cpp \
+    src/pdfpage.cpp \
     src/llmnetworkworker.cpp \
     src/main.cpp \
     src/mainwindow.cpp \
@@ -101,6 +111,7 @@ SOURCES += \
     src/settingspage.cpp \
     src/settingstools.cpp \
     src/teamschemaeditor.cpp \
+    src/toolcatalog.cpp \
     src/updatechecker.cpp \
     src/worker.cpp \
     src/workergraphwidget.cpp \
@@ -113,6 +124,7 @@ RESOURCES += icons.qrc
 # Executable icon (Windows).
 win32:RC_ICONS = icon/unique.ico
 
+# plugins/cad/cad.pro builds bin/plugins/cad.dll. Unique loads it from plugins/.
 # Qt 5.9 loads OpenSSL 1.0.2 (libeay32.dll / ssleay32.dll) from the executable directory.
 win32 {
     OPENSSL_DIR = $$PWD/3rdparty/openssl
@@ -120,6 +132,8 @@ win32 {
         $(COPY_FILE) $$shell_path($$OPENSSL_DIR/libeay32.dll) $$shell_path($$DESTDIR)
     QMAKE_POST_LINK += $$escape_expand(\\n\\t) \
         $(COPY_FILE) $$shell_path($$OPENSSL_DIR/ssleay32.dll) $$shell_path($$DESTDIR)
+    QMAKE_POST_LINK += $$escape_expand(\\n\\t) \
+        $(COPY_FILE) $$shell_path($$PWD/3rdparty/pdfium/bin/pdfium.dll) $$shell_path($$DESTDIR)
     QMAKE_POST_LINK += $$escape_expand(\\n\\t) \
         $$shell_quote($$shell_path($$[QT_INSTALL_BINS]/windeployqt)) --release --compiler-runtime --no-translations $$shell_quote($$shell_path($$DESTDIR/$${TARGET}.exe))
 }

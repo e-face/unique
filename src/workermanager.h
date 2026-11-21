@@ -132,7 +132,8 @@ public:
                          Worker *parent = 0, QString task = QString(),
                          QString llmProfileId = QString());
     Worker *spawn(Worker *parent, WorkerType type, QString task, QString *error,
-                  QString llmProfileId = QString(), bool checkOnly = false);
+                  QString llmProfileId = QString(), bool checkOnly = false,
+                  QString presetId = QString());
     /**
      * @brief Add a peer to the chief's group (creates the group if needed).
      */
@@ -213,9 +214,11 @@ public:
      * @param llmProfileId model profile from preset_id. Empty means the Tool role profile.
      */
     Worker *createTool(Worker *creator, QString name, QString purpose, QString *error,
-                       QString llmProfileId = QString());
+                       QString llmProfileId = QString(), QString presetId = QString());
     Worker *toolByIdOrName(QString key) const;
     QString toolsSummary() const;
+    /** Text for the model when a tool was stopped mid-run. Empty if none. */
+    QString interruptedToolsNote() const;
     int toolQueueLength(Worker *tool) const;
     bool toolBusy(Worker *tool) const;
     QString runTool(Worker *caller, QString toolKey, QString message, QString *error);
@@ -275,6 +278,7 @@ private slots:
     void sltPumpQueue();
     void sltLimitsChanged();
     void sltApplyLimitsChanged();
+    void sltPresetsChanged();
     void sltToolStateChanged();
     void sltToolFinished();
     void sltPumpTools();

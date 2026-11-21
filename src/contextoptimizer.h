@@ -58,9 +58,11 @@ public:
      * @param chunk           Text of the chunk.
      * @param index           Chunk number (from 1); @p total is the number of chunks.
      * @param anchorKept      The task wording is stored separately and must not be repeated.
+     * @param assignmentReplaced A new assignment is replacing the previous one.
      */
     QList<LlmMessage> buildSummarizeMessages(QString previousSummary, QString chunk,
-                                             int index, int total, bool anchorKept) const;
+                                             int index, int total, bool anchorKept,
+                                             bool assignmentReplaced) const;
     QString extractiveSummary(const QList<LlmMessage> &oldPart, int maxChars) const;
     LlmMessage makeSummaryMessage(QString summary) const;
     QList<LlmMessage> rebuildHistory(const LlmMessage &systemPrompt,

@@ -4,6 +4,11 @@
 #include "appsettings.h"
 #include "llmclient.h"
 //----------------------------------------------
+#include <QBuffer>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QImage>
 #include <QJsonDocument>
 #include <QMetaObject>
 #include <QPointer>
@@ -238,6 +243,7 @@ Agent::Agent(QObject *parent)
     , _compactThenChat(false)
     , _overflowRetried(false)
     , _inspectIo(false)
+    , _useReasoning(true)
     , _stopAfterTools(false)
     , _heldForExternal(false)
     , _waitingToolBudget(false)
@@ -330,6 +336,50 @@ void Agent::clearTools()
 {
     qDeleteAll(_tools);
     _tools.clear();
+    _estimateDirty = true;
+}
+
+//----------------------------------------------
+
+bool Agent::hasTool(QString name) const
+{
+    return findTool(name) != 0;
+}
+
+//----------------------------------------------
+
+QStringList Agent::toolNames() const
+{
+    QStringList names;
+    foreach (AgentTool *tool, _tools)
+    {
+        if (!tool || tool->name().isEmpty())
+            continue;
+        names.append(tool->name());
+    }
+    names.sort();
+    return names;
+}
+
+//----------------------------------------------
+
+void Agent::retainTools(const QStringList &names)
+{
+    QSet<QString> keep;
+    foreach (const QString &name, names)
+    {
+        const QString id = name.trimmed();
+        if (!id.isEmpty())
+            keep.insert(id);
+    }
+    for (int i = _tools.size() - 1; i >= 0; --i)
+    {
+        AgentTool *tool = _tools.at(i);
+        if (!tool || keep.contains(tool->name()))
+            continue;
+        _tools.removeAt(i);
+        delete tool;
+    }
     _estimateDirty = true;
 }
 
@@ -586,6 +636,18 @@ void Agent::setSystemPrompt(QString prompt)
 
 //----------------------------------------------
 
+void Agent::rewriteSystemPrompt()
+{
+    if (_history.isEmpty() || _history.first().role != LlmRoleSystem)
+        return;
+    const QString next = effectiveSystemPrompt();
+    if (_history.first().content == next)
+        return;
+    _history[0].content = next;
+}
+
+//----------------------------------------------
+
 QString Agent::systemPrompt() const
 {
     return _systemPrompt;
@@ -624,10 +686,10 @@ QString Agent::effectiveSystemPrompt() const
             "\n\nProject directory: %1\n"
             "All file operations must stay inside it. "
             "Use relative paths (for example src/main.cpp).\n"
-            "Strongly preferred for scratch files (scripts, logs, test binaries, downloads, "
-            "notes): always use ___project___/tmp (create it if missing, e.g. "
-            "___project___/tmp/build.log). Do not put throwaway files in a project-root tmp/ "
-            "or among source files. The rest of ___project___ "
+            "Throwaway files are not part of the task. Do not create one to probe, "
+            "measure, or retry. If a log or a download is required, put it in "
+            "___project___/tmp (create it if missing). Do not put throwaway files in "
+            "a project-root tmp/ or among source files. The rest of ___project___ "
             "is this tool's service storage: do not read, list or modify it.")
                 .arg(_projectDirectory);
     }
@@ -816,6 +878,13 @@ bool Agent::inspectIo() const
 
 //----------------------------------------------
 
+void Agent::setUseReasoning(bool enabled)
+{
+    _useReasoning = enabled;
+}
+
+//----------------------------------------------
+
 bool Agent::isBusy() const
 {
     return _busy;
@@ -872,6 +941,51 @@ QList<LlmMessage> Agent::history() const
 
 //----------------------------------------------
 
+static bool isContinuationNudge(const QString &text)
+{
+    return text.startsWith(QString::fromUtf8("Application was restarted"))
+           || text.startsWith(QString::fromUtf8("Previous model request failed"))
+           || text.startsWith(QString::fromUtf8("TOOL BUDGET EXHAUSTED"))
+           || text.startsWith(QString::fromUtf8("Continue the assigned task"))
+           || text.startsWith(QString::fromUtf8("Continue your part"));
+}
+
+//----------------------------------------------
+
+static void dropStaleFollowUpPins(QList<LlmMessage> *history)
+{
+    if (!history)
+        return;
+    for (int i = history->size() - 1; i >= 0; --i)
+    {
+        const LlmMessage &message = history->at(i);
+        if (message.role != LlmRoleUser || message.hideInUi)
+            continue;
+        const QString text = message.content.trimmed();
+        if (!text.startsWith(kAnchorFollowUpPrefix))
+            continue;
+        const QString body = text.mid(kAnchorFollowUpPrefix.size()).trimmed();
+        bool replaced = false;
+        for (int j = i + 1; j < history->size(); ++j)
+        {
+            const LlmMessage &later = history->at(j);
+            if (later.role != LlmRoleUser || later.hideInUi)
+                continue;
+            const QString laterText = later.content.trimmed();
+            if (laterText.isEmpty() || isContinuationNudge(laterText))
+                continue;
+            if (laterText == text || laterText == body)
+                continue;
+            replaced = true;
+            break;
+        }
+        if (replaced)
+            history->removeAt(i);
+    }
+}
+
+//----------------------------------------------
+
 void Agent::setHistory(const QList<LlmMessage> &history)
 {
     if (_busy)
@@ -887,6 +1001,7 @@ void Agent::setHistory(const QList<LlmMessage> &history)
         if (_history.first().role == LlmRoleSystem && !_systemPrompt.trimmed().isEmpty())
             _history[0].content = effectiveSystemPrompt();
         _optimizer.repairToolTurns(&_history);
+        dropStaleFollowUpPins(&_history);
     }
     emitContextUsage();
 }
@@ -1035,7 +1150,10 @@ void Agent::sendUserMessageAfterCompact(QString text, int ingress)
         return;
     }
 
-    // Nothing to compress: send as usual.
+    // The new request is the only pinned assignment. The previous one must be
+    // summarized (or dropped), not left beside it as a second current task.
+    _followUpAnchor = trimmed;
+
     int movable = 0;
     for (int i = (_history.first().role == LlmRoleSystem) ? 1 : 0; i < _history.size(); ++i)
     {
@@ -1044,6 +1162,11 @@ void Agent::sendUserMessageAfterCompact(QString text, int ingress)
     }
     if (movable == 0)
     {
+        if (!_history.isEmpty() && _history.first().role == LlmRoleSystem)
+        {
+            _history = _optimizer.rebuildHistory(_history.first(), anchorMessages(),
+                                                 QString(), QList<LlmMessage>());
+        }
         sendUserMessage(trimmed, ingress);
         return;
     }
@@ -1438,7 +1561,8 @@ void Agent::requestNextSummaryChunk()
     LlmRequest request;
     request.messages = _optimizer.buildSummarizeMessages(_runningSummary, chunk, index,
                                                          _summaryChunkTotal,
-                                                         !_taskAnchor.isEmpty());
+                                                         !_taskAnchor.isEmpty(),
+                                                         !_pendingUserMessage.isEmpty());
     request.maxTokens = kSummaryMaxTokens;
     _lastEstimated = _optimizer.estimatePrompt(request.messages, QList<LlmTool>());
     // Do not call requestAsText() while Inspect is off: the argument is built
@@ -1542,6 +1666,227 @@ void Agent::endModelWork()
 
 //----------------------------------------------
 
+static bool chatImageUrlIsSendable(const QString &url)
+{
+    const QString head = url.left(96).trimmed().toLower();
+    if (head.startsWith(QString::fromUtf8("https://"))
+        || head.startsWith(QString::fromUtf8("http://")))
+    {
+        return url.size() <= 8192
+               && !url.contains(QChar(' '))
+               && !url.contains(QChar('\n'));
+    }
+    if (!head.startsWith(QString::fromUtf8("data:image/")))
+        return false;
+    const int semi = head.indexOf(QChar(';'));
+    const int comma = url.indexOf(QChar(','));
+    if (semi < 0 || comma < 0 || comma > 128)
+        return false;
+    if (!url.left(comma).toLower().contains(QString::fromUtf8("base64")))
+        return false;
+    const QString mime = head.mid(5, semi - 5);
+    return mime == QString::fromUtf8("image/jpeg")
+           || mime == QString::fromUtf8("image/png")
+           || mime == QString::fromUtf8("image/gif")
+           || mime == QString::fromUtf8("image/webp");
+}
+
+//----------------------------------------------
+
+static QStringList attachedImagePaths(const QString &content)
+{
+    const QString marker = QString::fromUtf8("Attached images (embedded for the model):");
+    const int at = content.indexOf(marker);
+    if (at < 0)
+        return QStringList();
+    QStringList paths;
+    const QStringList lines = content.mid(at + marker.size()).split(QChar('\n'));
+    foreach (QString line, lines)
+    {
+        line = line.trimmed();
+        if (line.isEmpty())
+            continue;
+        if (!line.startsWith(QChar('-')))
+            break;
+        line = line.mid(1).trimmed();
+        if (!line.isEmpty())
+            paths.append(line);
+    }
+    return paths;
+}
+
+//----------------------------------------------
+
+static QString absoluteImageInProject(const QString &projectDir, const QString &relative)
+{
+    if (projectDir.isEmpty() || relative.trimmed().isEmpty())
+        return QString();
+    QString rel = relative.trimmed();
+    rel.replace(QChar('\\'), QChar('/'));
+    if (rel.contains(QString::fromUtf8("..")) || rel.contains(QChar(0)))
+        return QString();
+    const QString rootClean = QDir::cleanPath(QDir(projectDir).absolutePath());
+    const QString abs = QDir::cleanPath(QDir(projectDir).absoluteFilePath(rel));
+    if (!abs.startsWith(rootClean, Qt::CaseInsensitive))
+        return QString();
+    if (abs.size() != rootClean.size())
+    {
+        const QChar sep = abs.at(rootClean.size());
+        if (sep != QChar('/') && sep != QChar('\\'))
+            return QString();
+    }
+    if (!QFileInfo(abs).isFile())
+        return QString();
+    return abs;
+}
+
+//----------------------------------------------
+
+static QString sniffChatImageMime(const QByteArray &bytes)
+{
+    if (bytes.size() >= 3
+        && quint8(bytes.at(0)) == 0xFF
+        && quint8(bytes.at(1)) == 0xD8
+        && quint8(bytes.at(2)) == 0xFF)
+        return QString::fromUtf8("image/jpeg");
+    if (bytes.size() >= 8 && bytes.startsWith(QByteArray("\x89PNG\r\n\x1a\n", 8)))
+        return QString::fromUtf8("image/png");
+    if (bytes.size() >= 6
+        && (bytes.startsWith("GIF87a") || bytes.startsWith("GIF89a")))
+        return QString::fromUtf8("image/gif");
+    if (bytes.size() >= 12
+        && bytes.startsWith("RIFF")
+        && bytes.mid(8, 4) == QByteArray("WEBP"))
+        return QString::fromUtf8("image/webp");
+    return QString();
+}
+
+//----------------------------------------------
+
+static QString encodeChatImageFile(const QString &absolutePath)
+{
+    QFile file(absolutePath);
+    if (!file.open(QIODevice::ReadOnly))
+        return QString();
+    QByteArray bytes = file.readAll();
+    file.close();
+    if (bytes.isEmpty())
+        return QString();
+
+    QString mime = QString::fromUtf8("image/jpeg");
+    QImage image;
+    if (!image.loadFromData(bytes))
+    {
+        mime = sniffChatImageMime(bytes);
+        if (mime.isEmpty() || bytes.size() > 6 * 1024 * 1024)
+            return QString();
+        return QString::fromUtf8("data:%1;base64,%2")
+            .arg(mime, QString::fromLatin1(bytes.toBase64()));
+    }
+    const int kMaxSide = 2048;
+    if (image.width() > kMaxSide || image.height() > kMaxSide)
+        image = image.scaled(kMaxSide, kMaxSide, Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    if (image.isNull())
+        return QString();
+    QImage rgb = image.convertToFormat(QImage::Format_RGB32);
+    QByteArray encoded;
+    QBuffer buffer(&encoded);
+    buffer.open(QIODevice::WriteOnly);
+    if (!rgb.save(&buffer, "JPEG", 85))
+    {
+        buffer.close();
+        encoded.clear();
+        buffer.open(QIODevice::WriteOnly);
+        if (image.convertToFormat(QImage::Format_ARGB32).save(&buffer, "PNG"))
+            mime = QString::fromUtf8("image/png");
+    }
+    buffer.close();
+    if (encoded.isEmpty())
+    {
+        mime = sniffChatImageMime(bytes);
+        if (mime.isEmpty() || bytes.size() > 6 * 1024 * 1024)
+            return QString();
+        return QString::fromUtf8("data:%1;base64,%2")
+            .arg(mime, QString::fromLatin1(bytes.toBase64()));
+    }
+    return QString::fromUtf8("data:%1;base64,%2")
+        .arg(mime, QString::fromLatin1(encoded.toBase64()));
+}
+
+//----------------------------------------------
+
+static QJsonObject chatTextPart(const QString &text)
+{
+    QJsonObject part;
+    part.insert(QString::fromUtf8("type"), QString::fromUtf8("text"));
+    part.insert(QString::fromUtf8("text"), text);
+    return part;
+}
+
+//----------------------------------------------
+
+static QJsonObject chatImagePart(const QString &url)
+{
+    QJsonObject imageUrl;
+    imageUrl.insert(QString::fromUtf8("url"), url);
+    QJsonObject part;
+    part.insert(QString::fromUtf8("type"), QString::fromUtf8("image_url"));
+    part.insert(QString::fromUtf8("image_url"), imageUrl);
+    return part;
+}
+
+//----------------------------------------------
+
+static void repairMessageImages(LlmMessage *message, const QString &projectDir)
+{
+    if (!message || message->contentParts.isEmpty())
+        return;
+    const QStringList recovered = attachedImagePaths(message->content);
+    int recoveredUsed = 0;
+    QJsonArray out;
+    for (int i = 0; i < message->contentParts.size(); ++i)
+    {
+        const QJsonObject part = message->contentParts.at(i).toObject();
+        if (part.value(QString::fromUtf8("type")).toString()
+            != QString::fromUtf8("image_url"))
+        {
+            out.append(part);
+            continue;
+        }
+        const QJsonObject image = part.value(QString::fromUtf8("image_url")).toObject();
+        QString url = image.value(QString::fromUtf8("url")).toString();
+        QString source = image.value(QString::fromUtf8("source_path")).toString().trimmed();
+        if (chatImageUrlIsSendable(url))
+        {
+            out.append(chatImagePart(url));
+            continue;
+        }
+        if (source.isEmpty() && recoveredUsed < recovered.size())
+            source = recovered.at(recoveredUsed++);
+        const QString abs = absoluteImageInProject(projectDir, source);
+        if (!abs.isEmpty())
+            url = encodeChatImageFile(abs);
+        if (chatImageUrlIsSendable(url))
+        {
+            out.append(chatImagePart(url));
+            continue;
+        }
+        QString note = QString::fromUtf8(
+            "[Image omitted: the provider does not accept this image_url.]");
+        if (!source.isEmpty())
+        {
+            note = QString::fromUtf8(
+                       "[Image omitted (%1): the provider does not accept this image_url.]")
+                       .arg(source);
+        }
+        out.append(chatTextPart(note));
+    }
+    message->contentParts = out;
+}
+
+//----------------------------------------------
+
 void Agent::requestCompletion()
 {
     if (!_client)
@@ -1553,9 +1898,11 @@ void Agent::requestCompletion()
     }
 
     LlmRequest request;
-    request.reasoning = AppSettings::instance()->reasoningEnabled();
+    request.reasoning = _useReasoning && AppSettings::instance()->reasoningEnabled();
     _optimizer.repairToolTurns(&_history);
     request.messages = _history;
+    for (int i = 0; i < request.messages.size(); ++i)
+        repairMessageImages(&request.messages[i], _projectDirectory);
     QList<LiveFileContext> cachedFiles;
     if (AppSettings::instance()->dropLargeContextFiles())
     {

@@ -339,7 +339,8 @@ QStringList ContextOptimizer::splitForSummary(const QList<LlmMessage> &oldPart,
 
 QList<LlmMessage> ContextOptimizer::buildSummarizeMessages(QString previousSummary, QString chunk,
                                                            int index, int total,
-                                                           bool anchorKept) const
+                                                           bool anchorKept,
+                                                           bool assignmentReplaced) const
 {
     QList<LlmMessage> messages;
     LlmMessage system;
@@ -360,6 +361,13 @@ QList<LlmMessage> ContextOptimizer::buildSummarizeMessages(QString previousSumma
         rules += QString::fromUtf8(
             " The original assignment text is stored separately and stays in the context "
             "verbatim, so do not restate it; summarize the progress on it.");
+    }
+    if (assignmentReplaced)
+    {
+        rules += QString::fromUtf8(
+            " A new assignment is replacing the previous one. The previous assignment "
+            "is closed: do not list its unfinished items as work that remains. "
+            "The new assignment is stored separately, so do not restate it.");
     }
     system.content = rules;
     messages.append(system);

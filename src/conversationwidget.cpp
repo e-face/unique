@@ -33,6 +33,7 @@
 #include <QTextBrowser>
 #include <QTextDocument>
 #include <QTextEdit>
+#include <QImage>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -107,6 +108,48 @@ QColor AuthorBadge::colorFor(QString authorKey)
 
 //----------------------------------------------
 
+class ChatTextView : public QTextBrowser
+{
+public:
+    explicit ChatTextView(QWidget *parent)
+        : QTextBrowser(parent)
+    {
+    }
+
+protected:
+    QVariant loadResource(int type, const QUrl &name)
+    {
+        if (type == QTextDocument::ImageResource)
+        {
+            QString path;
+            if (name.isLocalFile())
+                path = name.toLocalFile();
+            else if (name.scheme().isEmpty())
+                path = name.toLocalFile();
+            QImage image(path);
+            if (!image.isNull())
+            {
+                const int maxWidth = 720;
+                if (image.width() > maxWidth)
+                    image = image.scaledToWidth(maxWidth, Qt::SmoothTransformation);
+                return image;
+            }
+        }
+        return QTextBrowser::loadResource(type, name);
+    }
+};
+
+//----------------------------------------------
+
+static QString imageBaseFor(const Agent *agent)
+{
+    if (!agent)
+        return QString();
+    return agent->projectDirectory();
+}
+
+//----------------------------------------------
+
 QString AuthorBadge::titleHtml(QString title, QString authorKey, QString linkUrl)
 {
     const QString shown = title.trimmed().isEmpty() ? QString::fromUtf8("?") : title.trimmed();
@@ -135,7 +178,7 @@ ChatMessageFrame::ChatMessageFrame(QString title, QString html, QString preview,
     , _titleLink()
     , _bodyHtml(html)
     , _preview(firstPhrase(preview))
-    , _view(new QTextBrowser(this))
+    , _view(new ChatTextView(this))
     , _toggle(new QPushButton(this))
     , _collapsed(collapsed)
     , _fitting(false)
@@ -214,10 +257,10 @@ void ChatMessageFrame::applyTheme()
             "QTextBrowser { background: transparent; border: none; padding: 0; color:%1; }")
                                  .arg(text));
         _view->document()->setDefaultStyleSheet(QString::fromUtf8(
-            "p { margin: 0 0 8px 0; color: %1; }"
-            "pre { margin: 6px 0; }"
-            "ul, ol { margin: 4px 0 8px 18px; }"
-            "h2, h3, h4 { margin: 10px 0 4px 0; color: %1; }"
+            "p { margin: 0 0 12px 0; color: %1; }"
+            "pre { margin: 8px 0 12px 0; }"
+            "ul, ol { margin: 4px 0 12px 18px; }"
+            "h2, h3, h4 { margin: 16px 0 6px 0; color: %1; }"
             "a { color: %2; }")
                                                     .arg(text, accent));
     }
@@ -1320,7 +1363,7 @@ void ConversationWidget::replayDisplayItem(const ChatDisplayItem &item)
         addPlainBubble(title, item.text, QString::fromUtf8("userMsg"), true,
                        false, false, key);
     else if (kind == QString::fromUtf8("assistant"))
-        addBubble(title, MarkdownFormatter::toHtml(item.text), item.text,
+        addBubble(title, MarkdownFormatter::toHtml(item.text, imageBaseFor(_agent)), item.text,
                   QString::fromUtf8("assistantMsg"), false, false, key);
     else if (kind == QString::fromUtf8("tool")
              || kind == QString::fromUtf8("tool_error"))
@@ -1774,7 +1817,7 @@ void ConversationWidget::sltAssistantMessage(const QString &text)
     const QString kind = QString::fromUtf8("assistant");
     const QString title = titleForKind(kind);
     recordDisplay(kind, title, text, title);
-    const QString html = MarkdownFormatter::toHtml(text);
+    const QString html = MarkdownFormatter::toHtml(text, imageBaseFor(_agent));
     addBubble(title, html, text, QString::fromUtf8("assistantMsg"), false, false, title);
 }
 

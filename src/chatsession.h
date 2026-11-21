@@ -48,6 +48,7 @@ struct ChatSnapshot
     QString groupId;
     QString groupRole;
     QString llmProfileId;
+    QString presetId;
     QString result;
     QString workerState;
     QString lastError;

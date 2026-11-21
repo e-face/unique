@@ -4,6 +4,7 @@
 #include "chatsession.h"
 #include "modalitytools.h"
 #include "modelcapabilities.h"
+#include "lookuptools.h"
 #include "projectfiletools.h"
 #include "settingstools.h"
 #include "projectworkspace.h"
@@ -12,6 +13,7 @@
 #include "applocale.h"
 #include "appsettings.h"
 #include "teamschemaeditor.h"
+#include "toolcatalog.h"
 //----------------------------------------------
 #include <QDir>
 #include <QEventLoop>
@@ -51,6 +53,8 @@ WorkerManager::WorkerManager(ProjectWorkspace *workspace, QObject *parent)
 {
     connect(AppSettings::instance(), SIGNAL(workerLimitsChanged()),
             this, SLOT(sltLimitsChanged()));
+    connect(AppSettings::instance(), SIGNAL(workerPresetsChanged()),
+            this, SLOT(sltPresetsChanged()));
 }
 
 //----------------------------------------------
@@ -191,8 +195,13 @@ QString WorkerManager::limitsSummaryFor(Worker *worker) const
         {
             text += QString::fromUtf8(
                 "First call list_tools, then list_worker_presets, then plan_work. "
-                "Save tokens and time. Do the work yourself unless you judge a "
-                "child or a tool cheaper for this task. Depth of a child would be %1. ")
+                "Save tokens and time. Do the work yourself unless a child or a "
+                "tool is cheaper. If a specialized worker or a specialized tool "
+                "exists for the assignment, you must use it. Do not do that part "
+                "yourself. Reuse an already created worker with worker_id, or run "
+                "the existing tool with run_tool. Create a new child with that "
+                "preset_id and why=specialization only when no such worker exists "
+                "yet. Depth of a child would be %1. ")
                     .arg(depth + 1);
         }
     }
@@ -336,6 +345,24 @@ void WorkerManager::sltApplyLimitsChanged()
 
 //----------------------------------------------
 
+void WorkerManager::sltPresetsChanged()
+{
+    foreach (Worker *worker, _workers)
+    {
+        if (!worker)
+            continue;
+        const WorkerState state = worker->state();
+        if (state == WorkerStateRunning
+            || state == WorkerStateWaitingApproval
+            || state == WorkerStateWaitingChildren
+            || state == WorkerStateWaitingContinuation)
+            continue;
+        installTools(worker);
+    }
+}
+
+//----------------------------------------------
+
 void WorkerManager::refreshPrompt(Worker *worker)
 {
     if (!worker || !worker->session() || !worker->session()->agent())
@@ -362,6 +389,8 @@ Worker *WorkerManager::createRoot(ChatSession *session)
     Worker *worker = createWorker(WorkerTypeExecutor,
                                   session ? session->id() : QString(), session,
                                   0, QString(), profileId);
+    if (!preset.id.isEmpty() && preset.type == WorkerTypeExecutor)
+        worker->setPresetId(preset.id);
     emit treeChanged();
     return worker;
 }
@@ -402,7 +431,7 @@ Worker *WorkerManager::createWorker(WorkerType type, QString id, ChatSession *se
 //----------------------------------------------
 
 Worker *WorkerManager::createTool(Worker *creator, QString name, QString purpose, QString *error,
-                                  QString llmProfileId)
+                                  QString llmProfileId, QString presetId)
 {
     if (!creator || creator->isTool() || creator->isCheckOnly()
         || creator->type() != WorkerTypeExecutor)
@@ -449,6 +478,8 @@ Worker *WorkerManager::createTool(Worker *creator, QString name, QString purpose
     }
 
     Worker *tool = createWorker(WorkerTypeTool, QString(), 0, 0, QString(), profileId);
+    if (!presetId.trimmed().isEmpty())
+        tool->setPresetId(presetId);
     tool->setToolName(cleanName);
     tool->setToolPurpose(cleanPurpose);
     refreshPrompt(tool);
@@ -499,6 +530,42 @@ bool WorkerManager::toolBusy(Worker *tool) const
 
 //----------------------------------------------
 
+static WorkerPreset presetBoundTo(const Worker *worker);
+
+static QString liveToolFunctions(Worker *tool)
+{
+    if (tool && tool->session() && tool->session()->agent())
+    {
+        const QStringList names = tool->session()->agent()->toolNames();
+        if (!names.isEmpty())
+        {
+            if (names.size() > 40)
+                return names.mid(0, 40).join(QString::fromUtf8(","))
+                       + QString::fromUtf8(",...");
+            return names.join(QString::fromUtf8(","));
+        }
+    }
+    const WorkerPreset preset = presetBoundTo(tool);
+    if (preset.toolIdsSet)
+    {
+        QStringList ids;
+        foreach (const QString &id, preset.toolIds)
+        {
+            const QString clean = id.trimmed();
+            if (!clean.isEmpty())
+                ids.append(clean);
+        }
+        if (!ids.isEmpty())
+            return ids.join(QString::fromUtf8(","));
+        return QString::fromUtf8("(none)");
+    }
+    return QString::fromUtf8(
+        "(default: files, shell, complete_task, read_settings, ask_user, "
+        "edit_settings; not plan_work, delegate_task, create_tool, list_tools)");
+}
+
+//----------------------------------------------
+
 QString WorkerManager::toolsSummary() const
 {
     const QList<Worker *> list = tools();
@@ -509,6 +576,8 @@ QString WorkerManager::toolsSummary() const
     foreach (Worker *tool, list)
     {
         QString status = toolBusy(tool) ? QString::fromUtf8("busy") : QString::fromUtf8("free");
+        if (tool->toolInterrupted())
+            status = QString::fromUtf8("stopped");
         const int queued = toolQueueLength(tool);
         if (queued > 0)
             status += QString::fromUtf8(", %1 waiting").arg(queued);
@@ -537,6 +606,7 @@ QString WorkerManager::toolsSummary() const
         QString detail = purpose;
         if (!params.isEmpty())
             detail = QString::fromUtf8("params: %1 | %2").arg(params, purpose);
+        detail = QString::fromUtf8("functions=%1 | %2").arg(liveToolFunctions(tool), detail);
         text += QString::fromUtf8(
                     "\n- tool_id=%1 name=\"%2\" [%3] modality=%4 profile=\"%5\" model=%6 "
                     "model_purpose=\"%7\" caps={%8}: %9")
@@ -561,7 +631,42 @@ QString WorkerManager::toolsSummary() const
             "project files of that kind. Pass one only when params list that "
             "category. reference_path means reference_image.");
     }
+    bool anyStopped = false;
+    foreach (Worker *tool, list)
+    {
+        if (tool && tool->toolInterrupted())
+        {
+            anyStopped = true;
+            break;
+        }
+    }
+    if (anyStopped)
+    {
+        text += QString::fromUtf8(
+            "\nTools marked stopped were interrupted before they finished. "
+            "Resume each with run_tool. Do not do their work in this chat.");
+    }
     return text;
+}
+
+//----------------------------------------------
+
+QString WorkerManager::interruptedToolsNote() const
+{
+    QStringList hits;
+    foreach (Worker *tool, tools())
+    {
+        if (!tool || !tool->toolInterrupted())
+            continue;
+        hits << QString::fromUtf8("tool_id=%1 name=\"%2\"").arg(tool->id(), tool->toolName());
+    }
+    if (hits.isEmpty())
+        return QString();
+    return QString::fromUtf8(
+        "CONTINUE: these tools were interrupted before they finished: %1. "
+        "The user's next message does not replace them. "
+        "Resume each with run_tool. Do not do their work yourself.")
+        .arg(hits.join(QString::fromUtf8("; ")));
 }
 
 //----------------------------------------------
@@ -702,6 +807,11 @@ void WorkerManager::failToolRuns(Worker *tool, QString reason)
     if (!tool)
         return;
     const QString toolId = tool->id();
+    const bool stopped = reason.startsWith(QString::fromUtf8("STOPPED:"));
+    const bool hadWork = _toolCurrent.contains(toolId)
+                         || !_toolQueues.value(toolId).isEmpty();
+    if (stopped && hadWork)
+        tool->setToolInterrupted(true);
     if (_toolCurrent.contains(toolId))
     {
         const ToolRun current = _toolCurrent.take(toolId);
@@ -780,7 +890,7 @@ bool WorkerManager::canSpawn(WorkerType parentType, WorkerType childType) const
 //----------------------------------------------
 
 Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QString *error,
-                             QString llmProfileId, bool checkOnly)
+                             QString llmProfileId, bool checkOnly, QString presetId)
 {
     if (!parent)
     {
@@ -886,6 +996,8 @@ Worker *WorkerManager::spawn(Worker *parent, WorkerType type, QString task, QStr
     }
 
     Worker *child = createWorker(WorkerTypeExecutor, QString(), 0, parent, trimmed, llmProfileId);
+    if (!presetId.trimmed().isEmpty())
+        child->setPresetId(presetId);
     if (checkOnly)
         child->setCheckOnly(true);
     ++_spawnCount;
@@ -1046,6 +1158,7 @@ Worker *WorkerManager::addGroupMember(Worker *chief, QString presetId, QString *
 
     Worker *peer = createWorker(preset.type, QString(), 0, chief, QString(),
                                 preset.profileId);
+    peer->setPresetId(preset.id);
     peer->setGroupId(chief->groupId());
     peer->setGroupRole(GroupRoleInterlocutor);
     peer->setTask(QString::fromUtf8(
@@ -2676,6 +2789,7 @@ int WorkerManager::removeWorkersUsingProfile(QString profileId)
         if (!root)
             continue;
         root->setLlmProfileId(QString());
+        root->setPresetId(QString());
         refreshPrompt(root);
         ++removed;
     }
@@ -2704,16 +2818,32 @@ QString WorkerManager::runAndWait(Worker *worker)
 
 //----------------------------------------------
 
+static void addLookupTools(Agent *agent, ProjectWorkspace *workspace, Worker *worker)
+{
+    if (!agent || !workspace)
+        return;
+    agent->addTool(new SearchFilesAgentTool(workspace, worker, agent));
+    agent->addTool(new FindInFilesAgentTool(workspace, worker, agent));
+    agent->addTool(new ReadPdfAgentTool(workspace, worker, agent));
+    if (worker)
+        agent->addTool(new WebSearchAgentTool(worker, agent));
+}
+
+//----------------------------------------------
+
 static void addFileAndShellTools(Agent *agent, ProjectWorkspace *workspace, Worker *worker)
 {
     if (!agent || !workspace)
         return;
     agent->addTool(new CreateFileAgentTool(workspace, worker, agent));
     agent->addTool(new WriteFileAgentTool(workspace, worker, agent));
+    agent->addTool(new ReplaceInFileAgentTool(workspace, worker, agent));
+    agent->addTool(new PdfPageImageAgentTool(workspace, worker, agent));
     agent->addTool(new DeleteFileAgentTool(workspace, worker, agent));
     agent->addTool(new RenameFileAgentTool(workspace, worker, agent));
     agent->addTool(new ReadFileAgentTool(workspace, agent));
     agent->addTool(new ListDirectoryAgentTool(workspace, agent));
+    addLookupTools(agent, workspace, worker);
     agent->addTool(new RunCommandAgentTool(workspace, worker, agent));
     agent->addTool(new RequestPermissionTool(worker, agent));
 }
@@ -3078,6 +3208,23 @@ QString WorkerManager::runMediaExecutor(Worker *worker, bool *ok)
 
 //----------------------------------------------
 
+/** Preset bound to this worker, or the first preset with the same role and profile. */
+static WorkerPreset presetBoundTo(const Worker *worker)
+{
+    if (!worker)
+        return WorkerPreset();
+    const QString presetId = worker->presetId().trimmed();
+    if (!presetId.isEmpty())
+    {
+        const WorkerPreset byId = AppSettings::instance()->workerPresetById(presetId);
+        if (!byId.id.isEmpty())
+            return byId;
+    }
+    return AppSettings::instance()->presetForWorker(worker->type(), worker->llmProfileId());
+}
+
+//----------------------------------------------
+
 void WorkerManager::installTools(Worker *worker)
 {
     if (!worker || !worker->session() || !worker->session()->agent())
@@ -3086,12 +3233,18 @@ void WorkerManager::installTools(Worker *worker)
     Agent *agent = worker->session()->agent();
     agent->clearTools();
     agent->setSystemPrompt(promptFor(worker));
+    if (worker->isTool())
+        agent->rewriteSystemPrompt();
+    // A tool call is a function call. Reasoning on that turn is tens of thousands
+    // of tokens before the first function, and the chat just sits on "thinking".
+    agent->setUseReasoning(!worker->isTool());
 
     const WorkerTaskKind modality = modalityOf(worker);
 
     if (worker->isCheckOnly())
     {
         addReadOnlyFileTools(agent, _workspace);
+        addLookupTools(agent, _workspace, worker);
         agent->addTool(new RunCommandAgentTool(_workspace, worker, agent));
         agent->addTool(new RequestPermissionTool(worker, agent));
         agent->addTool(new ListToolsTool(this, agent));
@@ -3108,6 +3261,7 @@ void WorkerManager::installTools(Worker *worker)
     else if (modality == WorkerTaskKindDecisions)
     {
         addReadOnlyFileTools(agent, _workspace);
+        addLookupTools(agent, _workspace, worker);
         addModalityTools(agent, _workspace, worker, modality);
         agent->addTool(new CompleteTaskTool(worker, agent));
         agent->addTool(new RequestPermissionTool(worker, agent));
@@ -3143,6 +3297,16 @@ void WorkerManager::installTools(Worker *worker)
         agent->addTool(new AskUserTool(worker, agent));
         if (!worker->isCheckOnly())
             agent->addTool(new EditSettingsTool(worker, agent));
+    }
+
+    if (!worker->isCheckOnly() && !workerTaskKindIsMediaExecutor(modality))
+    {
+        const WorkerPreset preset = presetBoundTo(worker);
+        if (preset.toolIdsSet)
+        {
+            agent->retainTools(preset.toolIds);
+            ToolCatalog::instance()->addPlugins(agent, preset.toolIds);
+        }
     }
 
     const LlmProfile profile = AppSettings::instance()->profileForWorker(
@@ -3290,6 +3454,65 @@ void WorkerManager::linkParent(Worker *child, QString parentId)
 
 //----------------------------------------------
 
+static QString replyFormatRule(const AppLocale *locale)
+{
+    const QString fallback = QString::fromUtf8(
+        "\nREPLY FORMAT: The chat centers each image, chart, diagram, and table. "
+        "Body text stays left, in short paragraphs. Do not add spaces or HTML to center anything.\n"
+        "Order: one sentence with the result. Then, if a figure shows the answer better, "
+        "that figure alone, with a blank line before and after it. Then a few short paragraphs "
+        "or one list. One idea per paragraph. A heading only when there are two or more sections.\n"
+        "Table — a markdown table: one header row, one row of --- cells, then data rows. "
+        "Split cells with |. :--- left, :---: center, ---: right.\n"
+        "Image — its own line ![caption](path). path is an existing project-relative or absolute "
+        "file. The caption is the bracket text, not a second sentence under the image.\n"
+        "Chart — a block that opens with three backticks and chart, and closes with three "
+        "backticks. First line inside: bar, line, or pie. Optional next line: title: text. "
+        "Then at most 24 lines: Label | number.\n"
+        "Diagram — a block that opens with three backticks and diagram, and closes with "
+        "three backticks. At most 24 nodes. One relation per line: A -> B or A -> B: label. "
+        "A line that is only a name is a node. No extra caption.");
+    if (!locale)
+        return fallback;
+    return locale->model(QString::fromUtf8("reply_format"), fallback);
+}
+
+//----------------------------------------------
+
+static QString builtinLookupRule(const AppLocale *locale)
+{
+    const QString fallback = QString::fromUtf8(
+        "\nLOOKUP TOOLS: Prefer these over findstr, python, and a hand-written parser.\n"
+        "search_files — literal substring across project files. pattern or patterns "
+        "(up to 8), optional path, glob, ignore_case, context (0..3), max_hits up to 200. "
+        "PDF files are skipped here.\n"
+        "find_in_files — literal substring or a regex in the files you name. paths, pattern, "
+        "regex true or false. A regex is applied to each line. max_hits up to 200.\n"
+        "read_pdf — text of a PDF. path for a project file, or url for http(s). "
+        "offset and limit page through a long text (limit up to 80000 characters). "
+        "It decodes Flate and LZW. Do not decompress a PDF in a script.\n"
+        "web_search — titles, addresses, and snippets. You choose engine: duckduckgo, bing, "
+        "google, or yandex. limit up to 30. The call asks the user to confirm. "
+        "Do not curl a search page.\n"
+        "replace_in_file — exact fragment replace in one file: path, old, new, "
+        "replace_all. new may be empty to delete the fragment. If old occurs more "
+        "than once and replace_all is false, the file is left unchanged. "
+        "Do not write a patch script for this. A worker that cannot edit files "
+        "does not have this tool.\n"
+        "pdf_page_image — PNG of PDF pages at a resolution you set. path, dpi "
+        "(36..300; 72 is the page size in points, 144 is a sharp page), pages "
+        "such as 1 or 1-3 or 1,4. At most 12 pages. Images go to output_dir or "
+        "___project___/tmp. Show one in chat as an image line with that path. "
+        "Do not render a page with your own script. A worker that cannot edit "
+        "files does not have this tool.\n"
+        "A build, a test, or a program you wrote still uses run_command.");
+    if (!locale)
+        return fallback;
+    return locale->model(QString::fromUtf8("builtin_lookup"), fallback);
+}
+
+//----------------------------------------------
+
 static QString internetSearchRule(const AppLocale *locale)
 {
     const QString fallback = QString::fromUtf8(
@@ -3308,11 +3531,60 @@ static QString internetSearchRule(const AppLocale *locale)
 
 //----------------------------------------------
 
+static QString specializationPrompt(const WorkerPreset &preset, bool textWorker)
+{
+    if (!textWorker)
+        return QString();
+    if (!preset.toolIdsSet && preset.specialization.trimmed().isEmpty())
+    {
+        if (preset.id.trimmed().isEmpty())
+            return QString();
+        return QString::fromUtf8(
+                   "\nYour preset_id is %1. "
+                   "If a specialized worker or a specialized tool exists for the "
+                   "assignment, you must use it. Do not do that part yourself. "
+                   "A specialized tool has priority over doing that part yourself "
+                   "and over a worker that does not have the tool's functions. "
+                   "Reuse an already created worker with worker_id, or run the "
+                   "existing tool with run_tool. Create a new child with that "
+                   "preset_id and why=specialization only when no such worker "
+                   "exists yet.\n")
+            .arg(preset.id.trimmed());
+    }
+    QString note = preset.specialization.trimmed();
+    if (note.isEmpty())
+        note = QString::fromUtf8("(not set)");
+    return QString::fromUtf8(
+               "\nSPECIALIZATION: %1\n"
+               "Your preset_id is %2.\n"
+               "You only have the tools attached to this call. "
+               "Do not call a tool that is not in that list. "
+               "If this specialization matches the assignment, do that part here. "
+               "Do not delegate it to another preset with the same specialization. "
+               "If a specialized worker or a specialized tool exists for another "
+               "part, you must use it. Do not do that part yourself. "
+               "A specialized tool has priority over doing that part yourself "
+               "and over a worker that does not have the tool's functions. Reuse an "
+               "already created worker with worker_id, or run the existing tool "
+               "with run_tool. Create a new child only when no such worker exists "
+               "yet. "
+               "If list_tools, list_worker_presets, or plan_work is missing "
+               "from the list, skip that step.\n")
+        .arg(note, preset.id.trimmed().isEmpty()
+                       ? QString::fromUtf8("(none)")
+                       : preset.id.trimmed());
+}
+
+//----------------------------------------------
+
 QString WorkerManager::promptFor(Worker *worker) const
 {
     if (!worker)
         return QString();
     const AppLocale *locale = AppLocale::instance();
+    const WorkerPreset specPreset = presetBoundTo(worker);
+    const QString specNote = specializationPrompt(
+        specPreset, !workerTaskKindIsMediaExecutor(modalityOf(worker)));
     const WorkerType type = worker->type();
     const QString verificationDepth = locale->model(
         QString::fromUtf8("verification_depth"),
@@ -3333,7 +3605,9 @@ QString WorkerManager::promptFor(Worker *worker) const
         base += verificationDepth;
         base += locale->model(QString::fromUtf8("sequence_suffix"));
         base += internetSearchRule(locale);
-        return base;
+        base += builtinLookupRule(locale);
+        base += replyFormatRule(locale);
+        return base + specNote;
     }
     QString base;
     if (worker->isGroupInterlocutor())
@@ -3344,7 +3618,9 @@ QString WorkerManager::promptFor(Worker *worker) const
         base += verificationDepth;
         base += locale->model(QString::fromUtf8("sequence_suffix"));
         base += internetSearchRule(locale);
-        return base;
+        base += builtinLookupRule(locale);
+        base += replyFormatRule(locale);
+        return base + specNote;
     }
     if (!worker->isTool() && workerTaskKindIsMediaExecutor(modalityOf(worker)))
     {
@@ -3356,7 +3632,7 @@ QString WorkerManager::promptFor(Worker *worker) const
                 "You do not spawn children and you do not create tools. "
                 "A revision of the same artifact is a new assignment on this same worker."));
         base += locale->model(QString::fromUtf8("sequence_suffix"));
-        return base;
+        return base + specNote;
     }
     switch (type)
     {
@@ -3364,7 +3640,20 @@ QString WorkerManager::promptFor(Worker *worker) const
     {
         const QString toolFallback = QString::fromUtf8(
             "You are a TOOL worker named \"%1\": a reusable specialist shared by all workers "
-            "of this project, without parent or children. PURPOSE: %2");
+            "of this project, without parent or children. PURPOSE: %2\n"
+            "You perform one concrete operation. Each message is a run request: do only "
+            "that, within your purpose, and only with the functions installed on this call. "
+            "Finish with complete_task: a short factual result for the requester. "
+            "If the request needs a function you do not have, still finish with complete_task "
+            "and name the missing function. Do not stay silent. "
+            "Before delete/rename/overwrite call request_permission.\n"
+            "The latest run request is the only task. The purpose says what this tool is for; "
+            "it is not more work. An earlier request, including one kept in a summary, is closed: "
+            "do not continue it and do not rebuild what it already made.\n"
+            "Make only the outputs the latest request names. Do not add a helper file, a probe, "
+            "a measurement, or a copy. If a check fails, fix that same output and check once more. "
+            "If it still fails, complete_task and say what failed. Do not open another attempt.\n"
+            "An installed function has priority over a program you would write to do the same thing. Call the function.");
         base = locale->model(QString::fromUtf8("tool"), toolFallback)
                    .arg(worker->toolName().isEmpty() ? QString::fromUtf8("tool")
                                                      : worker->toolName(),
@@ -3398,12 +3687,29 @@ QString WorkerManager::promptFor(Worker *worker) const
             "how=delegate — a child, only when that part would not fit this chat, "
             "needs another model API, or is a large piece that does not need the "
             "other parts' text. Pass why (context, other_modality, independent, "
-            "or check). Do not also do a part you delegated. A revision of the "
-            "same result reuses worker_id. why=check and check_only=true only "
-            "when the user asked for an independent check.\n"
+            "check, or specialization). If a specialized worker or a specialized "
+            "tool exists for a part, you must use it. Do not do that part yourself. "
+            "Reuse an already created worker with worker_id, or run the existing "
+            "tool with run_tool. Create a new child with that preset_id and "
+            "why=specialization only when no such worker exists yet. If your own "
+            "specialization matches, do the part here. Do not also do a part you "
+            "delegated. why=check and check_only=true only when the user asked "
+            "for an independent check. In the child's task, name the functions "
+            "it must call. Do not tell it to implement that operation itself, in any language.\n"
             "how=tool — create_tool, only when the same utilitarian step will "
             "repeat enough that a tool is cheaper than doing it inline. "
-            "Do not spawn a worker per repetition.\n"
+            "Do not spawn a worker per repetition. "
+            "A tool marked stopped was interrupted: that part is how=tool and "
+            "run_tool resumes it. If a specialized tool for the part already "
+            "exists, you must run_tool. Do not do that tool's work yourself. "
+            "A specialized tool has priority over doing that part yourself and "
+            "over a worker that does not have the tool's functions. "
+            "Before create_tool and before the task you give the tool, read its "
+            "functions= list. Write the purpose and the task only from those "
+            "functions. The same model answers as a worker and does not answer "
+            "as a tool when the task needs a function the tool does not have. "
+            "Name the functions the task must call. Do not tell the tool to "
+            "implement that operation itself, in any language.\n"
             "Then carry the plan out to the end. A status message does not finish "
             "the task and does not end the turn.\n"
             "If something you need is not in the obvious place, look for it "
@@ -3444,7 +3750,9 @@ QString WorkerManager::promptFor(Worker *worker) const
     base += verificationDepth;
     base += locale->model(QString::fromUtf8("sequence_suffix"));
     base += internetSearchRule(locale);
-    return base;
+    base += builtinLookupRule(locale);
+    base += replyFormatRule(locale);
+    return base + specNote;
 }
 
 //----------------------------------------------

@@ -502,6 +502,231 @@ QString WriteFileAgentTool::writeOne(QString relPath, QString content, bool *ok)
 
 //----------------------------------------------
 
+ReplaceInFileAgentTool::ReplaceInFileAgentTool(ProjectWorkspace *workspace, Worker *owner,
+                                               QObject *parent)
+    : AgentTool(parent)
+    , _workspace(workspace)
+    , _owner(owner)
+{
+}
+
+//----------------------------------------------
+
+QString ReplaceInFileAgentTool::name() const
+{
+    return QString::fromUtf8("replace_in_file");
+}
+
+//----------------------------------------------
+
+QString ReplaceInFileAgentTool::description() const
+{
+    return QString::fromUtf8(
+        "Replace an exact text fragment in one project file. Use this instead of a "
+        "python or PowerShell patch script. path is the file. old is the fragment "
+        "and must not be empty. new is the replacement; an empty new deletes the "
+        "fragment. replace_all defaults to false: if old occurs more than once, "
+        "the file is not changed and the call reports how many times it occurs. "
+        "If old is missing, the file is not changed.");
+}
+
+//----------------------------------------------
+
+QJsonObject ReplaceInFileAgentTool::parametersSchema() const
+{
+    QJsonObject path;
+    path.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    path.insert(QString::fromUtf8("description"),
+                QString::fromUtf8("File path relative to the project directory."));
+
+    QJsonObject oldText;
+    oldText.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    oldText.insert(QString::fromUtf8("description"),
+                   QString::fromUtf8("Exact fragment to find. Must not be empty."));
+
+    QJsonObject newText;
+    newText.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    newText.insert(QString::fromUtf8("description"),
+                   QString::fromUtf8("Replacement text. Empty deletes the fragment."));
+
+    QJsonObject replaceAll;
+    replaceAll.insert(QString::fromUtf8("type"), QString::fromUtf8("boolean"));
+    replaceAll.insert(QString::fromUtf8("description"),
+                      QString::fromUtf8("Replace every occurrence. Default false."));
+
+    QJsonObject properties;
+    properties.insert(QString::fromUtf8("path"), path);
+    properties.insert(QString::fromUtf8("old"), oldText);
+    properties.insert(QString::fromUtf8("new"), newText);
+    properties.insert(QString::fromUtf8("replace_all"), replaceAll);
+
+    QJsonArray required;
+    required.append(QString::fromUtf8("path"));
+    required.append(QString::fromUtf8("old"));
+    required.append(QString::fromUtf8("new"));
+
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), properties);
+    schema.insert(QString::fromUtf8("required"), required);
+    return schema;
+}
+
+//----------------------------------------------
+
+static int countFragments(const QString &text, const QString &fragment)
+{
+    if (fragment.isEmpty())
+        return 0;
+    int count = 0;
+    int from = 0;
+    while (from <= text.size() - fragment.size())
+    {
+        const int at = text.indexOf(fragment, from);
+        if (at < 0)
+            break;
+        count += 1;
+        from = at + fragment.size();
+    }
+    return count;
+}
+
+//----------------------------------------------
+
+QString ReplaceInFileAgentTool::invoke(QString argumentsJson, bool *ok)
+{
+    QString error;
+    if (refuseUntilPlanned(_owner, ok, &error))
+        return error;
+    if (_owner)
+        _owner->noteWorkAction();
+
+    QJsonObject args;
+    if (!parseArgs(argumentsJson, &args, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+
+    const QString relPath = args.value(QString::fromUtf8("path")).toString().trimmed();
+    QString fragment = args.value(QString::fromUtf8("old")).toString();
+    QString replacement = args.value(QString::fromUtf8("new")).toString();
+    const bool replaceAll = args.value(QString::fromUtf8("replace_all")).toBool(false);
+    if (relPath.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("path is empty.");
+    }
+    if (fragment.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("old is empty.");
+    }
+
+    QString absolute;
+    if (!_workspace || !_workspace->resolvePath(relPath, true, false, &absolute, &error, true))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (!confirmIfOutside(_owner, _workspace, absolute,
+                          QObject::tr("Изменить файл вне проекта:\n%1").arg(absolute),
+                          &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    if (!claimPathForOwner(_owner, _workspace, absolute, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+
+    QFile file(absolute);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Failed to read file: %1").arg(file.errorString());
+    }
+    const QByteArray raw = file.readAll();
+    file.close();
+    if (raw.contains('\0'))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("File looks binary.");
+    }
+
+    const QString previous = ProjectWorkspace::decodeText(raw);
+    QString needle = fragment;
+    int count = countFragments(previous, needle);
+    if (count == 0 && needle.contains(QChar('\n')) && previous.contains(QString::fromUtf8("\r\n")))
+    {
+        needle.replace(QChar('\n'), QString::fromUtf8("\r\n"));
+        replacement.replace(QChar('\n'), QString::fromUtf8("\r\n"));
+        count = countFragments(previous, needle);
+    }
+    if (count == 0)
+    {
+        if (ok)
+            *ok = true;
+        return QString::fromUtf8("Fragment not found. File unchanged.");
+    }
+    if (count > 1 && !replaceAll)
+    {
+        if (ok)
+            *ok = true;
+        return QString::fromUtf8(
+            "Fragment occurs %1 times. File unchanged. "
+            "Pass a longer old fragment, or set replace_all=true.")
+            .arg(count);
+    }
+
+    QString updated = previous;
+    updated.replace(needle, replacement);
+    if (updated.toUtf8().size() > ProjectWorkspace::maxWriteBytes)
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Content is too large (limit %1 bytes).")
+            .arg(ProjectWorkspace::maxWriteBytes);
+    }
+
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Failed to write file: %1").arg(file.errorString());
+    }
+    if (file.write(updated.toUtf8()) < 0)
+    {
+        file.close();
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Write error: %1").arg(file.errorString());
+    }
+    file.close();
+
+    FileChangeStore::instance()->noteWritten(absolute, previous, updated);
+    const QString shown = _workspace->toRelative(absolute);
+    if (_owner)
+        _owner->noteFileChanged(shown);
+    if (ok)
+        *ok = true;
+    return QString::fromUtf8("Replaced %1 occurrence(s) in %2.")
+        .arg(count)
+        .arg(shown);
+}
+
+//----------------------------------------------
+
 QString WriteFileAgentTool::invoke(QString argumentsJson, bool *ok)
 {
     QJsonObject args;
@@ -645,7 +870,7 @@ QString ReadFileAgentTool::readOne(QString relPath, int offset, int limit, bool 
             *ok = false;
         return QString::fromUtf8(
             "File is too large to read as text (%1 bytes, limit %2). "
-            "Use run_command with a filter (e.g. findstr/grep) instead.")
+            "Use search_files or find_in_files for a substring or a regex.")
             .arg(size)
             .arg(ProjectWorkspace::maxReadBytes);
     }

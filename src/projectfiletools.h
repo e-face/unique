@@ -48,6 +48,24 @@ private:
 
 //----------------------------------------------
 
+class ReplaceInFileAgentTool : public AgentTool
+{
+public:
+    explicit ReplaceInFileAgentTool(ProjectWorkspace *workspace, Worker *owner = 0,
+                                    QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+
+private:
+    ProjectWorkspace *_workspace;
+    Worker           *_owner;
+};
+
+//----------------------------------------------
+
 class ReadFileAgentTool : public AgentTool
 {
 public:

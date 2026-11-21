@@ -1922,7 +1922,10 @@ bool AppSettings::presetsEqual(const WorkerPreset &a, const WorkerPreset &b)
     return a.id == b.id
            && a.type == b.type
            && a.profileId == b.profileId
-           && a.taskKind == b.taskKind;
+           && a.taskKind == b.taskKind
+           && a.specialization == b.specialization
+           && a.toolIdsSet == b.toolIdsSet
+           && a.toolIds == b.toolIds;
 }
 
 //----------------------------------------------
@@ -2744,6 +2747,22 @@ WorkerPreset AppSettings::workerPresetById(SettingsKind kind, QString id) const
 
 //----------------------------------------------
 
+WorkerPreset AppSettings::presetForWorker(WorkerType type, QString profileId) const
+{
+    const WorkerType lookup = (type == WorkerTypeManager || type == WorkerTypeTester)
+                              ? WorkerTypeExecutor
+                              : type;
+    const QString id = profileId.trimmed();
+    foreach (const WorkerPreset &preset, ws(activeKind()).workerPresets)
+    {
+        if (preset.type == lookup && preset.profileId == id)
+            return preset;
+    }
+    return WorkerPreset();
+}
+
+//----------------------------------------------
+
 void AppSettings::ensureWorkerPresetsSeeded(WorkspaceSettings *bundle)
 {
     if (!bundle || !bundle->workerPresets.isEmpty())
@@ -2861,6 +2880,9 @@ void AppSettings::loadWorkerPresets(QSettings *settings, WorkspaceSettings *bund
         preset.taskKind = workerTaskKindFromString(
             settings->value(QString::fromUtf8("taskKind"),
                             QString::fromUtf8("llm")).toString());
+        preset.specialization = settings->value(QString::fromUtf8("specialization")).toString();
+        preset.toolIdsSet = settings->value(QString::fromUtf8("toolsSet"), false).toBool();
+        preset.toolIds = settings->value(QString::fromUtf8("tools")).toStringList();
         if (preset.id.isEmpty())
             preset.id = QUuid::createUuid().toString().remove(QChar('{')).remove(QChar('}'));
         if (preset.profileId.isEmpty())
@@ -2869,7 +2891,6 @@ void AppSettings::loadWorkerPresets(QSettings *settings, WorkspaceSettings *bund
         bundle->workerPresets.append(preset);
     }
     settings->endArray();
-    dedupePresetsByTypeProfile(bundle);
     ensureWorkerPresetsSeeded(bundle);
 }
 
@@ -2890,6 +2911,9 @@ void AppSettings::saveWorkerPresets(QSettings *settings, const WorkspaceSettings
         settings->setValue(QString::fromUtf8("profileId"), preset.profileId);
         settings->setValue(QString::fromUtf8("taskKind"),
                            workerTaskKindToString(preset.taskKind));
+        settings->setValue(QString::fromUtf8("specialization"), preset.specialization);
+        settings->setValue(QString::fromUtf8("toolsSet"), preset.toolIdsSet);
+        settings->setValue(QString::fromUtf8("tools"), preset.toolIds);
     }
     settings->endArray();
 }
@@ -2913,16 +2937,6 @@ QString AppSettings::addWorkerPreset(SettingsKind kind, WorkerPreset preset, QSt
         return QString();
     }
     syncPresetTaskKind(&preset);
-    foreach (const WorkerPreset &existing, bundle.workerPresets)
-    {
-        if (existing.type == preset.type
-            && existing.profileId == preset.profileId)
-        {
-            if (error)
-                *error = tr("Такая комбинация тип+профиль уже есть.");
-            return QString();
-        }
-    }
     if (preset.id.trimmed().isEmpty())
         preset.id = QUuid::createUuid().toString().remove(QChar('{')).remove(QChar('}'));
     bundle.workerPresets.append(preset);
@@ -2966,18 +2980,6 @@ void AppSettings::updateWorkerPreset(SettingsKind kind, const WorkerPreset &pres
     syncPresetTaskKind(&next);
     if (presetsEqual(bundle.workerPresets.at(index), next))
         return;
-    foreach (const WorkerPreset &existing, bundle.workerPresets)
-    {
-        if (existing.id == next.id)
-            continue;
-        if (existing.type == next.type
-            && existing.profileId == next.profileId)
-        {
-            if (error)
-                *error = tr("Такая комбинация тип+профиль уже есть.");
-            return;
-        }
-    }
     bundle.workerPresets[index] = next;
     ensureRootWorkerPresetId(&bundle);
     schedulePersist(kind);
@@ -3003,30 +3005,6 @@ void AppSettings::syncBundlePresetTaskKinds(WorkspaceSettings *bundle) const
         return;
     for (int i = 0; i < bundle->workerPresets.size(); ++i)
         syncPresetTaskKind(&bundle->workerPresets[i]);
-}
-
-//----------------------------------------------
-
-void AppSettings::dedupePresetsByTypeProfile(WorkspaceSettings *bundle) const
-{
-    if (!bundle)
-        return;
-    QList<WorkerPreset> unique;
-    foreach (const WorkerPreset &preset, bundle->workerPresets)
-    {
-        bool clash = false;
-        foreach (const WorkerPreset &kept, unique)
-        {
-            if (kept.type == preset.type && kept.profileId == preset.profileId)
-            {
-                clash = true;
-                break;
-            }
-        }
-        if (!clash)
-            unique.append(preset);
-    }
-    bundle->workerPresets = unique;
 }
 
 //----------------------------------------------
@@ -3244,6 +3222,30 @@ WorkerPreset AppSettings::rootWorkerPreset(SettingsKind kind) const
 
 //----------------------------------------------
 
+static QString presetFunctionList(const WorkerPreset &preset)
+{
+    if (!preset.toolIdsSet)
+    {
+        return QString::fromUtf8(
+            "(default: files, shell, complete_task, read_settings, ask_user, "
+            "edit_settings; not plan_work, delegate_task, create_tool, list_tools)");
+    }
+    QStringList ids;
+    foreach (const QString &id, preset.toolIds)
+    {
+        const QString clean = id.trimmed();
+        if (!clean.isEmpty())
+            ids.append(clean);
+    }
+    if (ids.isEmpty())
+        return QString::fromUtf8("(none)");
+    if (ids.size() > 40)
+        return ids.mid(0, 40).join(QString::fromUtf8(",")) + QString::fromUtf8(",...");
+    return ids.join(QString::fromUtf8(","));
+}
+
+//----------------------------------------------
+
 QString AppSettings::workerPresetsSummary() const
 {
     return workerPresetsSummary(activeKind());
@@ -3264,7 +3266,8 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
     lines << AppLocale::instance()->model(
         QString::fromUtf8("presets_header"),
         QString::fromUtf8(
-            "Available worker presets (pick preset_id in delegate_task / add_group_member):\n"
+            "Available worker presets (executor preset_id goes to delegate_task / "
+            "add_group_member; type=tool goes to create_tool / run_tool, not to delegate_task):\n"
             "modality / task_kind: inherited from the linked model profile "
             "(llm | image_generation | speech | audio_generation | video_generation | "
             "embedding | decisions | other) — pick a preset whose modality matches the "
@@ -3274,6 +3277,20 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
             "purpose: short human note on WHAT this model is for (e.g. text-to-image generation "
             "vs object segmentation on an image). Prefer the preset whose purpose best matches "
             "the subtask — do not treat all image_generation models as interchangeable.\n"
+            "specialization: what a text executor is for. If a specialized worker "
+            "or a specialized tool exists for a part, you must use it. Do not do "
+            "that part yourself. A specialized tool has priority over doing that "
+            "part yourself and over a worker that does not have the tool's "
+            "functions. Reuse an already created worker with worker_id "
+            "in delegate_task, or run the existing tool with run_tool. Create a "
+            "new child with that preset_id and why=specialization only when no "
+            "such worker exists yet. If your own specialization matches, do the "
+            "part here. Before create_tool and before the task you give the "
+            "tool, read functions= on that preset. Write the purpose and the "
+            "task only from those functions. The same model answers as a worker "
+            "and does not answer as a tool when the task needs a function the "
+            "tool does not have. Name the functions the task must call. Do not "
+            "tell the tool or the child to implement that operation itself, in any language.\n"
             "MODEL FIT: cheapest/fastest adequate model for routine edits and simple checks; "
             "stronger models for architecture, hard bugs, ambiguous design, group deep-dives. "
             "Prefer a fitting preset over the default type profile."));
@@ -3303,15 +3320,20 @@ QString AppSettings::workerPresetsSummary(SettingsKind kind) const
             ModelCapabilityService::instance()->cachedOrHeuristic(probe));
         if (!params.isEmpty())
             anyMedia = true;
+        QString specialization = preset.specialization.trimmed().simplified();
+        specialization.replace(QChar('"'), QChar('\''));
+        if (specialization.size() > 200)
+            specialization = specialization.left(197) + QString::fromUtf8("...");
         lines << QString::fromUtf8(
                      "- preset_id=%1 type=%2 modality=%3 profile=\"%4\" "
-                     "model=%5 purpose=\"%6\"%7")
+                     "model=%5 purpose=\"%6\" specialization=\"%7\"%8 functions=%9")
                      .arg(preset.id, workerTypeToString(preset.type),
                           workerTaskKindToString(modality), profileName, model,
-                          purpose,
+                          purpose, specialization,
                           params.isEmpty()
                               ? QString()
-                              : QString::fromUtf8(" params: %1").arg(params));
+                              : QString::fromUtf8(" params: %1").arg(params),
+                          presetFunctionList(preset));
     }
     if (anyMedia)
     {

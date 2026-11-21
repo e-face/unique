@@ -22,6 +22,14 @@
 //----------------------------------------------
 
 static const int kJournalTextClip       = 16000;
+
+static QString journalImageBase()
+{
+    const QString store = ChatStore::storeDir();
+    if (QFileInfo(store).fileName() == QString::fromUtf8("___project___"))
+        return QFileInfo(store).absolutePath();
+    return QString();
+}
 static const int kMaxPersistedEntries   = 100;
 static const int kJournalPersistMs      = 500;
 static const int kLiveRotateMs          = 3000;
@@ -399,10 +407,22 @@ QString JournalWidget::actionTitleForTool(const QString &name)
         return JournalWidget::tr("чтение файла");
     if (n == QString::fromUtf8("write_file") || n == QString::fromUtf8("create_file"))
         return JournalWidget::tr("запись файла");
+    if (n == QString::fromUtf8("replace_in_file"))
+        return JournalWidget::tr("замена в файле");
     if (n == QString::fromUtf8("delete_file") || n == QString::fromUtf8("rename_file"))
         return JournalWidget::tr("файл");
     if (n == QString::fromUtf8("list_dir") || n == QString::fromUtf8("list_directory"))
         return JournalWidget::tr("обзор каталога");
+    if (n == QString::fromUtf8("search_files"))
+        return JournalWidget::tr("поиск в проекте");
+    if (n == QString::fromUtf8("find_in_files"))
+        return JournalWidget::tr("поиск в файлах");
+    if (n == QString::fromUtf8("web_search"))
+        return JournalWidget::tr("поиск в сети");
+    if (n == QString::fromUtf8("read_pdf"))
+        return JournalWidget::tr("текст PDF");
+    if (n == QString::fromUtf8("pdf_page_image"))
+        return JournalWidget::tr("картинка страницы PDF");
     if (n == QString::fromUtf8("run_command"))
         return JournalWidget::tr("команда");
     if (n == QString::fromUtf8("complete_task"))
@@ -447,6 +467,54 @@ QString JournalWidget::toolArgsExcerpt(const QString &name, const QString &argum
             excerpt = cmds.at(0).toString();
         if (excerpt.isEmpty())
             excerpt = o.value(QString::fromUtf8("command")).toString();
+    }
+    else if (n == QString::fromUtf8("replace_in_file"))
+    {
+        excerpt = o.value(QString::fromUtf8("path")).toString();
+        const QString oldText = o.value(QString::fromUtf8("old")).toString();
+        if (!oldText.isEmpty())
+        {
+            if (!excerpt.isEmpty())
+                excerpt += QString::fromUtf8(": ");
+            excerpt += oldText;
+        }
+    }
+    else if (n == QString::fromUtf8("search_files") || n == QString::fromUtf8("find_in_files"))
+    {
+        excerpt = o.value(QString::fromUtf8("pattern")).toString();
+        if (excerpt.isEmpty())
+        {
+            const QJsonArray patterns = o.value(QString::fromUtf8("patterns")).toArray();
+            if (!patterns.isEmpty())
+                excerpt = patterns.at(0).toString();
+        }
+    }
+    else if (n == QString::fromUtf8("web_search"))
+    {
+        excerpt = o.value(QString::fromUtf8("engine")).toString();
+        const QString query = o.value(QString::fromUtf8("query")).toString();
+        if (!query.isEmpty())
+        {
+            if (!excerpt.isEmpty())
+                excerpt += QString::fromUtf8(": ");
+            excerpt += query;
+        }
+    }
+    else if (n == QString::fromUtf8("pdf_page_image"))
+    {
+        excerpt = o.value(QString::fromUtf8("path")).toString();
+        const QString pages = o.value(QString::fromUtf8("pages")).toString();
+        const int dpi = o.value(QString::fromUtf8("dpi")).toInt();
+        if (dpi > 0)
+            excerpt += QString::fromUtf8(" %1 dpi").arg(dpi);
+        if (!pages.isEmpty())
+            excerpt += QString::fromUtf8(" p.%1").arg(pages);
+    }
+    else if (n == QString::fromUtf8("read_pdf"))
+    {
+        excerpt = o.value(QString::fromUtf8("path")).toString();
+        if (excerpt.isEmpty())
+            excerpt = o.value(QString::fromUtf8("url")).toString();
     }
     else if (n == QString::fromUtf8("read_file") || n == QString::fromUtf8("write_file")
              || n == QString::fromUtf8("create_file") || n == QString::fromUtf8("delete_file")
@@ -753,7 +821,8 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
             _lastPermanent->appendEscapedParagraph(text);
         else
         {
-            const QString html = MarkdownFormatter::toHtml(text.left(kJournalTextClip));
+            const QString html = MarkdownFormatter::toHtml(text.left(kJournalTextClip),
+                                                           journalImageBase());
             _lastPermanent->appendHtmlParagraph(html, text);
         }
         if (!workerId.trimmed().isEmpty())
@@ -772,7 +841,8 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
     }
     else
     {
-        const QString html = MarkdownFormatter::toHtml(text.left(kJournalTextClip));
+        const QString html = MarkdownFormatter::toHtml(text.left(kJournalTextClip),
+                                                       journalImageBase());
         bubble = addBubble(who, html, text, QString::fromUtf8("assistantMsg"), false, false,
                            colorKey);
     }

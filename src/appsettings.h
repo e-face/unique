@@ -406,6 +406,8 @@ public:
     QList<WorkerPreset> workerPresets(SettingsKind kind) const;
     WorkerPreset workerPresetById(QString id) const;
     WorkerPreset workerPresetById(SettingsKind kind, QString id) const;
+    /** Preset that matches a live worker's type and model profile. */
+    WorkerPreset presetForWorker(WorkerType type, QString profileId) const;
     QString addWorkerPreset(WorkerPreset preset, QString *error = 0);
     QString addWorkerPreset(SettingsKind kind, WorkerPreset preset, QString *error = 0);
     void updateWorkerPreset(const WorkerPreset &preset, QString *error = 0);
@@ -488,7 +490,6 @@ private:
     bool copyMissingDefaultPresets(WorkspaceSettings *bundle);
     void syncPresetTaskKind(WorkerPreset *preset) const;
     void syncBundlePresetTaskKinds(WorkspaceSettings *bundle) const;
-    void dedupePresetsByTypeProfile(WorkspaceSettings *bundle) const;
     int removePresetsUsingProfile(SettingsKind kind, QString profileId);
     void migrateLegacyProviders(QSettings *settings, WorkspaceSettings *bundle);
     void migrateFromNativeRegistry();

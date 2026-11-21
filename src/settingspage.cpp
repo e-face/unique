@@ -4,15 +4,18 @@
 #include "appsettings.h"
 #include "modelprofilepresets.h"
 #include "openaicompatibleclient.h"
+#include "toolcatalog.h"
 #include "workermanager.h"
 #include "workertypes.h"
 //----------------------------------------------
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QFont>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
@@ -21,6 +24,8 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -1060,8 +1065,14 @@ QString SettingsPage::presetListLabel(const WorkerPreset &preset) const
         profileName = preset.profileId;
     if (profileName.isEmpty())
         profileName = tr("профиль не выбран");
-    return typeName + QString::fromUtf8(" · ") + taskName
-           + QString::fromUtf8(" · ") + profileName;
+    QString label = typeName + QString::fromUtf8(" · ") + taskName
+                    + QString::fromUtf8(" · ") + profileName;
+    QString note = preset.specialization.trimmed().simplified();
+    if (note.size() > 48)
+        note = note.left(45) + QString::fromUtf8("...");
+    if (!note.isEmpty())
+        label += QString::fromUtf8(" · ") + note;
+    return label;
 }
 
 //----------------------------------------------
@@ -1203,6 +1214,9 @@ void SettingsPage::sltCopyPreset()
     WorkerPreset copy;
     copy.type = source.type;
     copy.profileId = source.profileId;
+    copy.specialization = source.specialization;
+    copy.toolIds = source.toolIds;
+    copy.toolIdsSet = source.toolIdsSet;
     if (!runPresetDialog(&copy, true))
         return;
     loadPresets();
@@ -1686,6 +1700,16 @@ QString SettingsPage::presetPreviewHtml(const WorkerPreset &preset) const
     html += previewField(tr("Тип воркера"), workerTypeTitle(preset.type), muted);
     html += previewField(tr("Профиль модели"), profileTitle, muted);
     html += previewField(tr("Класс задач API"), modalityTitle(modality), muted);
+    if (workerTaskKindUsesAgentChat(modality))
+    {
+        const QString spec = preset.specialization.trimmed().simplified();
+        html += previewField(tr("Специализация"),
+                             spec.isEmpty() ? tr("не задана") : spec, muted);
+        const QString tools = preset.toolIdsSet
+                              ? tr("%1 из списка").arg(preset.toolIds.size())
+                              : tr("все встроенные");
+        html += previewField(tr("Инструменты"), tools, muted);
+    }
     return html;
 }
 
@@ -2174,7 +2198,7 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
 
     QDialog dialog(this);
     dialog.setWindowTitle(isNew ? tr("Новый воркер") : tr("Воркер"));
-    dialog.resize(480, 220);
+    dialog.resize(560, 640);
 
     QComboBox *typeCombo = new QComboBox(&dialog);
     typeCombo->addItem(tr("Исполнитель"), int(WorkerTypeExecutor));
@@ -2193,6 +2217,160 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
         profileCombo->insertItem(0, tr("профиль не найден"), preset->profileId);
         profileCombo->setCurrentIndex(0);
     }
+
+    QGroupBox *specBox = new QGroupBox(tr("Специализация"), &dialog);
+    QLineEdit *specEdit = new QLineEdit(specBox);
+    specEdit->setPlaceholderText(tr("кратко: 3D-модели, офисные документы, …"));
+    QTreeWidget *toolsTree = new QTreeWidget(specBox);
+    toolsTree->setHeaderHidden(true);
+    toolsTree->setMinimumHeight(220);
+    toolsTree->setRootIsDecorated(true);
+    toolsTree->setExpandsOnDoubleClick(true);
+
+    auto catalogText = [](const QString &source) {
+        if (source.isEmpty())
+            return source;
+        const QByteArray utf8 = source.toUtf8();
+        const QString translated = QCoreApplication::translate(
+            "ToolCatalog", utf8.constData());
+        return translated.isEmpty() ? source : translated;
+    };
+    auto toolLabel = [&](const ToolOffer &offer) {
+        return catalogText(offer.title);
+    };
+    auto addHeader = [&](const QString &title) {
+        QTreeWidgetItem *header = new QTreeWidgetItem(toolsTree);
+        header->setText(0, title);
+        header->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+        QFont font = header->font(0);
+        font.setBold(true);
+        header->setFont(0, font);
+        header->setData(0, Qt::UserRole, QString());
+        header->setToolTip(0, tr("Отметить все или снять все в этом разделе. Стрелка сворачивает раздел."));
+        header->setExpanded(true);
+        return header;
+    };
+    auto addOffer = [&](QTreeWidgetItem *header, const ToolOffer &offer, bool checked) {
+        QTreeWidgetItem *item = new QTreeWidgetItem(header);
+        item->setText(0, toolLabel(offer));
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, checked ? Qt::Checked : Qt::Unchecked);
+        item->setData(0, Qt::UserRole, offer.id);
+        QString tip = catalogText(offer.description);
+        if (tip.isEmpty())
+            tip = catalogText(offer.title);
+        if (offer.decisionsOnly)
+        {
+            const QString only = tr("Только класс Decisions");
+            if (tip.isEmpty())
+                tip = only;
+            else
+                tip += QString::fromUtf8("\n") + only;
+        }
+        if (!tip.isEmpty())
+        {
+            item->setToolTip(0, QString::fromUtf8("<p style=\"margin:0\">%1</p>")
+                                .arg(tip.toHtmlEscaped().replace(
+                                         QString::fromUtf8("\n"),
+                                         QString::fromUtf8("<br>"))));
+        }
+    };
+    auto refreshSectionChecks = [&]() {
+        const QSignalBlocker blocker(toolsTree);
+        for (int i = 0; i < toolsTree->topLevelItemCount(); ++i)
+        {
+            QTreeWidgetItem *header = toolsTree->topLevelItem(i);
+            int checked = 0;
+            const int count = header->childCount();
+            for (int c = 0; c < count; ++c)
+            {
+                if (header->child(c)->checkState(0) == Qt::Checked)
+                    checked += 1;
+            }
+            const Qt::CheckState state = checked == 0
+                                             ? Qt::Unchecked
+                                             : (checked == count ? Qt::Checked
+                                                                 : Qt::PartiallyChecked);
+            header->setCheckState(0, state);
+        }
+    };
+
+    const QList<ToolOffer> offers = ToolCatalog::instance()->offers();
+    QStringList defaultIds = ToolCatalog::instance()->builtinIds();
+    if (preset->toolIdsSet)
+        defaultIds = preset->toolIds;
+    bool builtinsHeader = false;
+    QString pluginHeader;
+    QTreeWidgetItem *section = 0;
+    {
+        const QSignalBlocker blocker(toolsTree);
+        foreach (const ToolOffer &offer, offers)
+        {
+            if (offer.builtin)
+            {
+                if (!builtinsHeader)
+                {
+                    section = addHeader(tr("Стандартные"));
+                    builtinsHeader = true;
+                }
+            }
+            else if (offer.libraryTitle != pluginHeader)
+            {
+                pluginHeader = offer.libraryTitle;
+                section = addHeader(catalogText(pluginHeader));
+            }
+            if (section)
+                addOffer(section, offer, defaultIds.contains(offer.id));
+        }
+        refreshSectionChecks();
+    }
+    toolsTree->expandAll();
+    specEdit->setText(preset->specialization);
+    connect(toolsTree, &QTreeWidget::itemChanged, &dialog,
+            [&](QTreeWidgetItem *item, int) {
+        if (!item)
+            return;
+        if (item->parent() == 0)
+        {
+            if (item->checkState(0) == Qt::PartiallyChecked)
+                return;
+            const QSignalBlocker blocker(toolsTree);
+            const Qt::CheckState state = item->checkState(0);
+            for (int i = 0; i < item->childCount(); ++i)
+                item->child(i)->setCheckState(0, state);
+            return;
+        }
+        refreshSectionChecks();
+    });
+
+    auto applySpecialization = [&](const WorkerPreset &source) {
+        specEdit->setText(source.specialization);
+        QStringList on = source.toolIdsSet
+                         ? source.toolIds
+                         : ToolCatalog::instance()->builtinIds();
+        const QSignalBlocker blocker(toolsTree);
+        for (int i = 0; i < toolsTree->topLevelItemCount(); ++i)
+        {
+            QTreeWidgetItem *header = toolsTree->topLevelItem(i);
+            for (int c = 0; c < header->childCount(); ++c)
+            {
+                QTreeWidgetItem *item = header->child(c);
+                const QString id = item->data(0, Qt::UserRole).toString();
+                if (id.isEmpty())
+                    continue;
+                item->setCheckState(0, on.contains(id) ? Qt::Checked : Qt::Unchecked);
+            }
+        }
+        refreshSectionChecks();
+    };
+    auto textProfile = [&]() {
+        const LlmProfile profile = AppSettings::instance()->profileById(
+            profileCombo->currentData().toString());
+        return profile.id.isEmpty() || workerTaskKindUsesAgentChat(profile.modality);
+    };
+    auto updateSpecVisibility = [&]() {
+        specBox->setVisible(textProfile());
+    };
 
     QFormLayout *form = new QFormLayout();
     if (isNew)
@@ -2223,11 +2401,16 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
                 profileIndex = 0;
             }
             profileCombo->setCurrentIndex(profileIndex);
+            applySpecialization(source);
+            updateSpecVisibility();
         });
         form->addRow(tr("На основе:"), sourceCombo);
     }
     form->addRow(tr("Тип воркера:"), typeCombo);
     form->addRow(tr("Профиль модели:"), profileCombo);
+    connect(profileCombo,
+            static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
+            &dialog, [&](int) { updateSpecVisibility(); });
 
     QDialogButtonBox *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
@@ -2240,6 +2423,30 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
         WorkerPreset trial = *preset;
         trial.type = WorkerType(typeCombo->currentData().toInt());
         trial.profileId = profileCombo->currentData().toString();
+        if (textProfile())
+        {
+            trial.specialization = specEdit->text().trimmed();
+            trial.toolIdsSet = true;
+            trial.toolIds.clear();
+            for (int i = 0; i < toolsTree->topLevelItemCount(); ++i)
+            {
+                QTreeWidgetItem *header = toolsTree->topLevelItem(i);
+                for (int c = 0; c < header->childCount(); ++c)
+                {
+                    QTreeWidgetItem *item = header->child(c);
+                    const QString id = item->data(0, Qt::UserRole).toString();
+                    if (id.isEmpty() || item->checkState(0) != Qt::Checked)
+                        continue;
+                    trial.toolIds.append(id);
+                }
+            }
+        }
+        else
+        {
+            trial.specialization.clear();
+            trial.toolIdsSet = false;
+            trial.toolIds.clear();
+        }
         QString error;
         if (isNew)
         {
@@ -2270,9 +2477,15 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
         dialog.accept();
     });
 
+    QVBoxLayout *specLayout = new QVBoxLayout(specBox);
+    specLayout->addWidget(specEdit);
+    specLayout->addWidget(toolsTree, 1);
+
     QVBoxLayout *root = new QVBoxLayout(&dialog);
     root->addLayout(form);
+    root->addWidget(specBox, 1);
     root->addWidget(buttons);
+    updateSpecVisibility();
     return dialog.exec() == QDialog::Accepted;
 }
 

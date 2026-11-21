@@ -103,6 +103,12 @@ public:
      */
     QString llmProfileId() const;
     void setLlmProfileId(QString id);
+    /**
+     * @brief Preset this worker was created from. Empty falls back to the first
+     *        preset with the same role and profile.
+     */
+    QString presetId() const;
+    void setPresetId(QString id);
     bool isGroupChief() const;
     bool isGroupInterlocutor() const;
     bool canSpawnChildren() const;
@@ -114,6 +120,11 @@ public:
      * @brief Pull one line with the gist out of a long task text.
      */
     static QString shortLabelFromTask(QString task);
+    /**
+     * @brief True when a distinctive token of @p specialization appears in @p text.
+     *        Generic words are ignored.
+     */
+    static bool specializationHits(QString specialization, QString text);
     QString result() const;
     void setResult(QString result);
     QString lastError() const;
@@ -134,6 +145,9 @@ public:
     QString toolPurpose() const;
     void setToolPurpose(QString purpose);
     bool toolIsFree() const;
+    /** True after a run was stopped before the tool finished. Cleared on the next run. */
+    bool toolInterrupted() const;
+    void setToolInterrupted(bool on);
     void beginToolRun(QString message);
     bool waitingForTool() const;
     void setWaitingForTool(bool waiting);
@@ -216,6 +230,8 @@ public:
     QString applyWorkPlan(QString architecture, const QList<WorkSubtask> &items);
     WorkSubtask *findWorkSubtask(QString name, QString task);
     void markSubtaskDelegated(QString name);
+    /** A successful run_tool covers the plan parts marked how=tool. */
+    void noteToolRan();
     void clearWorkPlan();
     void noteListedTools();
     void noteListedPresets();
@@ -277,6 +293,7 @@ private:
     QString       _groupId;
     GroupRole     _groupRole;
     QString       _llmProfileId;
+    QString       _presetId;
     QString       _result;
     QString       _lastAssistant;
     QString       _lastError;
@@ -306,6 +323,7 @@ private:
     QString       _toolName;
     QString       _toolPurpose;
     bool          _toolStarted;
+    bool          _toolInterrupted;
     int           _waitingForTool;
     bool          _parkForGroupDialogue;
     QStringList   _changedFiles;

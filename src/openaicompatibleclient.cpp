@@ -9,6 +9,7 @@
 #include <QJsonParseError>
 #include <QJsonValue>
 #include <QList>
+#include <QMap>
 #include <QNetworkRequest>
 #include <QSslConfiguration>
 #include <QSslSocket>
@@ -557,7 +558,11 @@ QString OpenAiCompatibleClient::describeHttpError(int status, QString apiMessage
     case 429:
         return tr("HTTP 429: слишком частые запросы, подождите и повторите.");
     case 500:
+    case 502:
     case 503:
+    case 504:
+        if (!apiMessage.isEmpty())
+            return tr("HTTP %1: сервер временно недоступен. %2").arg(status).arg(apiMessage);
         return tr("HTTP %1: сервер временно недоступен, повторите позже.").arg(status);
     default:
         if (!apiMessage.isEmpty())
@@ -616,6 +621,18 @@ void OpenAiCompatibleClient::sltNetworkReply(int requestId, QByteArray data,
 
 //----------------------------------------------
 
+static QString shortenTransportError(QString errorText)
+{
+    errorText = errorText.trimmed();
+    const QString prefix = QString::fromUtf8("Error transferring ");
+    const int dash = errorText.indexOf(QString::fromUtf8(" - "));
+    if (errorText.startsWith(prefix) && dash > 0)
+        return errorText.mid(dash + 3).trimmed();
+    return errorText;
+}
+
+//----------------------------------------------
+
 void OpenAiCompatibleClient::sltNetworkError(int requestId, QString errorText)
 {
     if (requestId == _catalogRequestId)
@@ -644,7 +661,187 @@ void OpenAiCompatibleClient::sltNetworkError(int requestId, QString errorText)
                        "Повторите запрос или увеличьте таймаут в настройках.")
                     .arg(AppSettings::instance()->llmTimeoutSec()));
     else
-        emit failed(tr("Сетевая ошибка: %1").arg(errorText));
+        emit failed(tr("Сетевая ошибка: %1").arg(shortenTransportError(errorText)));
+}
+
+//----------------------------------------------
+
+static QString apiErrorMessage(const QByteArray &data)
+{
+    const QJsonDocument document = QJsonDocument::fromJson(data);
+    if (!document.isObject())
+        return QString();
+    const QJsonValue err = document.object().value(QString::fromUtf8("error"));
+    QString message;
+    if (err.isObject())
+        message = err.toObject().value(QString::fromUtf8("message")).toString().trimmed();
+    else if (err.isString())
+        message = err.toString().trimmed();
+    message.replace(QChar('\n'), QChar(' '));
+    if (message.size() > 180)
+        message = message.left(177) + QString::fromUtf8("...");
+    return message;
+}
+
+//----------------------------------------------
+
+static QByteArray foldChatStream(const QByteArray &raw)
+{
+    const QByteArray trimmed = raw.trimmed();
+    if (!trimmed.startsWith("data:"))
+        return raw;
+
+    struct Call
+    {
+        QString id;
+        QString name;
+        QString args;
+    };
+
+    QString content;
+    QString reasoning;
+    QString finish;
+    QString role = QString::fromUtf8("assistant");
+    QString streamError;
+    QMap<int, Call> calls;
+    int promptTokens = 0;
+    int completionTokens = 0;
+    int totalTokens = 0;
+    int cachedTokens = 0;
+    bool sawChoice = false;
+
+    const QList<QByteArray> lines = raw.split('\n');
+    for (int i = 0; i < lines.size(); ++i)
+    {
+        const QByteArray line = lines.at(i).trimmed();
+        if (!line.startsWith("data:"))
+            continue;
+        const QByteArray payload = line.mid(5).trimmed();
+        if (payload.isEmpty() || payload == "[DONE]")
+            continue;
+
+        const QJsonDocument doc = QJsonDocument::fromJson(payload);
+        if (!doc.isObject())
+            continue;
+        const QJsonObject root = doc.object();
+        if (root.contains(QString::fromUtf8("error")))
+        {
+            const QJsonValue err = root.value(QString::fromUtf8("error"));
+            if (err.isObject())
+                streamError = err.toObject().value(QString::fromUtf8("message")).toString();
+            else if (err.isString())
+                streamError = err.toString();
+        }
+
+        const QJsonObject usage = root.value(QString::fromUtf8("usage")).toObject();
+        if (!usage.isEmpty())
+        {
+            promptTokens = usage.value(QString::fromUtf8("prompt_tokens")).toInt();
+            completionTokens = usage.value(QString::fromUtf8("completion_tokens")).toInt();
+            totalTokens = usage.value(QString::fromUtf8("total_tokens")).toInt();
+            int cached = usage.value(QString::fromUtf8("prompt_tokens_details")).toObject()
+                             .value(QString::fromUtf8("cached_tokens")).toInt();
+            if (cached <= 0)
+                cached = usage.value(QString::fromUtf8("prompt_cache_hit_tokens")).toInt();
+            cachedTokens = qMax(0, cached);
+        }
+
+        const QJsonArray choices = root.value(QString::fromUtf8("choices")).toArray();
+        if (choices.isEmpty())
+            continue;
+        sawChoice = true;
+        const QJsonObject choice = choices.at(0).toObject();
+        const QString reason = choice.value(QString::fromUtf8("finish_reason")).toString();
+        if (!reason.isEmpty())
+            finish = reason;
+
+        QJsonObject delta = choice.value(QString::fromUtf8("delta")).toObject();
+        if (delta.isEmpty())
+            delta = choice.value(QString::fromUtf8("message")).toObject();
+        const QString roleBit = delta.value(QString::fromUtf8("role")).toString();
+        if (!roleBit.isEmpty())
+            role = roleBit;
+        content += delta.value(QString::fromUtf8("content")).toString();
+        QString reasonBit = delta.value(QString::fromUtf8("reasoning_content")).toString();
+        if (reasonBit.isEmpty())
+            reasonBit = delta.value(QString::fromUtf8("reasoning")).toString();
+        reasoning += reasonBit;
+
+        const QJsonArray toolCalls = delta.value(QString::fromUtf8("tool_calls")).toArray();
+        for (int t = 0; t < toolCalls.size(); ++t)
+        {
+            const QJsonObject item = toolCalls.at(t).toObject();
+            int index = item.value(QString::fromUtf8("index")).toInt();
+            if (!item.contains(QString::fromUtf8("index")) && !calls.isEmpty())
+                index = calls.lastKey();
+            Call &call = calls[index];
+            const QString id = item.value(QString::fromUtf8("id")).toString();
+            if (!id.isEmpty())
+                call.id = id;
+            const QJsonObject function = item.value(QString::fromUtf8("function")).toObject();
+            const QString name = function.value(QString::fromUtf8("name")).toString();
+            if (!name.isEmpty())
+                call.name += name;
+            const QJsonValue args = function.value(QString::fromUtf8("arguments"));
+            if (args.isString())
+                call.args += args.toString();
+            else if (args.isObject())
+                call.args += QString::fromUtf8(
+                    QJsonDocument(args.toObject()).toJson(QJsonDocument::Compact));
+        }
+    }
+
+    if (!sawChoice && !streamError.isEmpty())
+    {
+        QJsonObject err;
+        err.insert(QString::fromUtf8("message"), streamError);
+        QJsonObject root;
+        root.insert(QString::fromUtf8("error"), err);
+        return QJsonDocument(root).toJson(QJsonDocument::Compact);
+    }
+    if (!sawChoice)
+        return raw;
+
+    QJsonArray toolCalls;
+    const QList<int> keys = calls.keys();
+    for (int i = 0; i < keys.size(); ++i)
+    {
+        const Call &call = calls.value(keys.at(i));
+        QJsonObject function;
+        function.insert(QString::fromUtf8("name"), call.name);
+        function.insert(QString::fromUtf8("arguments"), call.args);
+        QJsonObject item;
+        item.insert(QString::fromUtf8("id"), call.id);
+        item.insert(QString::fromUtf8("type"), QString::fromUtf8("function"));
+        item.insert(QString::fromUtf8("function"), function);
+        toolCalls.append(item);
+    }
+
+    QJsonObject message;
+    message.insert(QString::fromUtf8("role"), role);
+    message.insert(QString::fromUtf8("content"), content);
+    if (!reasoning.isEmpty())
+        message.insert(QString::fromUtf8("reasoning_content"), reasoning);
+    if (!toolCalls.isEmpty())
+        message.insert(QString::fromUtf8("tool_calls"), toolCalls);
+
+    QJsonObject choice;
+    choice.insert(QString::fromUtf8("message"), message);
+    choice.insert(QString::fromUtf8("finish_reason"), finish);
+    QJsonArray choices;
+    choices.append(choice);
+
+    QJsonObject usage;
+    usage.insert(QString::fromUtf8("prompt_tokens"), promptTokens);
+    usage.insert(QString::fromUtf8("completion_tokens"), completionTokens);
+    usage.insert(QString::fromUtf8("total_tokens"), totalTokens);
+    if (cachedTokens > 0)
+        usage.insert(QString::fromUtf8("prompt_cache_hit_tokens"), cachedTokens);
+
+    QJsonObject root;
+    root.insert(QString::fromUtf8("choices"), choices);
+    root.insert(QString::fromUtf8("usage"), usage);
+    return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 
 //----------------------------------------------
@@ -652,12 +849,20 @@ void OpenAiCompatibleClient::sltNetworkError(int requestId, QString errorText)
 void OpenAiCompatibleClient::handleNetworkData(QByteArray data, int status, QString networkError)
 {
     Q_UNUSED(networkError);
+    if (status >= 400)
+    {
+        setBusy(false);
+        emit failed(describeHttpError(status, apiErrorMessage(data)));
+        return;
+    }
     if (data.isEmpty() && status <= 0)
     {
         setBusy(false);
         emit failed(tr("Сетевая ошибка: пустой ответ."));
         return;
     }
+
+    data = foldChatStream(data);
 
     LlmResponse response;
     QString error;
@@ -677,16 +882,61 @@ void OpenAiCompatibleClient::handleNetworkData(QByteArray data, int status, QStr
 
 //----------------------------------------------
 
+static bool isDeepSeekEndpoint(const QString &baseUrl, const QString &model)
+{
+    return baseUrl.toLower().contains(QString::fromUtf8("deepseek"))
+           || model.toLower().contains(QString::fromUtf8("deepseek"));
+}
+
+//----------------------------------------------
+
+/** DeepSeek returns 400 if reasoning_content is sent while thinking is off,
+ *  and if it is missing on assistant turns while thinking is on and tools are set.
+ */
+static void applyDeepSeekReasoning(QJsonArray *messages, bool thinking, bool hasTools)
+{
+    if (!messages)
+        return;
+    const bool keep = thinking && hasTools;
+    for (int i = 0; i < messages->size(); ++i)
+    {
+        QJsonObject object = messages->at(i).toObject();
+        if (object.value(QString::fromUtf8("role")).toString()
+            != QString::fromUtf8("assistant"))
+            continue;
+        if (keep)
+        {
+            if (!object.contains(QString::fromUtf8("reasoning_content")))
+                object.insert(QString::fromUtf8("reasoning_content"), QString());
+        }
+        else
+            object.remove(QString::fromUtf8("reasoning_content"));
+        (*messages)[i] = object;
+    }
+}
+
+//----------------------------------------------
+
 QByteArray OpenAiCompatibleClient::buildBody(const LlmRequest &request) const
 {
     QJsonObject root;
     const QString model = request.model.isEmpty() ? _model : request.model;
     root.insert(QString::fromUtf8("model"), model);
-    root.insert(QString::fromUtf8("stream"), false);
+    // Reasoning produces no bytes until the first token. Stream so a long
+    // answer is not cut off by the silence timer.
+    root.insert(QString::fromUtf8("stream"), request.reasoning);
+    if (request.reasoning && isDeepSeekEndpoint(_baseUrl, model))
+    {
+        QJsonObject streamOptions;
+        streamOptions.insert(QString::fromUtf8("include_usage"), true);
+        root.insert(QString::fromUtf8("stream_options"), streamOptions);
+    }
 
     QJsonArray messages;
     foreach (const LlmMessage &message, request.messages)
         messages.append(messageToJson(message));
+    if (isDeepSeekEndpoint(_baseUrl, request.model.isEmpty() ? _model : request.model))
+        applyDeepSeekReasoning(&messages, request.reasoning, !request.tools.isEmpty());
     root.insert(QString::fromUtf8("messages"), messages);
 
     if (!request.tools.isEmpty())
@@ -720,6 +970,90 @@ QByteArray OpenAiCompatibleClient::buildBody(const LlmRequest &request) const
 
 //----------------------------------------------
 
+//----------------------------------------------
+
+static bool wireImageUrlIsSendable(const QString &url)
+{
+    const QString head = url.left(96).trimmed().toLower();
+    if (head.startsWith(QString::fromUtf8("https://"))
+        || head.startsWith(QString::fromUtf8("http://")))
+    {
+        return url.size() <= 8192
+               && !url.contains(QChar(' '))
+               && !url.contains(QChar('\n'));
+    }
+    if (!head.startsWith(QString::fromUtf8("data:image/")))
+        return false;
+    const int semi = head.indexOf(QChar(';'));
+    const int comma = url.indexOf(QChar(','));
+    if (semi < 0 || comma < 0 || comma > 128)
+        return false;
+    if (!url.left(comma).toLower().contains(QString::fromUtf8("base64")))
+        return false;
+    const QString mime = head.mid(5, semi - 5);
+    return mime == QString::fromUtf8("image/jpeg")
+           || mime == QString::fromUtf8("image/png")
+           || mime == QString::fromUtf8("image/gif")
+           || mime == QString::fromUtf8("image/webp");
+}
+
+//----------------------------------------------
+
+static QJsonArray wireContentParts(const QJsonArray &parts)
+{
+    // DeepSeek rejects any image_url that is not http(s) or data:image/{jpeg,png,gif,webp};base64,.
+    // Saved chats store "[omitted image, N chars]" plus an optional source_path. Never send those.
+    QJsonArray out;
+    for (int i = 0; i < parts.size(); ++i)
+    {
+        const QJsonObject part = parts.at(i).toObject();
+        if (part.value(QString::fromUtf8("type")).toString()
+            != QString::fromUtf8("image_url"))
+        {
+            out.append(part);
+            continue;
+        }
+        QString url;
+        const QJsonValue imageValue = part.value(QString::fromUtf8("image_url"));
+        QJsonObject image;
+        if (imageValue.isString())
+            url = imageValue.toString();
+        else
+        {
+            image = imageValue.toObject();
+            url = image.value(QString::fromUtf8("url")).toString();
+        }
+        if (!wireImageUrlIsSendable(url))
+        {
+            const QString source = image.value(QString::fromUtf8("source_path")).toString().trimmed();
+            QString note = QString::fromUtf8(
+                "[Image omitted: unsupported image_url.]");
+            if (!source.isEmpty())
+            {
+                note = QString::fromUtf8("[Image omitted (%1): unsupported image_url.]")
+                           .arg(source);
+            }
+            QJsonObject text;
+            text.insert(QString::fromUtf8("type"), QString::fromUtf8("text"));
+            text.insert(QString::fromUtf8("text"), note);
+            out.append(text);
+            continue;
+        }
+        QJsonObject cleanImage;
+        cleanImage.insert(QString::fromUtf8("url"), url);
+        const QString detail = image.value(QString::fromUtf8("detail")).toString().trimmed();
+        if (!detail.isEmpty())
+            cleanImage.insert(QString::fromUtf8("detail"), detail);
+        QJsonObject clean;
+        clean.insert(QString::fromUtf8("type"), QString::fromUtf8("image_url"));
+        clean.insert(QString::fromUtf8("image_url"), cleanImage);
+        out.append(clean);
+    }
+    return out;
+}
+
+//----------------------------------------------
+
 QJsonObject OpenAiCompatibleClient::messageToJson(const LlmMessage &message) const
 {
     QJsonObject object;
@@ -728,7 +1062,8 @@ QJsonObject OpenAiCompatibleClient::messageToJson(const LlmMessage &message) con
     if (!message.toolCalls.isEmpty())
     {
         if (!message.contentParts.isEmpty())
-            object.insert(QString::fromUtf8("content"), message.contentParts);
+            object.insert(QString::fromUtf8("content"),
+                          wireContentParts(message.contentParts));
         else if (message.content.isEmpty())
             object.insert(QString::fromUtf8("content"), QJsonValue::Null);
         else
@@ -751,7 +1086,8 @@ QJsonObject OpenAiCompatibleClient::messageToJson(const LlmMessage &message) con
     }
     else if (!message.contentParts.isEmpty())
     {
-        object.insert(QString::fromUtf8("content"), message.contentParts);
+        object.insert(QString::fromUtf8("content"),
+                      wireContentParts(message.contentParts));
     }
     else
     {

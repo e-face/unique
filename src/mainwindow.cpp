@@ -1214,9 +1214,19 @@ void MainWindow::sendRootComposerMessage(QString text, QJsonArray contentParts)
     }
     if (session->worker() && session->worker()->isRoot())
     {
+        const QString stopped = _workers ? _workers->interruptedToolsNote() : QString();
+        const bool resume = !stopped.isEmpty()
+                            && !session->worker()->task().trimmed().isEmpty();
         session->worker()->clearWorkPlan();
-        session->worker()->setTask(text);
-        const QString prefix = session->worker()->composeStartPrefix();
+        if (!resume)
+            session->worker()->setTask(text);
+        QString prefix = session->worker()->composeStartPrefix();
+        if (resume)
+        {
+            if (!prefix.isEmpty())
+                prefix += QString::fromUtf8("\n\n");
+            prefix += stopped;
+        }
         if (!prefix.isEmpty())
             session->agent()->injectContext(prefix);
     }
@@ -2722,6 +2732,8 @@ void MainWindow::sltComposerSend()
             embeddedImages.append(path);
             QJsonObject imageUrl;
             imageUrl.insert(QString::fromUtf8("url"), dataUrl);
+            // Kept across chat save (the base64 url is replaced with a short marker).
+            imageUrl.insert(QString::fromUtf8("source_path"), path);
             QJsonObject part;
             part.insert(QString::fromUtf8("type"), QString::fromUtf8("image_url"));
             part.insert(QString::fromUtf8("image_url"), imageUrl);
@@ -3346,6 +3358,24 @@ QString MainWindow::encodeProjectFileDataUrl(QString relativePath, QString *erro
 
 //----------------------------------------------
 
+static QString chatImageMime(QString mime)
+{
+    mime = mime.trimmed().toLower();
+    if (mime == QString::fromUtf8("image/jpg")
+        || mime == QString::fromUtf8("image/pjpeg"))
+        mime = QString::fromUtf8("image/jpeg");
+    if (mime == QString::fromUtf8("image/x-png"))
+        mime = QString::fromUtf8("image/png");
+    if (mime == QString::fromUtf8("image/jpeg")
+        || mime == QString::fromUtf8("image/png")
+        || mime == QString::fromUtf8("image/gif")
+        || mime == QString::fromUtf8("image/webp"))
+        return mime;
+    return QString();
+}
+
+//----------------------------------------------
+
 QString MainWindow::encodeProjectImageDataUrl(QString relativePath, QString *error) const
 {
     if (!_workspace || !_workspace->isSet())
@@ -3391,16 +3421,17 @@ QString MainWindow::encodeProjectImageDataUrl(QString relativePath, QString *err
         if (image.width() > kMaxSide || image.height() > kMaxSide)
             image = image.scaled(kMaxSide, kMaxSide, Qt::KeepAspectRatio,
                                  Qt::SmoothTransformation);
+        QImage rgb = image.convertToFormat(QImage::Format_RGB32);
         QByteArray encoded;
         QBuffer buffer(&encoded);
         buffer.open(QIODevice::WriteOnly);
         int quality = 85;
-        if (!image.save(&buffer, "JPEG", quality))
+        if (!rgb.save(&buffer, "JPEG", quality))
         {
             buffer.close();
             encoded.clear();
             buffer.open(QIODevice::WriteOnly);
-            if (image.save(&buffer, "PNG"))
+            if (image.convertToFormat(QImage::Format_ARGB32).save(&buffer, "PNG"))
                 mime = QString::fromUtf8("image/png");
         }
         buffer.close();
@@ -3409,18 +3440,22 @@ QString MainWindow::encodeProjectImageDataUrl(QString relativePath, QString *err
         else
         {
             QMimeDatabase mimeDb;
-            mime = mimeDb.mimeTypeForFile(abs).name();
-            if (mime.isEmpty() || !mime.startsWith(QString::fromUtf8("image/")))
-                mime = QString::fromUtf8("image/png");
+            mime = chatImageMime(mimeDb.mimeTypeForFile(abs).name());
         }
     }
     else
     {
         QMimeDatabase mimeDb;
-        mime = mimeDb.mimeTypeForFile(abs).name();
-        if (mime.isEmpty() || !mime.startsWith(QString::fromUtf8("image/")))
-            mime = QString::fromUtf8("image/png");
+        mime = chatImageMime(mimeDb.mimeTypeForFile(abs).name());
     }
+
+    if (chatImageMime(mime).isEmpty())
+    {
+        if (error)
+            *error = tr("Формат изображения не поддерживается: %1").arg(relativePath);
+        return QString();
+    }
+    mime = chatImageMime(mime);
 
     return QString::fromUtf8("data:%1;base64,%2")
         .arg(mime, QString::fromLatin1(bytes.toBase64()));
@@ -4300,6 +4335,8 @@ void MainWindow::loadOpenChats()
         const WorkerType type = workerTypeFromString(shot.workerType);
         Worker *worker = _workers->createWorker(type, shot.id, session, 0, shot.task,
                                                 shot.llmProfileId);
+        if (!shot.presetId.isEmpty())
+            worker->setPresetId(shot.presetId);
         worker->setCheckOnly(shot.checkOnly);
         worker->setTitle(shot.workerTitle);
         if (!shot.personName.isEmpty())

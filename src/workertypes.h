@@ -2,6 +2,7 @@
 #define WORKERTYPES_H
 
 #include <QString>
+#include <QStringList>
 
 //----------------------------------------------
 
@@ -191,13 +192,15 @@ inline bool workerTaskKindUsesAgentChat(WorkerTaskKind kind)
  * @brief A predefined worker template: a role and a model profile.
  *
  * The task class (taskKind) is inherited from the chosen profile's modality.
- * The combination of type and profileId is unique.
+ * Several presets may share one role and one model profile.
+ * The preset id and specialization tell them apart.
  */
 struct WorkerPreset
 {
     WorkerPreset()
         : type(WorkerTypeExecutor)
         , taskKind(WorkerTaskKindLlm)
+        , toolIdsSet(false)
     {
     }
 
@@ -206,6 +209,16 @@ struct WorkerPreset
     QString         profileId;
     /** A copy of the profile modality, kept in sync on save and load. */
     WorkerTaskKind  taskKind;
+    /**
+     * Short note for text workers: what this worker is for.
+     */
+    QString         specialization;
+    /**
+     * Tool ids present in a text worker's context.
+     * toolIdsSet is false for an old preset: it keeps every built-in tool.
+     */
+    QStringList     toolIds;
+    bool            toolIdsSet;
 };
 
 //----------------------------------------------

@@ -43,6 +43,10 @@ public:
 
     void addTool(AgentTool *tool);
     void clearTools();
+    bool hasTool(QString name) const;
+    QStringList toolNames() const;
+    /** Drop installed tools whose names are not in the list. */
+    void retainTools(const QStringList &names);
     /**
      * @brief Call an installed tool directly (media executor and tests).
      */
@@ -57,6 +61,8 @@ public:
     void recordLocalExchange(QString userText, QString assistantText, int ingress = 1);
     void setSystemPrompt(QString prompt);
     QString systemPrompt() const;
+    /** Write the current system prompt into an already loaded history. */
+    void rewriteSystemPrompt();
     void setProjectDirectory(QString path);
     QString projectDirectory() const;
     void setMaxToolIterations(int count);
@@ -81,6 +87,11 @@ public:
      */
     void setInspectIo(bool enabled);
     bool inspectIo() const;
+    /**
+     * @brief When false, this agent does not ask the model to reason.
+     *        Tools stay off: a long chain of thought is what makes a tool look stuck.
+     */
+    void setUseReasoning(bool enabled);
 
     bool isBusy() const;
     /**
@@ -255,6 +266,7 @@ private:
     bool               _compactThenChat;
     bool               _overflowRetried;
     bool               _inspectIo;
+    bool               _useReasoning;
     bool               _stopAfterTools;
     bool               _heldForExternal;
     bool               _waitingToolBudget;

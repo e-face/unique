@@ -47,6 +47,7 @@ Worker::Worker(QObject *parent)
     , _unusedParentTurns(0)
     , _permissionOfferAlways(false)
     , _toolStarted(false)
+    , _toolInterrupted(false)
     , _waitingForTool(0)
     , _parkForGroupDialogue(false)
     , _hasVerification(false)
@@ -645,6 +646,23 @@ void Worker::setLlmProfileId(QString id)
 
 //----------------------------------------------
 
+QString Worker::presetId() const
+{
+    return _presetId;
+}
+
+//----------------------------------------------
+
+void Worker::setPresetId(QString id)
+{
+    const QString clean = id.trimmed();
+    if (_presetId == clean)
+        return;
+    _presetId = clean;
+}
+
+//----------------------------------------------
+
 QString Worker::groupId() const
 {
     return _groupId;
@@ -931,6 +949,20 @@ QString Worker::changedFilesText() const
 
 //----------------------------------------------
 
+bool Worker::toolInterrupted() const
+{
+    return _toolInterrupted;
+}
+
+//----------------------------------------------
+
+void Worker::setToolInterrupted(bool on)
+{
+    _toolInterrupted = on;
+}
+
+//----------------------------------------------
+
 bool Worker::toolIsFree() const
 {
     if (!isTool())
@@ -957,6 +989,7 @@ void Worker::beginToolRun(QString message)
     const QString trimmed = message.trimmed();
     if (trimmed.isEmpty())
         return;
+    _toolInterrupted = false;
     _changedFiles.clear();
     WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
     if (!_toolStarted)
@@ -1468,6 +1501,9 @@ void Worker::startTask()
         return;
     if (!_session || !_session->agent())
         return;
+    WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
+    if (manager)
+        manager->installTools(this);
     stampTurnAuthor();
     _session->ensureContentLoaded();
     _completed = false;
@@ -1496,7 +1532,6 @@ void Worker::startTask()
     _startedAtMs = QDateTime::currentMSecsSinceEpoch();
     setState(WorkerStateRunning);
 
-    WorkerManager *manager = qobject_cast<WorkerManager *>(parent());
     if (manager && workerTaskKindIsMediaExecutor(manager->modalityOf(this)))
     {
         // Image, speech, audio, video, and embedding do not use chat tool calls.
@@ -1552,6 +1587,8 @@ void Worker::complete(QString result, bool ok)
     if (!files.isEmpty() && !text.contains(QString::fromUtf8("Files changed:")))
         text += QString::fromUtf8("\n\n") + files;
     _completed = true;
+    if (isTool() && ok)
+        _toolInterrupted = false;
     _skipIdleComplete = false;
     _needsParentReport = false;
     _parentReportNudged = false;
@@ -1967,6 +2004,189 @@ QList<WorkSubtask> Worker::workPlan() const
 
 //----------------------------------------------
 
+bool Worker::specializationHits(QString specialization, QString text)
+{
+    // Short or generic words ("model", "работа") are not a domain match.
+    static const char *kGeneric[] = {
+        "work", "works", "task", "tasks", "file", "files", "text", "data",
+        "model", "models", "worker", "workers", "tool", "tools",
+        "this", "that", "with", "from", "your", "have", "and", "mode",
+        "моде", "рабо", "зада", "файл", "текс", "данн", "инст", "ворк",
+        "для", "или", "при", "как", "что", "это", "все", "его",
+        0
+    };
+    const QString hayLower = text.toLower();
+    QString token;
+    const QString spec = specialization.toLower();
+    const int n = spec.size();
+    for (int i = 0; i <= n; ++i)
+    {
+        const bool boundary = (i == n) || !spec.at(i).isLetterOrNumber();
+        if (!boundary)
+        {
+            token.append(spec.at(i));
+            continue;
+        }
+        if (token.isEmpty())
+            continue;
+        const bool digit = token.contains(QRegExp(QString::fromUtf8("[0-9]")));
+        QString key = token;
+        if (token.size() >= 5)
+            key = token.left(4);
+        bool generic = (key.size() < 2) || (key.size() < 3 && !digit);
+        if (!generic)
+        {
+            for (int g = 0; kGeneric[g] != 0; ++g)
+            {
+                if (key == QString::fromUtf8(kGeneric[g]))
+                {
+                    generic = true;
+                    break;
+                }
+            }
+        }
+        if (!generic && hayLower.contains(key))
+            return true;
+        token.clear();
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+static bool hasInterruptedTool(const Worker *worker)
+{
+    if (!worker)
+        return false;
+    WorkerManager *manager = qobject_cast<WorkerManager *>(worker->parent());
+    if (!manager)
+        return false;
+    foreach (Worker *tool, manager->tools())
+    {
+        if (tool && tool->toolInterrupted())
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+static QString blockSelfPlanForStoppedTool(const Worker *worker,
+                                           const QList<WorkSubtask> &items)
+{
+    foreach (const WorkSubtask &item, items)
+    {
+        if (item.how == QString::fromUtf8("tool"))
+            return QString();
+    }
+    WorkerManager *manager = worker
+                             ? qobject_cast<WorkerManager *>(worker->parent())
+                             : 0;
+    if (!manager)
+        return QString();
+    QStringList hits;
+    foreach (Worker *tool, manager->tools())
+    {
+        if (!tool || !tool->toolInterrupted())
+            continue;
+        QString purpose = tool->toolPurpose().trimmed().simplified();
+        if (purpose.size() > 80)
+            purpose = purpose.left(77) + QString::fromUtf8("...");
+        hits << QString::fromUtf8("tool_id=%1 name=\"%2\" purpose=\"%3\"")
+                    .arg(tool->id(), tool->toolName(), purpose);
+    }
+    if (hits.isEmpty())
+        return QString();
+    return QString::fromUtf8(
+        "These tools were stopped before they finished: %1. "
+        "Mark that part how=tool and resume each one with run_tool. "
+        "Do not do their work yourself.")
+        .arg(hits.join(QString::fromUtf8("; ")));
+}
+
+//----------------------------------------------
+
+static QString blockSelfPlanForSpecialist(QString ownPresetId, QString assignment,
+                                          const QList<WorkSubtask> &items)
+{
+    bool anyDelegate = false;
+    bool anyTool = false;
+    QString hay = assignment.toLower();
+    foreach (const WorkSubtask &item, items)
+    {
+        hay += QChar('\n');
+        hay += item.name.toLower();
+        hay += QChar('\n');
+        hay += item.task.toLower();
+        if (item.how == QString::fromUtf8("delegate"))
+            anyDelegate = true;
+        if (item.how == QString::fromUtf8("tool"))
+            anyTool = true;
+    }
+
+    QStringList toolHits;
+    const QList<WorkerPreset> presets = AppSettings::instance()->workerPresets();
+    foreach (const WorkerPreset &preset, presets)
+    {
+        if (normalizeWorkerType(preset.type) != WorkerTypeTool)
+            continue;
+        if (!Worker::specializationHits(preset.specialization, hay))
+            continue;
+        QString spec = preset.specialization.trimmed().simplified();
+        if (spec.size() > 80)
+            spec = spec.left(77) + QString::fromUtf8("...");
+        toolHits << QString::fromUtf8("preset_id=%1 specialization=\"%2\"")
+                       .arg(preset.id, spec);
+    }
+    if (!toolHits.isEmpty() && !anyTool)
+    {
+        return QString::fromUtf8(
+            "A tool preset matches this assignment: %1. "
+            "Mark that part how=tool. Create the tool with create_tool and that "
+            "preset_id, or run_tool if it already exists. Do not mark it how=delegate "
+            "and do not do it yourself: an executor does not get that preset's functions.")
+            .arg(toolHits.join(QString::fromUtf8("; ")));
+    }
+
+    if (anyDelegate)
+        return QString();
+
+    const QString ownId = ownPresetId.trimmed();
+    if (!ownId.isEmpty())
+    {
+        const WorkerPreset own = AppSettings::instance()->workerPresetById(ownId);
+        if (Worker::specializationHits(own.specialization, hay))
+            return QString();
+    }
+
+    QStringList hits;
+    foreach (const WorkerPreset &preset, presets)
+    {
+        if (preset.id == ownId)
+            continue;
+        if (normalizeWorkerType(preset.type) != WorkerTypeExecutor)
+            continue;
+        if (!Worker::specializationHits(preset.specialization, hay))
+            continue;
+        QString spec = preset.specialization.trimmed().simplified();
+        if (spec.size() > 80)
+            spec = spec.left(77) + QString::fromUtf8("...");
+        hits << QString::fromUtf8("preset_id=%1 specialization=\"%2\"")
+                    .arg(preset.id, spec);
+    }
+    if (hits.isEmpty())
+        return QString();
+    return QString::fromUtf8(
+        "A worker preset matches this assignment and is not yours: %1. "
+        "You must use that worker. If one from that preset is already "
+        "created, reuse it with worker_id. Otherwise mark the part how=delegate "
+        "and delegate_task with that preset_id and why=specialization. "
+        "Do not do that part yourself.")
+        .arg(hits.join(QString::fromUtf8("; ")));
+}
+
+//----------------------------------------------
+
 QString Worker::applyWorkPlan(QString architecture, const QList<WorkSubtask> &items)
 {
     const QString arch = architecture.trimmed();
@@ -2007,6 +2227,16 @@ QString Worker::applyWorkPlan(QString architecture, const QList<WorkSubtask> &it
         }
         item.how = how;
         item.delegated = false;
+    }
+
+    const QString stoppedTool = blockSelfPlanForStoppedTool(this, normalized);
+    if (!stoppedTool.isEmpty())
+        return stoppedTool;
+    if (!hasInterruptedTool(this))
+    {
+        const QString specialist = blockSelfPlanForSpecialist(_presetId, _task, normalized);
+        if (!specialist.isEmpty())
+            return specialist;
     }
 
     _architecture = arch;
@@ -2059,6 +2289,17 @@ void Worker::markSubtaskDelegated(QString name)
             _workPlan[i].delegated = true;
             return;
         }
+    }
+}
+
+//----------------------------------------------
+
+void Worker::noteToolRan()
+{
+    for (int i = 0; i < _workPlan.size(); ++i)
+    {
+        if (_workPlan.at(i).how == QString::fromUtf8("tool"))
+            _workPlan[i].delegated = true;
     }
 }
 
@@ -2124,22 +2365,43 @@ bool Worker::needsWorkOpening() const
 
 //----------------------------------------------
 
+static bool workerHasTool(const Worker *worker, const char *name)
+{
+    if (!worker || !worker->session() || !worker->session()->agent())
+        return true;
+    return worker->session()->agent()->hasTool(QString::fromUtf8(name));
+}
+
+//----------------------------------------------
+
 QString Worker::openingBlockReason() const
 {
     if (!needsWorkOpening() || hasWorkPlan())
         return QString();
+    const bool needTools = workerHasTool(this, "list_tools");
+    const bool needPresets = workerHasTool(this, "list_worker_presets");
+    const bool needPlan = workerHasTool(this, "plan_work");
     QStringList steps;
-    if (!_listedTools)
+    if (needTools && !_listedTools)
         steps << QString::fromUtf8("list_tools");
-    if (!_listedPresets)
+    if (needPresets && !_listedPresets)
         steps << QString::fromUtf8("list_worker_presets");
-    steps << QString::fromUtf8("plan_work");
+    if (needPlan)
+        steps << QString::fromUtf8("plan_work");
+    if (steps.isEmpty())
+        return QString();
     return QString::fromUtf8(
         "Before any other action call, in order: %1. "
         "plan_work is your own plan. Save tokens and time. "
         "how=self is the default — you do the part. "
-        "how=delegate or how=tool only when you judge the task complex enough "
-        "that a child or a tool is cheaper. You decide. "
+        "how=delegate or how=tool when you judge the task complex enough "
+        "that a child or a tool is cheaper. If a specialized worker or a "
+        "specialized tool exists for the assignment, you must use it and must "
+        "not do that part yourself. A specialized tool has priority over doing "
+        "that part yourself and over a worker that does not have the tool's "
+        "functions. Reuse an already created worker (worker_id) "
+        "or the existing tool (run_tool). If your own specialization matches, "
+        "do the part here. "
         "Then carry the plan out. A status message does not finish the task.")
         .arg(steps.join(QString::fromUtf8(", ")));
 }
@@ -2150,11 +2412,14 @@ bool Worker::shouldNudgeToContinue() const
 {
     if (_idleNudges >= 2 || !needsWorkOpening())
         return false;
-    if (!hasWorkPlan() || !_actedAfterPlan)
+    if (!hasWorkPlan())
+        return !openingBlockReason().isEmpty();
+    if (!_actedAfterPlan)
         return true;
     for (int i = 0; i < _workPlan.size(); ++i)
     {
-        if (_workPlan.at(i).how == QString::fromUtf8("delegate")
+        if ((_workPlan.at(i).how == QString::fromUtf8("delegate")
+             || _workPlan.at(i).how == QString::fromUtf8("tool"))
             && !_workPlan.at(i).delegated)
             return true;
     }
@@ -2168,11 +2433,15 @@ QString Worker::continueNudgeText() const
     if (!hasWorkPlan())
         return openingBlockReason();
     QStringList pending;
+    QStringList pendingTools;
     for (int i = 0; i < _workPlan.size(); ++i)
     {
-        if (_workPlan.at(i).how == QString::fromUtf8("delegate")
-            && !_workPlan.at(i).delegated)
+        if (_workPlan.at(i).delegated)
+            continue;
+        if (_workPlan.at(i).how == QString::fromUtf8("delegate"))
             pending << _workPlan.at(i).name.trimmed();
+        else if (_workPlan.at(i).how == QString::fromUtf8("tool"))
+            pendingTools << _workPlan.at(i).name.trimmed();
     }
     if (!pending.isEmpty())
     {
@@ -2180,6 +2449,13 @@ QString Worker::continueNudgeText() const
             "You stopped in the middle. These plan parts are not delegated yet: %1. "
             "Continue the plan. A status message does not finish the task.")
             .arg(pending.join(QString::fromUtf8(", ")));
+    }
+    if (!pendingTools.isEmpty())
+    {
+        return QString::fromUtf8(
+            "You stopped in the middle. These plan parts still need run_tool: %1. "
+            "A stopped tool is resumed with run_tool. Do not do that work yourself.")
+            .arg(pendingTools.join(QString::fromUtf8(", ")));
     }
     return QString::fromUtf8(
         "You stopped in the middle. Carry out the plan from plan_work. "
