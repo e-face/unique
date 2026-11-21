@@ -12,6 +12,7 @@
 
 /**
  * @brief tr() translation: the key is the original Russian string from the sources.
+ * A line "Context<TAB>source" is preferred when translate() is called with that context.
  */
 class IniSourceTranslator : public QTranslator
 {

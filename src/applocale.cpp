@@ -32,12 +32,22 @@ bool IniSourceTranslator::isEmpty() const
 QString IniSourceTranslator::translate(const char *context, const char *sourceText,
                                          const char *disambiguation, int n) const
 {
-    Q_UNUSED(context);
     Q_UNUSED(disambiguation);
     Q_UNUSED(n);
     if (!sourceText)
         return QString();
     const QString source = QString::fromUtf8(sourceText);
+    // "Context<TAB>source" overrides the plain source for that context.
+    // One source is both the team-tab title and the shell-command tool name.
+    if (context && context[0])
+    {
+        const QString scoped = QString::fromUtf8(context)
+                               + QLatin1Char('\t')
+                               + source;
+        const QHash<QString, QString>::const_iterator scopedIt = _map.constFind(scoped);
+        if (scopedIt != _map.constEnd() && !scopedIt.value().isEmpty())
+            return scopedIt.value();
+    }
     const QHash<QString, QString>::const_iterator it = _map.constFind(source);
     if (it != _map.constEnd() && !it.value().isEmpty())
         return it.value();
