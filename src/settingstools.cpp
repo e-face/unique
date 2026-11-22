@@ -1,9 +1,12 @@
 #include "settingstools.h"
 //----------------------------------------------
 #include "appsettings.h"
+#include "mcphub.h"
 #include "worker.h"
 #include "workertypes.h"
 //----------------------------------------------
+#include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -170,6 +173,10 @@ static QString compactJson(const QJsonObject &obj)
 
 //----------------------------------------------
 
+static QJsonObject mcpToJson();
+
+//----------------------------------------------
+
 ReadSettingsTool::ReadSettingsTool(Worker *owner, QObject *parent)
     : AgentTool(parent)
     , _owner(owner)
@@ -190,8 +197,15 @@ QString ReadSettingsTool::description() const
     return QString::fromUtf8(
         "Read program or project settings: worker limits, action-control flags, "
         "always-allowed commands, model profiles (API keys are never returned, only "
-        "whether one is set) and worker presets. The user confirms every read. "
-        "Model profiles are program-wide; presets and limits exist per scope.");
+        "whether one is set), worker presets, and MCP servers. "
+        "MCP servers (a user may write NCP) are program-wide tool servers. "
+        "They are not model profiles and not a file inside the project. "
+        "section \"mcp\" or \"all\" lists them, plus local_config_files: configs already "
+        "on this computer (Claude, Cursor) that name MCP servers. "
+        "Do not invent a server and do not scan ports. If local_config_files is empty, "
+        "ask the user for the command or the http address. "
+        "The user confirms every read. Model profiles are program-wide; presets and "
+        "limits exist per scope; MCP servers are always program-wide.");
 }
 
 //----------------------------------------------
@@ -206,8 +220,8 @@ QJsonObject ReadSettingsTool::parametersSchema() const
     QJsonObject section;
     section.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     section.insert(QString::fromUtf8("description"),
-                   QString::fromUtf8("\"all\" (default), \"general\", \"profiles\" or "
-                                     "\"presets\"."));
+                   QString::fromUtf8("\"all\" (default), \"general\", \"profiles\", "
+                                     "\"presets\" or \"mcp\"."));
     QJsonObject reason;
     reason.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     reason.insert(QString::fromUtf8("description"),
@@ -253,11 +267,12 @@ QString ReadSettingsTool::invoke(QString argumentsJson, bool *ok)
     if (section.isEmpty())
         section = QString::fromUtf8("all");
     if (section != QString::fromUtf8("all") && section != QString::fromUtf8("general")
-        && section != QString::fromUtf8("profiles") && section != QString::fromUtf8("presets"))
+        && section != QString::fromUtf8("profiles") && section != QString::fromUtf8("presets")
+        && section != QString::fromUtf8("mcp"))
     {
         if (ok)
             *ok = false;
-        return QString::fromUtf8("section must be all, general, profiles or presets.");
+        return QString::fromUtf8("section must be all, general, profiles, presets or mcp.");
     }
 
     QString sectionTitle;
@@ -267,6 +282,8 @@ QString ReadSettingsTool::invoke(QString argumentsJson, bool *ok)
         sectionTitle = QObject::tr("профили моделей (без ключей API)");
     else if (section == QString::fromUtf8("presets"))
         sectionTitle = QObject::tr("пресеты воркеров");
+    else if (section == QString::fromUtf8("mcp"))
+        sectionTitle = QObject::tr("серверы MCP");
     else
         sectionTitle = QObject::tr("все разделы (ключи API не раскрываются)");
 
@@ -303,9 +320,72 @@ QString ReadSettingsTool::invoke(QString argumentsJson, bool *ok)
             list.append(presetToJson(preset, rootId));
         out.insert(QString::fromUtf8("worker_presets"), list);
     }
+    if (section == QString::fromUtf8("all") || section == QString::fromUtf8("mcp"))
+        out.insert(QString::fromUtf8("mcp"), mcpToJson());
     if (ok)
         *ok = true;
     return compactJson(out);
+}
+
+//----------------------------------------------
+
+static QJsonArray localMcpConfigFiles()
+{
+    QStringList candidates;
+    const QString appData = QString::fromLocal8Bit(qgetenv("APPDATA"));
+    const QString home = QDir::homePath();
+    if (!appData.isEmpty())
+        candidates << QDir(appData).filePath(QString::fromUtf8("Claude/claude_desktop_config.json"));
+    candidates << QDir(home).filePath(QString::fromUtf8(".cursor/mcp.json"));
+    candidates << QDir(home).filePath(QString::fromUtf8(".config/Code/User/mcp.json"));
+
+    QJsonArray files;
+    foreach (const QString &path, candidates)
+    {
+        if (QFileInfo(path).isFile())
+            files.append(QDir::fromNativeSeparators(path));
+    }
+    return files;
+}
+
+//----------------------------------------------
+
+static QJsonObject mcpToJson()
+{
+    QJsonArray list;
+    McpHub *hub = McpHub::instance();
+    foreach (const McpServerConfig &server, hub->servers())
+    {
+        QJsonObject one;
+        one.insert(QString::fromUtf8("id"), server.id);
+        one.insert(QString::fromUtf8("name"), server.name);
+        one.insert(QString::fromUtf8("transport"), server.transport);
+        one.insert(QString::fromUtf8("command"), server.command);
+        one.insert(QString::fromUtf8("arguments"), server.arguments);
+        one.insert(QString::fromUtf8("work_dir"), server.workDir);
+        one.insert(QString::fromUtf8("environment"), server.environment);
+        one.insert(QString::fromUtf8("url"), server.url);
+        one.insert(QString::fromUtf8("headers"), server.headers);
+        one.insert(QString::fromUtf8("enabled"), server.enabled);
+        one.insert(QString::fromUtf8("status"), hub->statusText(server.id));
+        list.append(one);
+    }
+    QJsonObject mcp;
+    mcp.insert(QString::fromUtf8("scope"), QString::fromUtf8("program"));
+    mcp.insert(QString::fromUtf8("servers"), list);
+    mcp.insert(QString::fromUtf8("local_config_files"), localMcpConfigFiles());
+    mcp.insert(QString::fromUtf8("note"),
+               QString::fromUtf8(
+                   "MCP servers are program settings. A user may write NCP and mean these. "
+                   "They are not model profiles and not a file in the project. "
+                   "Add with edit_settings scope=program, changes.mcp = "
+                   "{add:[{name, transport:stdio|http, command, arguments, url, work_dir, "
+                   "environment, headers, enabled}], update:[{id, ...same fields}], "
+                   "remove:[id]}. Do not invent a server and do not scan ports. "
+                   "If local_config_files is not empty, read those files and copy the "
+                   "servers they name. If it is empty, ask the user for the command or "
+                   "the http address."));
+    return mcp;
 }
 
 //----------------------------------------------
@@ -321,6 +401,9 @@ struct SettingsChange
         PresetAdd,
         PresetUpdate,
         PresetRemove,
+        McpAdd,
+        McpUpdate,
+        McpRemove,
         General
     };
 
@@ -331,11 +414,12 @@ struct SettingsChange
     {
     }
 
-    Kind         kind;
-    QString      text;      // line shown in the confirmation dialog
-    LlmProfile   profile;   // Profile*
-    WorkerPreset preset;    // Preset*
-    QString      id;        // id to remove, or the general field name
+    Kind            kind;
+    QString         text;      // line shown in the confirmation dialog
+    LlmProfile      profile;   // Profile*
+    WorkerPreset    preset;    // Preset*
+    McpServerConfig mcp;       // Mcp*
+    QString         id;        // id to remove, or the general field name
     int          intValue;
     bool         boolValue;
     QStringList  listValue;
@@ -964,6 +1048,189 @@ static bool collectGeneralChanges(SettingsKind kind, const QJsonObject &general,
 
 //----------------------------------------------
 
+static QString mcpBrief(const McpServerConfig &server)
+{
+    QStringList parts;
+    if (server.transport == QString::fromUtf8("http"))
+        parts << QString::fromUtf8("http %1").arg(server.url.trimmed());
+    else
+    {
+        const QString command = (server.command + QLatin1Char(' ') + server.arguments).trimmed();
+        parts << QString::fromUtf8("stdio %1").arg(command);
+    }
+    if (!server.environment.trimmed().isEmpty())
+        parts << QObject::tr("среда задана");
+    if (!server.headers.trimmed().isEmpty())
+        parts << QObject::tr("заголовки заданы");
+    if (!server.enabled)
+        parts << QObject::tr("выключен");
+    return parts.join(QString::fromUtf8(", "));
+}
+
+//----------------------------------------------
+
+static bool fillMcpServer(const QJsonObject &obj, McpServerConfig *server, QString *error)
+{
+    QJsonValue value = fieldValue(obj, "name", "name");
+    if (!value.isUndefined())
+        server->name = value.toString().trimmed();
+    value = fieldValue(obj, "transport", "transport");
+    if (!value.isUndefined())
+    {
+        const QString transport = value.toString().trimmed().toLower();
+        if (transport != QString::fromUtf8("stdio") && transport != QString::fromUtf8("http"))
+        {
+            if (error)
+                *error = QString::fromUtf8("mcp transport must be stdio or http.");
+            return false;
+        }
+        server->transport = transport;
+    }
+    value = fieldValue(obj, "command", "command");
+    if (!value.isUndefined())
+        server->command = value.toString().trimmed();
+    value = fieldValue(obj, "arguments", "arguments");
+    if (!value.isUndefined())
+        server->arguments = value.toString();
+    value = fieldValue(obj, "work_dir", "workDir");
+    if (!value.isUndefined())
+        server->workDir = value.toString().trimmed();
+    value = fieldValue(obj, "environment", "environment");
+    if (!value.isUndefined())
+        server->environment = value.toString();
+    value = fieldValue(obj, "url", "url");
+    if (!value.isUndefined())
+        server->url = value.toString().trimmed();
+    value = fieldValue(obj, "headers", "headers");
+    if (!value.isUndefined())
+        server->headers = value.toString();
+    value = fieldValue(obj, "enabled", "enabled");
+    if (value.isBool())
+        server->enabled = value.toBool();
+    else if (value.isDouble())
+        server->enabled = value.toInt() != 0;
+    else if (value.isString())
+    {
+        const QString flag = value.toString().trimmed().toLower();
+        server->enabled = flag != QString::fromUtf8("false")
+                          && flag != QString::fromUtf8("0")
+                          && flag != QString::fromUtf8("no")
+                          && flag != QString::fromUtf8("off");
+    }
+    if (server->transport != QString::fromUtf8("http"))
+        server->transport = QString::fromUtf8("stdio");
+    if (server->name.isEmpty())
+    {
+        if (error)
+            *error = QString::fromUtf8("mcp server requires a name.");
+        return false;
+    }
+    if (server->transport == QString::fromUtf8("http"))
+    {
+        const QString url = server->url.toLower();
+        if (!url.startsWith(QString::fromUtf8("http://"))
+            && !url.startsWith(QString::fromUtf8("https://")))
+        {
+            if (error)
+                *error = QString::fromUtf8("mcp http server requires an http or https url.");
+            return false;
+        }
+    }
+    else if (server->command.isEmpty())
+    {
+        if (error)
+            *error = QString::fromUtf8("mcp stdio server requires a command.");
+        return false;
+    }
+    return true;
+}
+
+//----------------------------------------------
+
+static McpServerConfig mcpById(const QString &id)
+{
+    foreach (const McpServerConfig &server, McpHub::instance()->servers())
+    {
+        if (server.id == id)
+            return server;
+    }
+    return McpServerConfig();
+}
+
+//----------------------------------------------
+
+static bool collectMcpChanges(const QJsonObject &mcp, QList<SettingsChange> *out, QString *error)
+{
+    const QJsonArray add = mcp.value(QString::fromUtf8("add")).toArray();
+    for (int i = 0; i < add.size(); ++i)
+    {
+        if (!add.at(i).isObject())
+        {
+            if (error)
+                *error = QString::fromUtf8("mcp add entries must be objects.");
+            return false;
+        }
+        SettingsChange change;
+        change.kind = SettingsChange::McpAdd;
+        change.mcp.transport = QString::fromUtf8("stdio");
+        change.mcp.enabled = true;
+        if (!fillMcpServer(add.at(i).toObject(), &change.mcp, error))
+            return false;
+        change.text = QObject::tr("Добавить сервер MCP «%1»: %2")
+                          .arg(change.mcp.name, mcpBrief(change.mcp));
+        out->append(change);
+    }
+
+    const QJsonArray update = mcp.value(QString::fromUtf8("update")).toArray();
+    for (int i = 0; i < update.size(); ++i)
+    {
+        if (!update.at(i).isObject())
+        {
+            if (error)
+                *error = QString::fromUtf8("mcp update entries must be objects.");
+            return false;
+        }
+        const QJsonObject obj = update.at(i).toObject();
+        const QString id = fieldValue(obj, "id", "id").toString().trimmed();
+        McpServerConfig existing = mcpById(id);
+        if (existing.id.isEmpty())
+        {
+            if (error)
+                *error = QString::fromUtf8("mcp update id was not found: %1").arg(id);
+            return false;
+        }
+        if (!fillMcpServer(obj, &existing, error))
+            return false;
+        SettingsChange change;
+        change.kind = SettingsChange::McpUpdate;
+        change.mcp = existing;
+        change.text = QObject::tr("Изменить сервер MCP «%1»: %2")
+                          .arg(change.mcp.name, mcpBrief(change.mcp));
+        out->append(change);
+    }
+
+    const QJsonArray remove = mcp.value(QString::fromUtf8("remove")).toArray();
+    for (int i = 0; i < remove.size(); ++i)
+    {
+        const QString id = remove.at(i).toString().trimmed();
+        const McpServerConfig existing = mcpById(id);
+        if (existing.id.isEmpty())
+        {
+            if (error)
+                *error = QString::fromUtf8("mcp remove id was not found: %1").arg(id);
+            return false;
+        }
+        SettingsChange change;
+        change.kind = SettingsChange::McpRemove;
+        change.id = id;
+        change.text = QObject::tr("Удалить сервер MCP «%1»").arg(existing.name);
+        out->append(change);
+    }
+    return true;
+}
+
+//----------------------------------------------
+
 static QString applyChange(SettingsKind kind, const SettingsChange &change)
 {
     AppSettings *s = AppSettings::instance();
@@ -1003,6 +1270,17 @@ static QString applyChange(SettingsKind kind, const SettingsChange &change)
     case SettingsChange::PresetRemove:
         s->removeWorkerPreset(kind, change.id);
         return QString::fromUtf8("preset removed: id=%1").arg(change.id);
+    case SettingsChange::McpAdd:
+    {
+        const QString id = McpHub::instance()->addServer(change.mcp);
+        return QString::fromUtf8("mcp server added: id=%1 name=%2").arg(id, change.mcp.name);
+    }
+    case SettingsChange::McpUpdate:
+        McpHub::instance()->updateServer(change.mcp);
+        return QString::fromUtf8("mcp server updated: id=%1").arg(change.mcp.id);
+    case SettingsChange::McpRemove:
+        McpHub::instance()->removeServer(change.id);
+        return QString::fromUtf8("mcp server removed: id=%1").arg(change.id);
     case SettingsChange::General:
         break;
     }
@@ -1090,7 +1368,14 @@ QString EditSettingsTool::description() const
         "task_path, catalog_url, extra_body, max_tool_iterations, context_cap}], "
         "update:[{id, ...same fields}], remove:[id]}, "
         "\"presets\":{add:[{type: executor|tool, profile_id}], update:[{id, type, "
-        "profile_id}], remove:[id]}}. "
+        "profile_id}], remove:[id]}, "
+        "\"mcp\":{add:[{name, transport:stdio|http, command, arguments, url, work_dir, "
+        "environment, headers, enabled}], update:[{id, ...same fields}], remove:[id]}}. "
+        "MCP servers (a user may write NCP) are program-wide tool servers, not model "
+        "profiles and not a project file: call this with scope=program. "
+        "Do not invent a server and do not scan ports. Read with read_settings first. "
+        "If local_config_files lists paths, read those files and copy the servers. "
+        "If that list is empty, ask the user for the command or the http address. "
         "API keys cannot be read or set: a new profile is created without a key and the "
         "user enters it. Model profiles are program-wide; presets and general values "
         "belong to the chosen scope.");
@@ -1108,8 +1393,8 @@ QJsonObject EditSettingsTool::parametersSchema() const
     QJsonObject changes;
     changes.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
     changes.insert(QString::fromUtf8("description"),
-                   QString::fromUtf8("Object with optional keys general, profiles, presets "
-                                     "(see tool description)."));
+                   QString::fromUtf8("Object with optional keys general, profiles, presets, "
+                                     "mcp (see tool description)."));
     QJsonObject reason;
     reason.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     reason.insert(QString::fromUtf8("description"),
@@ -1194,6 +1479,29 @@ QString EditSettingsTool::invoke(QString argumentsJson, bool *ok)
         if (ok)
             *ok = false;
         return error;
+    }
+    if (changes.contains(QString::fromUtf8("mcp")))
+    {
+        if (kind != SettingsKindDefaults)
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8(
+                "MCP servers are program settings. Call edit_settings with scope=program.");
+        }
+        const QJsonValue mcpValue = changes.value(QString::fromUtf8("mcp"));
+        if (!mcpValue.isObject())
+        {
+            if (ok)
+                *ok = false;
+            return QString::fromUtf8("changes.mcp must be a JSON object.");
+        }
+        if (!collectMcpChanges(mcpValue.toObject(), &planned, &error))
+        {
+            if (ok)
+                *ok = false;
+            return error;
+        }
     }
     if (planned.isEmpty())
     {

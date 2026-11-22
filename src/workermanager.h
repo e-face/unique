@@ -185,6 +185,11 @@ public:
 
     void installTools(Worker *worker);
     /**
+     * @brief Install tools again on workers that are not inside a call.
+     *        An empty preset id updates every idle worker.
+     */
+    void reinstallIdleTools(const QString &presetId = QString());
+    /**
      * @brief Modality of the worker's model profile (llm, image, speech, and so on).
      */
     WorkerTaskKind modalityOf(Worker *worker) const;

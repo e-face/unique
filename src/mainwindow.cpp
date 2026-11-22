@@ -22,6 +22,7 @@
 #include "settingspage.h"
 #include "teamschemaeditor.h"
 #include "updatechecker.h"
+#include "vcsrepo.h"
 #include "usagestatswidget.h"
 #include "worker.h"
 #include "workergraphwidget.h"
@@ -72,6 +73,7 @@
 #include <QPlainTextEdit>
 #include <QUrl>
 #include <QTextCursor>
+#include <QTemporaryFile>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegExp>
@@ -388,6 +390,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _fileMenu(0)
     , _windowMenu(0)
     , _projectMenu(0)
+    , _vcsMenu(0)
     , _helpMenu(0)
     , _recentMenu(0)
     , _balanceAction(0)
@@ -412,6 +415,12 @@ MainWindow::MainWindow(QWidget *parent)
     , _projectSettingsAction(0)
     , _projectSchemaAction(0)
     , _projectMySchemaAction(0)
+    , _vcsCommitAction(0)
+    , _vcsPushAction(0)
+    , _vcsPullAction(0)
+    , _vcsNewBranchAction(0)
+    , _vcsSwitchBranchAction(0)
+    , _vcsAddAction(0)
     , _inspectCheck(0)
     , _composerBar(0)
     , _graphThumb(0)
@@ -439,6 +448,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _pendingSwitchTries(0)
     , _updateChecker(new UpdateChecker(this))
     , _updateCheckScheduled(false)
+    , _vcsBusy(false)
 {
     setWindowTitle(QString::fromUtf8("%1 %2")
                        .arg(QString::fromUtf8(UNIQUE_APP_NAME),
@@ -3678,6 +3688,8 @@ void MainWindow::setupUi()
     connect(_composerBar, SIGNAL(stopClicked()), this, SLOT(sltComposerStop()));
     connect(_composerBar, SIGNAL(plusClicked()), this, SLOT(sltComposerAttachPlus()));
     connect(_composerBar, SIGNAL(schemaClicked()), this, SLOT(sltCreateTeamSchema()));
+    connect(_composerBar, SIGNAL(vcsActionRequested(QString)),
+            this, SLOT(sltComposerVcsAction(QString)));
     connect(_composerBar, SIGNAL(removeAttachmentRequested(int)),
             this, SLOT(sltComposerRemoveAttachment(int)));
     connect(_composerBar, SIGNAL(attachmentOpenRequested(QString)),
@@ -3844,6 +3856,21 @@ void MainWindow::setupMenus()
     connect(_projectSettingsAction, SIGNAL(triggered()),
             this, SLOT(sltShowProjectSettings()));
 
+    _vcsMenu = menuBar()->addMenu(L("menu.vcs"));
+    _vcsCommitAction = _vcsMenu->addAction(L("vcs.commit"));
+    connect(_vcsCommitAction, SIGNAL(triggered()), this, SLOT(sltVcsCommit()));
+    _vcsPushAction = _vcsMenu->addAction(L("vcs.push"));
+    connect(_vcsPushAction, SIGNAL(triggered()), this, SLOT(sltVcsPush()));
+    _vcsPullAction = _vcsMenu->addAction(L("vcs.pull"));
+    connect(_vcsPullAction, SIGNAL(triggered()), this, SLOT(sltVcsPull()));
+    _vcsNewBranchAction = _vcsMenu->addAction(L("vcs.newBranch"));
+    connect(_vcsNewBranchAction, SIGNAL(triggered()), this, SLOT(sltVcsNewBranch()));
+    _vcsSwitchBranchAction = _vcsMenu->addAction(L("vcs.switchBranch"));
+    connect(_vcsSwitchBranchAction, SIGNAL(triggered()), this, SLOT(sltVcsSwitchBranch()));
+    _vcsMenu->addSeparator();
+    _vcsAddAction = _vcsMenu->addAction(L("menu.vcs.add"));
+    connect(_vcsAddAction, SIGNAL(triggered()), this, SLOT(sltVcsAdd()));
+
     _helpMenu = menuBar()->addMenu(L("menu.help"));
     _helpStatsAction = _helpMenu->addAction(L("menu.help.stats"));
     connect(_helpStatsAction, SIGNAL(triggered()), this, SLOT(sltShowStatistics()));
@@ -3852,6 +3879,7 @@ void MainWindow::setupMenus()
     connect(_helpUpdateAction, SIGNAL(triggered()), this, SLOT(sltCheckUpdates()));
     _helpAboutAction = _helpMenu->addAction(L("menu.help.about"));
     connect(_helpAboutAction, SIGNAL(triggered()), this, SLOT(sltShowAbout()));
+    refreshVersionControl();
 }
 
 //----------------------------------------------
@@ -3892,6 +3920,20 @@ void MainWindow::retranslateUi()
         _projectMySchemaAction->setText(L("menu.project.mySchema"));
     if (_projectSettingsAction)
         _projectSettingsAction->setText(L("menu.project.settings"));
+    if (_vcsMenu)
+        _vcsMenu->setTitle(L("menu.vcs"));
+    if (_vcsCommitAction)
+        _vcsCommitAction->setText(L("vcs.commit"));
+    if (_vcsPushAction)
+        _vcsPushAction->setText(L("vcs.push"));
+    if (_vcsPullAction)
+        _vcsPullAction->setText(L("vcs.pull"));
+    if (_vcsNewBranchAction)
+        _vcsNewBranchAction->setText(L("vcs.newBranch"));
+    if (_vcsSwitchBranchAction)
+        _vcsSwitchBranchAction->setText(L("vcs.switchBranch"));
+    if (_vcsAddAction)
+        _vcsAddAction->setText(L("menu.vcs.add"));
     if (_helpMenu)
         _helpMenu->setTitle(L("menu.help"));
     if (_helpStatsAction)
@@ -4102,7 +4144,10 @@ void MainWindow::sltRefreshProjectMeters()
     _addedLinesLabel->setVisible(open);
     _removedLinesLabel->setVisible(open);
     if (!open)
+    {
+        refreshVersionControl();
         return;
+    }
 
     const qint64 ms = AppSettings::instance()->liveWorkMs(true);
     _workTimeLabel->setText(formatWorkClock(ms));
@@ -4117,6 +4162,7 @@ void MainWindow::sltRefreshProjectMeters()
     _addedLinesLabel->setToolTip(tr("Добавлено строк: %1").arg(delta.added));
     _removedLinesLabel->setText(QString::fromUtf8("−%1").arg(delta.removed));
     _removedLinesLabel->setToolTip(tr("Удалено строк: %1").arg(delta.removed));
+    refreshVersionControl();
 }
 
 //----------------------------------------------
@@ -5531,6 +5577,7 @@ void MainWindow::updateComposerState()
         _composerBar->setPlaceholder(L("composer.placeholder.noRoot"));
     else
         _composerBar->setPlaceholder(L("composer.placeholder.ready"));
+    refreshVersionControl();
 }
 
 //----------------------------------------------
@@ -5734,4 +5781,437 @@ void MainWindow::applyInspectToAllSessions()
         if (session->agent())
             session->agent()->setInspectIo(enabled);
     }
+}
+
+//----------------------------------------------
+
+static bool validBranchName(const QString &name)
+{
+    if (name.isEmpty() || name.startsWith(QLatin1Char('-')) || name.endsWith(QLatin1Char('.'))
+        || name.endsWith(QLatin1Char('/')) || name.endsWith(QString::fromUtf8(".lock")))
+        return false;
+    if (name.contains(QString::fromUtf8("..")) || name.contains(QString::fromUtf8("@{"))
+        || name.contains(QString::fromUtf8("//")))
+        return false;
+    for (int i = 0; i < name.size(); ++i)
+    {
+        const QChar c = name.at(i);
+        if (c.isSpace() || c == QLatin1Char('~') || c == QLatin1Char('^')
+            || c == QLatin1Char(':') || c == QLatin1Char('?') || c == QLatin1Char('*')
+            || c == QLatin1Char('[') || c == QLatin1Char('\\') || c.unicode() < 32)
+            return false;
+    }
+    return true;
+}
+
+//----------------------------------------------
+
+static bool nothingToCommit(const QString &text)
+{
+    const QString low = text.toLower();
+    return low.contains(QString::fromUtf8("nothing to commit"))
+           || low.contains(QString::fromUtf8("nothing added to commit"))
+           || low.contains(QString::fromUtf8("no changes added to commit"))
+           || low.contains(QString::fromUtf8("нечего фиксировать"))
+           || low.contains(QString::fromUtf8("working tree clean"));
+}
+
+//----------------------------------------------
+
+static bool pushNeedsUpstream(const QString &text)
+{
+    const QString low = text.toLower();
+    return low.contains(QString::fromUtf8("no upstream"))
+           || low.contains(QString::fromUtf8("set-upstream"))
+           || low.contains(QString::fromUtf8("has no upstream"));
+}
+
+//----------------------------------------------
+
+QString MainWindow::projectRootPath() const
+{
+    if (!hasOpenProject() || !_workspace)
+        return QString();
+    return _workspace->root();
+}
+
+//----------------------------------------------
+
+void MainWindow::refreshVersionControl()
+{
+    const QString root = projectRootPath();
+    const bool repo = VcsRepo::isRepository(root);
+    QString branch;
+    if (repo)
+    {
+        branch = VcsRepo::currentBranch(root);
+        if (branch.isEmpty())
+            branch = QString::fromUtf8("HEAD");
+    }
+    if (_composerBar)
+        _composerBar->setVersionControl(repo, branch, repo && !_vcsBusy);
+    const bool canAct = repo && !_vcsBusy;
+    if (_vcsCommitAction)
+        _vcsCommitAction->setEnabled(canAct);
+    if (_vcsPushAction)
+        _vcsPushAction->setEnabled(canAct);
+    if (_vcsPullAction)
+        _vcsPullAction->setEnabled(canAct);
+    if (_vcsNewBranchAction)
+        _vcsNewBranchAction->setEnabled(canAct);
+    if (_vcsSwitchBranchAction)
+        _vcsSwitchBranchAction->setEnabled(canAct);
+    if (_vcsAddAction)
+        _vcsAddAction->setEnabled(!root.isEmpty() && !repo && !_vcsBusy);
+}
+
+//----------------------------------------------
+
+void MainWindow::showVcsResult(bool ok, QString text, bool canceled)
+{
+    _vcsBusy = false;
+    refreshVersionControl();
+    if (canceled)
+        return;
+    QString shown = text.trimmed();
+    if (shown.isEmpty())
+        shown = ok ? tr("Готово.") : tr("Команда Git завершилась с ошибкой.");
+    if (shown.size() > 4000)
+        shown = shown.right(4000);
+    QMessageBox box(ok ? QMessageBox::Information : QMessageBox::Warning,
+                    tr("Контроль версий"), shown, QMessageBox::Ok, this);
+    box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+    if (QAbstractButton *button = box.button(QMessageBox::Ok))
+        button->setText(tr("Закрыть"));
+    box.exec();
+}
+
+//----------------------------------------------
+
+bool MainWindow::askVcsText(QString title, QString label, QString okText, bool multiline,
+                            QString *value)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(title);
+    dialog.setMinimumWidth(420);
+    QLabel *caption = new QLabel(label, &dialog);
+    caption->setWordWrap(true);
+    QPlainTextEdit *edit = new QPlainTextEdit(&dialog);
+    QLineEdit *line = new QLineEdit(&dialog);
+    edit->setVisible(multiline);
+    line->setVisible(!multiline);
+    if (multiline)
+        edit->setMinimumHeight(90);
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok
+                                                     | QDialogButtonBox::Cancel, &dialog);
+    QPushButton *ok = buttons->button(QDialogButtonBox::Ok);
+    QPushButton *cancel = buttons->button(QDialogButtonBox::Cancel);
+    if (ok)
+    {
+        ok->setText(okText);
+        ok->setEnabled(false);
+    }
+    if (cancel)
+        cancel->setText(tr("Отмена"));
+    if (multiline && ok)
+    {
+        connect(edit, &QPlainTextEdit::textChanged, ok, [edit, ok]()
+        {
+            ok->setEnabled(!edit->toPlainText().trimmed().isEmpty());
+        });
+    }
+    else if (ok)
+    {
+        connect(line, &QLineEdit::textChanged, ok, [line, ok]()
+        {
+            ok->setEnabled(!line->text().trimmed().isEmpty());
+        });
+    }
+    connect(buttons, SIGNAL(accepted()), &dialog, SLOT(accept()));
+    connect(buttons, SIGNAL(rejected()), &dialog, SLOT(reject()));
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    layout->addWidget(caption);
+    layout->addWidget(multiline ? static_cast<QWidget *>(edit) : static_cast<QWidget *>(line));
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    const QString text = multiline ? edit->toPlainText().trimmed() : line->text().trimmed();
+    if (text.isEmpty())
+        return false;
+    if (value)
+        *value = text;
+    return true;
+}
+
+//----------------------------------------------
+
+bool MainWindow::askVcsChoice(QString title, QString label, QString okText,
+                              const QStringList &options, QString *value)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(title);
+    dialog.setMinimumWidth(360);
+    QLabel *caption = new QLabel(label, &dialog);
+    QComboBox *combo = new QComboBox(&dialog);
+    combo->addItems(options);
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok
+                                                     | QDialogButtonBox::Cancel, &dialog);
+    QPushButton *ok = buttons->button(QDialogButtonBox::Ok);
+    QPushButton *cancel = buttons->button(QDialogButtonBox::Cancel);
+    if (ok)
+    {
+        ok->setText(okText);
+        ok->setEnabled(!options.isEmpty());
+    }
+    if (cancel)
+        cancel->setText(tr("Отмена"));
+    connect(buttons, SIGNAL(accepted()), &dialog, SLOT(accept()));
+    connect(buttons, SIGNAL(rejected()), &dialog, SLOT(reject()));
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    layout->addWidget(caption);
+    layout->addWidget(combo);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted || combo->currentText().trimmed().isEmpty())
+        return false;
+    if (value)
+        *value = combo->currentText().trimmed();
+    return true;
+}
+
+//----------------------------------------------
+
+void MainWindow::sltComposerVcsAction(QString actionId)
+{
+    if (actionId == QString::fromUtf8("commit"))
+        sltVcsCommit();
+    else if (actionId == QString::fromUtf8("push"))
+        sltVcsPush();
+    else if (actionId == QString::fromUtf8("pull"))
+        sltVcsPull();
+    else if (actionId == QString::fromUtf8("new_branch"))
+        sltVcsNewBranch();
+    else if (actionId == QString::fromUtf8("switch_branch"))
+        sltVcsSwitchBranch();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltVcsCommit()
+{
+    if (_vcsBusy)
+        return;
+    const QString root = projectRootPath();
+    if (root.isEmpty() || !VcsRepo::isRepository(root))
+        return;
+    QString message;
+    if (!askVcsText(tr("Зафиксировать"),
+                    tr("Будут записаны изменения файлов, которые Git уже отслеживает. "
+                       "Новые неотслеживаемые файлы в эту фиксацию не входят."),
+                    tr("Зафиксировать"), true, &message))
+        return;
+    _vcsBusy = true;
+    refreshVersionControl();
+    QString text;
+    bool canceled = false;
+    QTemporaryFile messageFile;
+    messageFile.setAutoRemove(true);
+    messageFile.setFileTemplate(QDir::tempPath()
+                                + QString::fromUtf8("/unique-commit-XXXXXX.txt"));
+    const QByteArray messageBytes = message.toUtf8() + '\n';
+    if (!messageFile.open() || messageFile.write(messageBytes) != messageBytes.size())
+    {
+        _vcsBusy = false;
+        refreshVersionControl();
+        showVcsResult(false, tr("Не удалось записать сообщение фиксации."), false);
+        return;
+    }
+    messageFile.flush();
+    messageFile.close();
+    QStringList commitArgs;
+    commitArgs << QString::fromUtf8("-c") << QString::fromUtf8("i18n.commitEncoding=utf-8");
+    commitArgs << QString::fromUtf8("-c") << QString::fromUtf8("status.showUntrackedFiles=no");
+    commitArgs << QString::fromUtf8("commit") << QString::fromUtf8("-a") << QString::fromUtf8("-F");
+    commitArgs << QDir::toNativeSeparators(messageFile.fileName());
+    const bool ok = VcsRepo::run(this, root, commitArgs, QByteArray(), &text, &canceled);
+    if (!ok && !canceled && nothingToCommit(text))
+    {
+        _vcsBusy = false;
+        refreshVersionControl();
+        QMessageBox box(QMessageBox::Information, tr("Зафиксировать"),
+                        tr("Нечего фиксировать."), QMessageBox::Ok, this);
+        if (QAbstractButton *button = box.button(QMessageBox::Ok))
+            button->setText(tr("Закрыть"));
+        box.exec();
+        return;
+    }
+    showVcsResult(ok, text, canceled);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltVcsPush()
+{
+    if (_vcsBusy)
+        return;
+    const QString root = projectRootPath();
+    if (root.isEmpty() || !VcsRepo::isRepository(root))
+        return;
+    _vcsBusy = true;
+    refreshVersionControl();
+    QString text;
+    bool canceled = false;
+    QStringList args;
+    args << QString::fromUtf8("push");
+    bool ok = VcsRepo::run(this, root, args, QByteArray(), &text, &canceled);
+    if (!ok && !canceled && pushNeedsUpstream(text))
+    {
+        QMessageBox box(QMessageBox::Question, tr("Контроль версий"),
+                        tr("У ветки нет удалённой копии. Отправить её в origin и запомнить связь?"),
+                        QMessageBox::Yes | QMessageBox::No, this);
+        if (QAbstractButton *yes = box.button(QMessageBox::Yes))
+            yes->setText(tr("Отправить в origin"));
+        if (QAbstractButton *no = box.button(QMessageBox::No))
+            no->setText(tr("Отмена"));
+        if (box.exec() == QMessageBox::Yes)
+        {
+            QStringList upstream;
+            upstream << QString::fromUtf8("push") << QString::fromUtf8("-u");
+            upstream << QString::fromUtf8("origin") << QString::fromUtf8("HEAD");
+            ok = VcsRepo::run(this, root, upstream, QByteArray(), &text, &canceled);
+        }
+        else
+        {
+            showVcsResult(false, text, false);
+            return;
+        }
+    }
+    showVcsResult(ok, text, canceled);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltVcsPull()
+{
+    if (_vcsBusy)
+        return;
+    const QString root = projectRootPath();
+    if (root.isEmpty() || !VcsRepo::isRepository(root))
+        return;
+    _vcsBusy = true;
+    refreshVersionControl();
+    QString text;
+    bool canceled = false;
+    QStringList args;
+    args << QString::fromUtf8("pull");
+    const bool ok = VcsRepo::run(this, root, args, QByteArray(), &text, &canceled);
+    showVcsResult(ok, text, canceled);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltVcsNewBranch()
+{
+    if (_vcsBusy)
+        return;
+    const QString root = projectRootPath();
+    if (root.isEmpty() || !VcsRepo::isRepository(root))
+        return;
+    QString name;
+    if (!askVcsText(tr("Создать ветку"), tr("Имя ветки:"), tr("Создать"), false, &name))
+        return;
+    if (!validBranchName(name))
+    {
+        QMessageBox box(QMessageBox::Warning, tr("Создать ветку"),
+                        tr("Недопустимое имя ветки."), QMessageBox::Ok, this);
+        if (QAbstractButton *button = box.button(QMessageBox::Ok))
+            button->setText(tr("Закрыть"));
+        box.exec();
+        return;
+    }
+    _vcsBusy = true;
+    refreshVersionControl();
+    QString text;
+    bool canceled = false;
+    QStringList args;
+    args << QString::fromUtf8("checkout") << QString::fromUtf8("-b") << name;
+    const bool ok = VcsRepo::run(this, root, args, QByteArray(), &text, &canceled);
+    showVcsResult(ok, text, canceled);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltVcsSwitchBranch()
+{
+    if (_vcsBusy)
+        return;
+    const QString root = projectRootPath();
+    if (root.isEmpty() || !VcsRepo::isRepository(root))
+        return;
+    _vcsBusy = true;
+    refreshVersionControl();
+    QString text;
+    bool canceled = false;
+    QStringList branches = VcsRepo::localBranches(this, root, &text, &canceled);
+    if (canceled || (branches.isEmpty() && !text.isEmpty()))
+    {
+        showVcsResult(false, text, canceled);
+        return;
+    }
+    const QString current = VcsRepo::currentBranch(root);
+    QStringList others;
+    foreach (const QString &name, branches)
+    {
+        if (name != current)
+            others << name;
+    }
+    _vcsBusy = false;
+    refreshVersionControl();
+    if (others.isEmpty())
+    {
+        QMessageBox box(QMessageBox::Information, tr("Переключить ветку"),
+                        tr("Других веток нет."), QMessageBox::Ok, this);
+        if (QAbstractButton *button = box.button(QMessageBox::Ok))
+            button->setText(tr("Закрыть"));
+        box.exec();
+        return;
+    }
+    QString chosen;
+    if (!askVcsChoice(tr("Переключить ветку"), tr("Ветка:"), tr("Переключить"),
+                     others, &chosen))
+        return;
+    _vcsBusy = true;
+    refreshVersionControl();
+    QStringList args;
+    args << QString::fromUtf8("checkout") << chosen;
+    const bool ok = VcsRepo::run(this, root, args, QByteArray(), &text, &canceled);
+    showVcsResult(ok, text, canceled);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltVcsAdd()
+{
+    if (_vcsBusy)
+        return;
+    const QString root = projectRootPath();
+    if (root.isEmpty() || VcsRepo::isRepository(root))
+        return;
+    QMessageBox box(QMessageBox::Question, tr("Добавить репозиторий"),
+                    tr("В каталоге проекта нет репозитория. Создать репозиторий Git в этой папке?"),
+                    QMessageBox::Yes | QMessageBox::No, this);
+    box.setDefaultButton(QMessageBox::No);
+    if (QAbstractButton *yes = box.button(QMessageBox::Yes))
+        yes->setText(tr("Добавить"));
+    if (QAbstractButton *no = box.button(QMessageBox::No))
+        no->setText(tr("Отмена"));
+    if (box.exec() != QMessageBox::Yes)
+        return;
+    _vcsBusy = true;
+    refreshVersionControl();
+    QString text;
+    bool canceled = false;
+    QStringList args;
+    args << QString::fromUtf8("init");
+    const bool ok = VcsRepo::run(this, root, args, QByteArray(), &text, &canceled);
+    showVcsResult(ok, text, canceled);
 }

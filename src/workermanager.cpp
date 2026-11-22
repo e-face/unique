@@ -13,6 +13,7 @@
 #include "applocale.h"
 #include "appsettings.h"
 #include "teamschemaeditor.h"
+#include "mcphub.h"
 #include "toolcatalog.h"
 //----------------------------------------------
 #include <QDir>
@@ -3306,6 +3307,7 @@ void WorkerManager::installTools(Worker *worker)
         {
             agent->retainTools(preset.toolIds);
             ToolCatalog::instance()->addPlugins(agent, preset.toolIds);
+            McpHub::instance()->addTools(agent, preset.toolIds);
         }
     }
 
@@ -3313,6 +3315,23 @@ void WorkerManager::installTools(Worker *worker)
                                    worker->type(), worker->llmProfileId());
     agent->applyProfileLimits(profile);
     agent->setProjectDirectory(_workspace ? _workspace->root() : QString());
+}
+
+//----------------------------------------------
+
+void WorkerManager::reinstallIdleTools(const QString &presetId)
+{
+    foreach (Worker *worker, _workers)
+    {
+        if (!worker || !worker->session() || !worker->session()->agent())
+            continue;
+        if (!presetId.isEmpty() && worker->presetId() != presetId)
+            continue;
+        Agent *agent = worker->session()->agent();
+        if (agent->isBusy() || agent->isInsideToolCall())
+            continue;
+        installTools(worker);
+    }
 }
 
 //----------------------------------------------

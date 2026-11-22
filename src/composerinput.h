@@ -10,6 +10,7 @@
 
 class ComposerEditor;
 class QCheckBox;
+class QComboBox;
 class QEvent;
 class QHBoxLayout;
 class QLabel;
@@ -46,6 +47,7 @@ public:
     bool isSendEnabled() const;
     void setComposerEnabled(bool on);
     void setSchemaAvailable(bool on);
+    void setVersionControl(bool visible, QString branch, bool enabled);
     void setReadOnly(bool on);
     void applyTheme(QString panel, QString input, QString text, QString border,
                     QString muted, QString accent);
@@ -56,6 +58,7 @@ signals:
     void stopClicked();
     void plusClicked();
     void schemaClicked();
+    void vcsActionRequested(QString actionId);
     void removeAttachmentRequested(int index);
     void filesDropped(const QStringList &absolutePaths);
     void pasteHint(QString text, bool force);
@@ -74,6 +77,7 @@ private slots:
     void sltAutoApproveToggled(bool checked);
     void sltReasoningToggled(bool checked);
     void sltDisplayOptionsChanged();
+    void sltVcsActivated(int index);
 
 private:
     friend class ComposerEditor;
@@ -93,6 +97,8 @@ private:
     QLabel         *_capsHint;
     QToolButton    *_plusButton;
     QPushButton    *_schemaButton;
+    QLabel         *_vcsBranch;
+    QComboBox      *_vcsActions;
     QCheckBox      *_autoApproveBox;
     QCheckBox      *_reasoningBox;
     QPushButton    *_stopButton;

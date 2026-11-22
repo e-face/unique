@@ -155,6 +155,13 @@ private slots:
     void sltRefreshWorkerUi();
     void sltResumeProjectSwitch();
     void sltLocaleChanged(const QString &code);
+    void sltComposerVcsAction(QString actionId);
+    void sltVcsCommit();
+    void sltVcsPush();
+    void sltVcsPull();
+    void sltVcsNewBranch();
+    void sltVcsSwitchBranch();
+    void sltVcsAdd();
 
 private:
     /**
@@ -237,6 +244,13 @@ private:
     void styleStatusPills();
     void refreshLiveStatusBar();
     void updateComposerState();
+    void refreshVersionControl();
+    void showVcsResult(bool ok, QString text, bool canceled);
+    QString projectRootPath() const;
+    bool askVcsText(QString title, QString label, QString okText, bool multiline,
+                    QString *value);
+    bool askVcsChoice(QString title, QString label, QString okText,
+                      const QStringList &options, QString *value);
     void updateComposerAttachmentsUi();
     int addComposerAbsoluteFiles(const QStringList &absolutePaths);
     QStringList pickComposerAttachments(QString filter, QString title);
@@ -286,6 +300,7 @@ private:
     QMenu               *_fileMenu;
     QMenu               *_windowMenu;
     QMenu               *_projectMenu;
+    QMenu               *_vcsMenu;
     QMenu               *_helpMenu;
     QMenu               *_recentMenu;
     QAction             *_balanceAction;
@@ -310,6 +325,12 @@ private:
     QAction             *_projectSettingsAction;
     QAction             *_projectSchemaAction;
     QAction             *_projectMySchemaAction;
+    QAction             *_vcsCommitAction;
+    QAction             *_vcsPushAction;
+    QAction             *_vcsPullAction;
+    QAction             *_vcsNewBranchAction;
+    QAction             *_vcsSwitchBranchAction;
+    QAction             *_vcsAddAction;
     QCheckBox           *_inspectCheck;
     ComposerInput       *_composerBar;
     GraphThumb          *_graphThumb;
@@ -344,6 +365,7 @@ private:
     int                  _pendingSwitchTries;
     UpdateChecker       *_updateChecker;
     bool                 _updateCheckScheduled;
+    bool                 _vcsBusy;
 };
 
 #endif // MAINWINDOW_H

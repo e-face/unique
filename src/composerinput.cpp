@@ -6,6 +6,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QComboBox>
+#include <QFontMetrics>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
@@ -202,6 +204,8 @@ ComposerInput::ComposerInput(QWidget *parent)
     , _capsHint(0)
     , _plusButton(0)
     , _schemaButton(0)
+    , _vcsBranch(0)
+    , _vcsActions(0)
     , _autoApproveBox(0)
     , _reasoningBox(0)
     , _stopButton(0)
@@ -261,6 +265,19 @@ ComposerInput::ComposerInput(QWidget *parent)
     _schemaButton->setCursor(Qt::PointingHandCursor);
     connect(_schemaButton, SIGNAL(clicked()), this, SIGNAL(schemaClicked()));
 
+    _vcsBranch = new QLabel(this);
+    _vcsBranch->setObjectName(QString::fromUtf8("composerVcsBranch"));
+    _vcsBranch->hide();
+
+    _vcsActions = new QComboBox(this);
+    _vcsActions->setObjectName(QString::fromUtf8("composerVcsActions"));
+    _vcsActions->setCursor(Qt::PointingHandCursor);
+    _vcsActions->setMinimumWidth(148);
+    _vcsActions->setFixedHeight(32);
+    _vcsActions->hide();
+    connect(_vcsActions, SIGNAL(activated(int)), this, SLOT(sltVcsActivated(int)));
+    _vcsActions->installEventFilter(this);
+
     _capsHint = new QLabel(this);
     _capsHint->setObjectName(QString::fromUtf8("composerCapsHint"));
     _capsHint->hide();
@@ -301,6 +318,8 @@ ComposerInput::ComposerInput(QWidget *parent)
     toolbar->setSpacing(8);
     toolbar->addWidget(_plusButton, 0, Qt::AlignVCenter);
     toolbar->addWidget(_schemaButton, 0, Qt::AlignVCenter);
+    toolbar->addWidget(_vcsBranch, 0, Qt::AlignVCenter);
+    toolbar->addWidget(_vcsActions, 0, Qt::AlignVCenter);
     toolbar->addStretch(1);
     toolbar->addWidget(_reasoningBox, 0, Qt::AlignVCenter);
     toolbar->addWidget(_autoApproveBox, 0, Qt::AlignVCenter);
@@ -360,6 +379,22 @@ void ComposerInput::retranslateUi()
     {
         _schemaButton->setText(L("composer.schema"));
         _schemaButton->setToolTip(L("composer.schemaTip"));
+    }
+    if (_vcsBranch)
+        _vcsBranch->setToolTip(L("vcs.branchTip"));
+    if (_vcsActions)
+    {
+        _vcsActions->blockSignals(true);
+        _vcsActions->clear();
+        _vcsActions->addItem(L("vcs.actions"), QString());
+        _vcsActions->addItem(L("vcs.commit"), QString::fromUtf8("commit"));
+        _vcsActions->addItem(L("vcs.push"), QString::fromUtf8("push"));
+        _vcsActions->addItem(L("vcs.pull"), QString::fromUtf8("pull"));
+        _vcsActions->addItem(L("vcs.newBranch"), QString::fromUtf8("new_branch"));
+        _vcsActions->addItem(L("vcs.switchBranch"), QString::fromUtf8("switch_branch"));
+        _vcsActions->setCurrentIndex(0);
+        _vcsActions->blockSignals(false);
+        _vcsActions->setToolTip(L("vcs.actionsTip"));
     }
     if (_autoApproveBox)
     {
@@ -457,6 +492,41 @@ void ComposerInput::setSchemaAvailable(bool on)
 
 //----------------------------------------------
 
+void ComposerInput::setVersionControl(bool visible, QString branch, bool enabled)
+{
+    if (_vcsBranch)
+    {
+        QString shown = branch.trimmed();
+        if (shown.isEmpty())
+            shown = QString::fromUtf8("HEAD");
+        const QFontMetrics metrics(_vcsBranch->font());
+        _vcsBranch->setText(metrics.elidedText(shown, Qt::ElideMiddle, 160));
+        _vcsBranch->setToolTip(L("vcs.branchTip") + QLatin1Char('\n') + shown);
+        _vcsBranch->setVisible(visible);
+    }
+    if (_vcsActions)
+    {
+        _vcsActions->setVisible(visible);
+        _vcsActions->setEnabled(enabled);
+    }
+}
+
+//----------------------------------------------
+
+void ComposerInput::sltVcsActivated(int index)
+{
+    if (!_vcsActions || index <= 0)
+        return;
+    const QString id = _vcsActions->itemData(index).toString();
+    _vcsActions->blockSignals(true);
+    _vcsActions->setCurrentIndex(0);
+    _vcsActions->blockSignals(false);
+    if (!id.isEmpty())
+        emit vcsActionRequested(id);
+}
+
+//----------------------------------------------
+
 void ComposerInput::setReadOnly(bool on)
 {
     if (_editor)
@@ -491,6 +561,15 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
         "  padding:4px 10px; }"
         "QPushButton#composerSchema:hover { background:%6; }"
         "QPushButton#composerSchema:disabled { color:%5; border-color:%5; }"
+        "QLabel#composerVcsBranch {"
+        "  background:transparent; color:%3; border:1px solid %2; border-radius:12px;"
+        "  padding:4px 10px; }"
+        "QComboBox#composerVcsActions {"
+        "  background:%1; color:%3; border:1px solid %2; border-radius:12px;"
+        "  padding:2px 8px; }"
+        "QComboBox#composerVcsActions:hover { background:%6; }"
+        "QComboBox#composerVcsActions:disabled { color:%5; }"
+        "QComboBox#composerVcsActions::drop-down { border:none; width:16px; }"
         "QPushButton#composerSend {"
         "  background:%3; color:%1; border:none; border-radius:16px;"
         "  font-size:16px; font-weight:bold; padding:0; }"
@@ -812,6 +891,8 @@ bool ComposerInput::handleChildDrag(QEvent *event)
 
 bool ComposerInput::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == _vcsActions && event && event->type() == QEvent::Wheel)
+        return true;
     if (watched == _editor || (_editor && watched == _editor->viewport()))
     {
         if (handleChildDrag(event))

@@ -45,6 +45,7 @@ HEADERS += \
     src/pdftext.h \
     src/pdfpage.h \
     src/mainwindow.h \
+    src/mcphub.h \
     src/markdownformatter.h \
     src/modalityapi.h \
     src/modalitytools.h \
@@ -63,6 +64,7 @@ HEADERS += \
     src/toolcatalog.h \
     src/toolplugin.h \
     src/updatechecker.h \
+    src/vcsrepo.h \
     src/worker.h \
     src/workergraphwidget.h \
     src/workerschema.h \
@@ -95,6 +97,7 @@ SOURCES += \
     src/pdfpage.cpp \
     src/llmnetworkworker.cpp \
     src/main.cpp \
+    src/mcphub.cpp \
     src/mainwindow.cpp \
     src/markdownformatter.cpp \
     src/modalityapi.cpp \
@@ -113,6 +116,7 @@ SOURCES += \
     src/teamschemaeditor.cpp \
     src/toolcatalog.cpp \
     src/updatechecker.cpp \
+    src/vcsrepo.cpp \
     src/worker.cpp \
     src/workergraphwidget.cpp \
     src/workerschema.cpp \

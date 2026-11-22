@@ -36,6 +36,7 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 //----------------------------------------------
@@ -199,6 +200,12 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     , _updatingProfiles(false)
     , _updatingPresets(false)
     , _presetsReloadTimer(0)
+    , _mcpBox(0)
+    , _mcpList(0)
+    , _mcpAddButton(0)
+    , _mcpEditButton(0)
+    , _mcpRemoveButton(0)
+    , _mcpRefreshButton(0)
 {
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
@@ -212,6 +219,8 @@ SettingsPage::SettingsPage(SettingsKind kind, QWidget *parent)
     root->setSpacing(12);
     if (_kind == SettingsKindDefaults)
         root->addWidget(buildLanguageBox());
+    if (_kind == SettingsKindDefaults)
+        root->addWidget(buildMcpBox());
     if (_kind == SettingsKindDefaults)
         root->addWidget(buildApiBox());
     root->addWidget(buildWorkersBox());
@@ -699,6 +708,23 @@ void SettingsPage::updateProfileCapHint()
 {
     refreshProfilePreview();
     requestContextCatalogs();
+    if (_mcpBox)
+        _mcpBox->setTitle(tr("Серверы MCP"));
+    if (_mcpAddButton)
+        _mcpAddButton->setText(tr("Добавить"));
+    if (_mcpEditButton)
+        _mcpEditButton->setText(tr("Изменить"));
+    if (_mcpRemoveButton)
+        _mcpRemoveButton->setText(tr("Удалить"));
+    if (_mcpRefreshButton)
+        _mcpRefreshButton->setText(tr("Обновить"));
+    if (_mcpBox)
+    {
+        _mcpBox->setToolTip(
+            tr("Подключает внешние инструменты по протоколу MCP: "
+               "локальная программа (stdio) или адрес HTTP."));
+    }
+    refreshMcpList();
 }
 
 //----------------------------------------------
@@ -2474,6 +2500,8 @@ bool SettingsPage::runPresetDialog(WorkerPreset *preset, bool isNew)
             }
         }
         *preset = trial;
+        if (_workers)
+            _workers->reinstallIdleTools(trial.id);
         dialog.accept();
     });
 
@@ -2764,4 +2792,249 @@ void SettingsPage::sltApplyAppearance()
         s->setChatOtherColor(QColor(_chatOtherColorButton->text()));
     s->save();
     emit appearanceApplied();
+}
+
+//----------------------------------------------
+
+QWidget *SettingsPage::buildMcpBox()
+{
+    _mcpBox = new QGroupBox(tr("Серверы MCP"), this);
+    _mcpBox->setToolTip(
+        tr("Подключает внешние инструменты по протоколу MCP: "
+           "локальная программа (stdio) или адрес HTTP."));
+    _mcpList = new QListWidget(_mcpBox);
+    _mcpList->setMinimumHeight(120);
+    _mcpAddButton = new QPushButton(tr("Добавить"), _mcpBox);
+    _mcpEditButton = new QPushButton(tr("Изменить"), _mcpBox);
+    _mcpRemoveButton = new QPushButton(tr("Удалить"), _mcpBox);
+    _mcpRefreshButton = new QPushButton(tr("Обновить"), _mcpBox);
+    QHBoxLayout *buttons = new QHBoxLayout();
+    buttons->addWidget(_mcpAddButton);
+    buttons->addWidget(_mcpEditButton);
+    buttons->addWidget(_mcpRemoveButton);
+    buttons->addWidget(_mcpRefreshButton);
+    buttons->addStretch();
+    QVBoxLayout *lay = new QVBoxLayout(_mcpBox);
+    lay->addWidget(_mcpList);
+    lay->addLayout(buttons);
+    connect(_mcpAddButton, SIGNAL(clicked()), this, SLOT(sltMcpAdd()));
+    connect(_mcpEditButton, SIGNAL(clicked()), this, SLOT(sltMcpEdit()));
+    connect(_mcpRemoveButton, SIGNAL(clicked()), this, SLOT(sltMcpRemove()));
+    connect(_mcpRefreshButton, SIGNAL(clicked()), this, SLOT(sltMcpRefresh()));
+    connect(_mcpList, SIGNAL(itemDoubleClicked(QListWidgetItem*)),
+            this, SLOT(sltMcpEdit()));
+    connect(McpHub::instance(), SIGNAL(changed()), this, SLOT(sltMcpChanged()));
+    refreshMcpList();
+    return _mcpBox;
+}
+
+//----------------------------------------------
+
+void SettingsPage::refreshMcpList()
+{
+    if (!_mcpList)
+        return;
+    const QString current = _mcpList->currentItem()
+                            ? _mcpList->currentItem()->data(Qt::UserRole).toString()
+                            : QString();
+    const QSignalBlocker blocker(_mcpList);
+    _mcpList->clear();
+    foreach (const McpServerConfig &config, McpHub::instance()->servers())
+    {
+        const QString status = McpHub::instance()->statusText(config.id);
+        QListWidgetItem *item = new QListWidgetItem(
+            config.name + QString::fromUtf8(" — ") + status, _mcpList);
+        item->setData(Qt::UserRole, config.id);
+        if (config.id == current)
+            _mcpList->setCurrentItem(item);
+    }
+}
+
+//----------------------------------------------
+
+bool SettingsPage::runMcpDialog(McpServerConfig *config, bool isNew)
+{
+    if (!config)
+        return false;
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Сервер MCP"));
+    dialog.resize(520, 460);
+    QLineEdit *nameEdit = new QLineEdit(config->name, &dialog);
+    QComboBox *transport = new QComboBox(&dialog);
+    transport->addItem(QString::fromUtf8("stdio"), QString::fromUtf8("stdio"));
+    transport->addItem(QString::fromUtf8("HTTP"), QString::fromUtf8("http"));
+    const int transportIndex = transport->findData(config->transport);
+    transport->setCurrentIndex(transportIndex < 0 ? 0 : transportIndex);
+    QLineEdit *commandEdit = new QLineEdit(config->command, &dialog);
+    commandEdit->setPlaceholderText(QString::fromUtf8("npx.cmd"));
+    QLineEdit *argsEdit = new QLineEdit(config->arguments, &dialog);
+    argsEdit->setPlaceholderText(
+        QString::fromUtf8("-y @modelcontextprotocol/server-filesystem C:\\data"));
+    QLineEdit *dirEdit = new QLineEdit(config->workDir, &dialog);
+    QTextEdit *envEdit = new QTextEdit(&dialog);
+    envEdit->setAcceptRichText(false);
+    envEdit->setPlainText(config->environment);
+    envEdit->setFixedHeight(72);
+    QLineEdit *urlEdit = new QLineEdit(config->url, &dialog);
+    urlEdit->setPlaceholderText(QString::fromUtf8("http://127.0.0.1:3000/mcp"));
+    QTextEdit *headersEdit = new QTextEdit(&dialog);
+    headersEdit->setAcceptRichText(false);
+    headersEdit->setPlainText(config->headers);
+    headersEdit->setFixedHeight(72);
+    QCheckBox *enabledCheck = new QCheckBox(tr("Включён"), &dialog);
+    enabledCheck->setChecked(config->enabled);
+
+    QWidget *stdioBox = new QWidget(&dialog);
+    QFormLayout *stdioForm = new QFormLayout(stdioBox);
+    stdioForm->setContentsMargins(0, 0, 0, 0);
+    stdioForm->addRow(tr("Команда:"), commandEdit);
+    stdioForm->addRow(tr("Аргументы:"), argsEdit);
+    stdioForm->addRow(tr("Рабочая папка:"), dirEdit);
+    stdioForm->addRow(tr("Переменные среды:"), envEdit);
+    QWidget *httpBox = new QWidget(&dialog);
+    QFormLayout *httpForm = new QFormLayout(httpBox);
+    httpForm->setContentsMargins(0, 0, 0, 0);
+    httpForm->addRow(tr("Адрес:"), urlEdit);
+    httpForm->addRow(tr("Заголовки:"), headersEdit);
+
+    QLabel *hint = new QLabel(
+        tr("Программа и аргументы для stdio. На Windows для npm укажите npx.cmd. "
+           "Каждая переменная среды — строка КЛЮЧ=значение. "
+           "Заголовки HTTP — по одному «Имя: значение» на строку."),
+        &dialog);
+    hint->setWordWrap(true);
+
+    auto showTransport = [&]() {
+        const bool http = transport->currentData().toString() == QString::fromUtf8("http");
+        stdioBox->setVisible(!http);
+        httpBox->setVisible(http);
+    };
+    showTransport();
+    connect(transport, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
+            &dialog, [&](int) { showTransport(); });
+
+    QFormLayout *form = new QFormLayout();
+    form->addRow(tr("Имя:"), nameEdit);
+    form->addRow(tr("Транспорт:"), transport);
+    QVBoxLayout *root = new QVBoxLayout(&dialog);
+    root->addLayout(form);
+    root->addWidget(stdioBox);
+    root->addWidget(httpBox);
+    root->addWidget(enabledCheck);
+    root->addWidget(hint);
+    QDialogButtonBox *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    if (QPushButton *ok = buttons->button(QDialogButtonBox::Ok))
+        ok->setText(tr("ОК"));
+    if (QPushButton *cancel = buttons->button(QDialogButtonBox::Cancel))
+        cancel->setText(tr("Отмена"));
+    root->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        const QString name = nameEdit->text().trimmed();
+        if (name.isEmpty())
+        {
+            QMessageBox::warning(&dialog, tr("Сервер MCP"), tr("Укажите имя."));
+            return;
+        }
+        const bool http = transport->currentData().toString() == QString::fromUtf8("http");
+        if (!http && commandEdit->text().trimmed().isEmpty())
+        {
+            QMessageBox::warning(&dialog, tr("Сервер MCP"), tr("Укажите команду."));
+            return;
+        }
+        if (http)
+        {
+            const QUrl url = QUrl::fromUserInput(urlEdit->text().trimmed());
+            if (!url.isValid()
+                || (url.scheme() != QString::fromUtf8("http")
+                    && url.scheme() != QString::fromUtf8("https")))
+            {
+                QMessageBox::warning(&dialog, tr("Сервер MCP"),
+                                     tr("Укажите адрес http или https."));
+                return;
+            }
+        }
+        config->name = name;
+        config->transport = http ? QString::fromUtf8("http") : QString::fromUtf8("stdio");
+        config->command = commandEdit->text().trimmed();
+        config->arguments = argsEdit->text();
+        config->workDir = dirEdit->text().trimmed();
+        config->environment = envEdit->toPlainText();
+        config->url = urlEdit->text().trimmed();
+        config->headers = headersEdit->toPlainText();
+        config->enabled = enabledCheck->isChecked();
+        dialog.accept();
+    });
+    Q_UNUSED(isNew);
+    return dialog.exec() == QDialog::Accepted;
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltMcpAdd()
+{
+    McpServerConfig config;
+    config.enabled = true;
+    if (!runMcpDialog(&config, true))
+        return;
+    McpHub::instance()->addServer(config);
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltMcpEdit()
+{
+    if (!_mcpList || !_mcpList->currentItem())
+        return;
+    const QString id = _mcpList->currentItem()->data(Qt::UserRole).toString();
+    McpServerConfig config;
+    bool found = false;
+    foreach (const McpServerConfig &item, McpHub::instance()->servers())
+    {
+        if (item.id != id)
+            continue;
+        config = item;
+        found = true;
+        break;
+    }
+    if (!found)
+        return;
+    if (!runMcpDialog(&config, false))
+        return;
+    McpHub::instance()->updateServer(config);
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltMcpRemove()
+{
+    if (!_mcpList || !_mcpList->currentItem())
+        return;
+    const QString id = _mcpList->currentItem()->data(Qt::UserRole).toString();
+    const QString name = _mcpList->currentItem()->text();
+    QMessageBox box(QMessageBox::Question, tr("Сервер MCP"),
+                    tr("Удалить сервер MCP «%1»?").arg(name),
+                    QMessageBox::Yes | QMessageBox::No, this);
+    box.setButtonText(QMessageBox::Yes, tr("Удалить"));
+    box.setButtonText(QMessageBox::No, tr("Отмена"));
+    if (box.exec() != QMessageBox::Yes)
+        return;
+    McpHub::instance()->removeServer(id);
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltMcpRefresh()
+{
+    McpHub::instance()->reconnectAll();
+}
+
+//----------------------------------------------
+
+void SettingsPage::sltMcpChanged()
+{
+    refreshMcpList();
+    if (_workers)
+        _workers->reinstallIdleTools();
 }

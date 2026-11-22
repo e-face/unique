@@ -2,9 +2,11 @@
 //----------------------------------------------
 #include "applocale.h"
 #include "appsettings.h"
+#include "mcphub.h"
 //----------------------------------------------
 #include <QApplication>
 #include <QIcon>
+#include <QTimer>
 #ifdef Q_OS_WIN
 #include <stdio.h>
 #include <wchar.h>
@@ -50,5 +52,8 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     window.show();
+    // MCP handshake can take a long time. The window is shown first;
+    // the nested wait still processes events, so the UI stays usable.
+    QTimer::singleShot(0, McpHub::instance(), SLOT(sltConnectAll()));
     return app.exec();
 }

@@ -2,6 +2,7 @@
 #define SETTINGSPAGE_H
 
 #include "appsettings.h"
+#include "mcphub.h"
 #include "workertypes.h"
 //----------------------------------------------
 #include <QColor>
@@ -96,10 +97,18 @@ private slots:
     void scheduleLoadPresets();
     void fillRootPresetCombo();
     void sltLanguageComboChanged(int index);
+    void sltMcpAdd();
+    void sltMcpEdit();
+    void sltMcpRemove();
+    void sltMcpRefresh();
+    void sltMcpChanged();
 
 private:
     void updateColorButton(QPushButton *button, const QColor &color);
     QWidget *buildLanguageBox();
+    QWidget *buildMcpBox();
+    void refreshMcpList();
+    bool runMcpDialog(McpServerConfig *config, bool isNew);
     QWidget *buildApiBox();
     QWidget *buildWorkersBox();
     QWidget *buildProjectBox();
@@ -202,6 +211,12 @@ private:
     bool         _updatingProfiles;
     bool         _updatingPresets;
     QTimer      *_presetsReloadTimer;
+    QGroupBox   *_mcpBox;
+    QListWidget *_mcpList;
+    QPushButton *_mcpAddButton;
+    QPushButton *_mcpEditButton;
+    QPushButton *_mcpRemoveButton;
+    QPushButton *_mcpRefreshButton;
 };
 
 #endif // SETTINGSPAGE_H
