@@ -5876,14 +5876,22 @@ void MainWindow::showVcsResult(bool ok, QString text, bool canceled)
     QString shown = text.trimmed();
     if (shown.isEmpty())
         shown = ok ? tr("Готово.") : tr("Команда Git завершилась с ошибкой.");
-    if (shown.size() > 4000)
-        shown = shown.right(4000);
-    QMessageBox box(ok ? QMessageBox::Information : QMessageBox::Warning,
-                    tr("Контроль версий"), shown, QMessageBox::Ok, this);
-    box.setTextInteractionFlags(Qt::TextSelectableByMouse);
-    if (QAbstractButton *button = box.button(QMessageBox::Ok))
-        button->setText(tr("Закрыть"));
-    box.exec();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Контроль версий"));
+    dialog.resize(720, 480);
+    QPlainTextEdit *view = new QPlainTextEdit(&dialog);
+    view->setReadOnly(true);
+    view->setLineWrapMode(QPlainTextEdit::NoWrap);
+    view->setPlainText(shown);
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    if (QPushButton *closeButton = buttons->button(QDialogButtonBox::Close))
+        closeButton->setText(tr("Закрыть"));
+    connect(buttons, SIGNAL(rejected()), &dialog, SLOT(reject()));
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    layout->addWidget(view, 1);
+    layout->addWidget(buttons);
+    dialog.exec();
 }
 
 //----------------------------------------------
