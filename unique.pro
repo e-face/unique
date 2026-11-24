@@ -130,14 +130,21 @@ win32:RC_ICONS = icon/unique.ico
 
 # plugins/cad/cad.pro builds bin/plugins/cad.dll. Unique loads it from plugins/.
 # Qt 5.9 loads OpenSSL 1.0.2 (libeay32.dll / ssleay32.dll) from the executable directory.
+# The 64-bit kit uses its own OpenSSL. PDFium in this tree is 32-bit.
 win32 {
-    OPENSSL_DIR = $$PWD/3rdparty/openssl
+    equals(QT_ARCH, x86_64) {
+        OPENSSL_DIR = $$PWD/3rdparty/openssl-win64
+    } else {
+        OPENSSL_DIR = $$PWD/3rdparty/openssl
+    }
     QMAKE_POST_LINK += $$escape_expand(\\n\\t) \
         $(COPY_FILE) $$shell_path($$OPENSSL_DIR/libeay32.dll) $$shell_path($$DESTDIR)
     QMAKE_POST_LINK += $$escape_expand(\\n\\t) \
         $(COPY_FILE) $$shell_path($$OPENSSL_DIR/ssleay32.dll) $$shell_path($$DESTDIR)
-    QMAKE_POST_LINK += $$escape_expand(\\n\\t) \
-        $(COPY_FILE) $$shell_path($$PWD/3rdparty/pdfium/bin/pdfium.dll) $$shell_path($$DESTDIR)
+    !equals(QT_ARCH, x86_64) {
+        QMAKE_POST_LINK += $$escape_expand(\\n\\t) \
+            $(COPY_FILE) $$shell_path($$PWD/3rdparty/pdfium/bin/pdfium.dll) $$shell_path($$DESTDIR)
+    }
     QMAKE_POST_LINK += $$escape_expand(\\n\\t) \
         $$shell_quote($$shell_path($$[QT_INSTALL_BINS]/windeployqt)) --release --compiler-runtime --no-translations $$shell_quote($$shell_path($$DESTDIR/$${TARGET}.exe))
 }

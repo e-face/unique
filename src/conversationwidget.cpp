@@ -1367,8 +1367,17 @@ void ConversationWidget::replayDisplayItem(const ChatDisplayItem &item)
                   QString::fromUtf8("assistantMsg"), false, false, key);
     else if (kind == QString::fromUtf8("tool")
              || kind == QString::fromUtf8("tool_error"))
-        addPlainBubble(title, item.text, QString::fromUtf8("toolMsg"), false,
-                       false, false, key);
+    {
+        const bool report = kind == QString::fromUtf8("tool")
+                            && (item.text.startsWith(QString::fromUtf8("# "))
+                                || item.text.startsWith(QString::fromUtf8("## ")));
+        if (report)
+            addBubble(title, MarkdownFormatter::toHtml(item.text, imageBaseFor(_agent)),
+                      item.text, QString::fromUtf8("toolMsg"), false, false, key);
+        else
+            addPlainBubble(title, item.text, QString::fromUtf8("toolMsg"), false,
+                           false, false, key);
+    }
     else if (kind == QString::fromUtf8("error"))
         addPlainBubble(title, item.text, QString::fromUtf8("errorMsg"), false,
                        false, false, key);
@@ -1856,13 +1865,17 @@ static QString formatPlanWorkBody(const QString &arguments)
         return QString();
 
     QStringList lines;
-    if (!title.isEmpty())
-        lines << title;
+    lines << QString::fromUtf8("# ")
+                 + (title.isEmpty() ? QObject::tr("План действий") : title);
     if (!architecture.isEmpty())
     {
-        if (!lines.isEmpty())
-            lines << QString();
+        lines << QString();
         lines << architecture;
+    }
+    if (!subtasks.isEmpty())
+    {
+        lines << QString();
+        lines << QString::fromUtf8("## ") + QObject::tr("Шаги");
     }
     for (int i = 0; i < subtasks.size(); ++i)
     {
@@ -1871,16 +1884,18 @@ static QString formatPlanWorkBody(const QString &arguments)
         const QString task = item.value(QString::fromUtf8("task")).toString().trimmed();
         const QString how = item.value(QString::fromUtf8("how")).toString().trimmed();
         const QString reason = item.value(QString::fromUtf8("reason")).toString().trimmed();
-        lines << QString();
-        QString head = QString::number(i + 1) + QString::fromUtf8(". ");
-        head += name.isEmpty() ? task : name;
+        QString line = QString::fromUtf8("- ");
+        if (!name.isEmpty())
+            line += QString::fromUtf8("**") + name + QString::fromUtf8("**");
+        else
+            line += task;
         if (!how.isEmpty())
-            head += QString::fromUtf8(" — ") + planHowLabel(how);
-        lines << head;
+            line += QString::fromUtf8(" — ") + planHowLabel(how);
         if (!name.isEmpty() && !task.isEmpty())
-            lines << QString::fromUtf8("   ") + task;
+            line += QString::fromUtf8(". ") + task;
         if (!reason.isEmpty())
-            lines << QString::fromUtf8("   ") + QObject::tr("Зачем: %1").arg(reason);
+            line += QString::fromUtf8(" ") + QObject::tr("Зачем: %1").arg(reason);
+        lines << line;
     }
     return lines.join(QString::fromUtf8("\n"));
 }
@@ -1902,10 +1917,16 @@ void ConversationWidget::sltToolCallFinished(const QString &name, const QString 
                             : QString::fromUtf8("tool_error");
     const QString title = titleForKind(kind);
     recordDisplay(kind, title, body, kind);
-    addPlainBubble(title,
-                   body,
-                   QString::fromUtf8("toolMsg"),
-                   false, false, false, kind);
+    const bool report = ok && name == QString::fromUtf8("plan_work")
+                        && body.startsWith(QString::fromUtf8("# "));
+    if (report)
+        addBubble(title, MarkdownFormatter::toHtml(body, imageBaseFor(_agent)),
+                  body, QString::fromUtf8("toolMsg"), false, false, kind);
+    else
+        addPlainBubble(title,
+                       body,
+                       QString::fromUtf8("toolMsg"),
+                       false, false, false, kind);
     _pendingToolName.clear();
     _pendingToolArgs.clear();
     // A media executor calls invokeTool without setBusy; otherwise the

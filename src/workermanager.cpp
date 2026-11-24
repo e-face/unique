@@ -1164,10 +1164,14 @@ Worker *WorkerManager::addGroupMember(Worker *chief, QString presetId, QString *
     peer->setGroupRole(GroupRoleInterlocutor);
     peer->setTask(QString::fromUtf8(
         "You are %1, an interlocutor in a discussion group led by %2 (%3). "
-        "The group speaks in turns: only the current narrator may group_speak; "
-        "everyone else must group_await. After discussion, group_propose a result and "
-        "all members group_vote until unanimous approval. "
-        "You MUST NOT create child workers or delegate tasks — only the chief does that.")
+        "Debate until you and the chief agree. Each turn answers their last point with evidence "
+        "from the project files, or from web_search plus read_page on the result address. "
+        "A title or a snippet is not the fact. Do not repeat the chief's search. "
+        "Do not assign scenario weights until the page text contains the figure. "
+        "Do not repeat yourself and do not open a side topic. "
+        "Then group_end_turn. The chief proposes when you agree; you vote. "
+        "A rejection continues the discussion. After a unanimous vote, stop. "
+        "You MUST NOT create child workers or delegate tasks.")
                       .arg(peer->personName(),
                            chief->personName().isEmpty() ? chief->id() : chief->personName(),
                            workerTypeToString(chief->type())));
@@ -1248,6 +1252,134 @@ Worker *WorkerManager::currentSpeaker(const GroupDialogue &dialogue) const
     if (dialogue.speakerIndex < 0 || dialogue.speakerIndex >= dialogue.order.size())
         return 0;
     return workerById(dialogue.order.at(dialogue.speakerIndex));
+}
+
+//----------------------------------------------
+
+QStringList WorkerManager::dialoguePeerIds(const GroupDialogue &dialogue) const
+{
+    QStringList ids;
+    foreach (const QString &id, dialogue.order)
+    {
+        Worker *member = workerById(id);
+        if (member && !member->isGroupChief())
+            ids.append(id);
+    }
+    return ids;
+}
+
+//----------------------------------------------
+
+int WorkerManager::chiefOrderIndex(const GroupDialogue &dialogue) const
+{
+    for (int i = 0; i < dialogue.order.size(); ++i)
+    {
+        Worker *member = workerById(dialogue.order.at(i));
+        if (member && member->isGroupChief())
+            return i;
+    }
+    return 0;
+}
+
+//----------------------------------------------
+
+static bool memberSpoke(const GroupDialogue &dialogue, const QString &workerId)
+{
+    for (int i = 0; i < dialogue.transcript.size(); ++i)
+    {
+        const GroupUtterance &utterance = dialogue.transcript.at(i);
+        if (utterance.workerId == workerId
+            && utterance.kind == QLatin1String("speak")
+            && !utterance.text.trimmed().isEmpty())
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+static bool everyPeerSpoke(const GroupDialogue &dialogue, const QStringList &peerIds)
+{
+    if (peerIds.isEmpty())
+        return false;
+    foreach (const QString &id, peerIds)
+    {
+        if (!memberSpoke(dialogue, id))
+            return false;
+    }
+    return true;
+}
+
+//----------------------------------------------
+
+static bool spokeThisTenure(const GroupDialogue &dialogue, const QString &workerId)
+{
+    int floorSeq = 0;
+    for (int i = dialogue.transcript.size() - 1; i >= 0; --i)
+    {
+        if (dialogue.transcript.at(i).kind == QLatin1String("turn"))
+        {
+            floorSeq = dialogue.transcript.at(i).seq;
+            break;
+        }
+    }
+    for (int i = 0; i < dialogue.transcript.size(); ++i)
+    {
+        const GroupUtterance &utterance = dialogue.transcript.at(i);
+        if (utterance.workerId == workerId
+            && utterance.kind == QLatin1String("speak")
+            && utterance.seq > floorSeq
+            && !utterance.text.trimmed().isEmpty())
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+static QString narratorInstruction(bool chief)
+{
+    const QString sources = QString::fromUtf8(
+        "Use the sources before you agree or object. Read the project files that bear on "
+        "the question. When the fact is not in the project, call web_search, then read_page "
+        "on the result address that bears on the fact. A title or a short snippet is not the fact. "
+        "If the snippet has no number, date, or figure, the search did not check that point: "
+        "read the page, or say the point is unchecked. "
+        "Do not repeat a search the other side already showed. "
+        "Do not assign scenario weights until the page text contains the figure. "
+        "Do not settle a point you have not checked. "
+        "A turn that only repeats your previous statement does not count: add a new fact, "
+        "a correction, or a concession, then group_end_turn.");
+    if (chief)
+    {
+        return QString::fromUtf8(
+            "Discuss until you and the interlocutors agree. "
+            "State your position with the evidence, then group_end_turn. "
+            "Answer their objections with evidence and pass the floor again while you still disagree. "
+            "When you actually agree, group_propose(result) and stop passing the floor. "
+            "Do not propose before they have spoken. "
+            "After a unanimous vote the round is over: do not open another one.\n")
+            + sources;
+    }
+    return QString::fromUtf8(
+        "Discuss until you and the chief agree. "
+        "Answer the chief's last point with evidence from the project or from web_search. "
+        "If you disagree, say what is wrong and what the evidence supports. "
+        "If you agree, say so and why. Do not open a side topic and do not repeat yourself. "
+        "Call group_speak, then group_end_turn. The chief proposes; you group_vote. "
+        "A rejection continues the discussion. After a unanimous vote, stop.\n")
+        + sources;
+}
+
+//----------------------------------------------
+
+static QString roundClosedMessage(const QString &outcome)
+{
+    return QString::fromUtf8(
+        "This round is finished. Result:\n%1\n"
+        "Do not start another round and do not pass the turn. "
+        "The chief reports this result. Interlocutors stop.")
+        .arg(outcome);
 }
 
 //----------------------------------------------
@@ -1385,8 +1517,8 @@ QString WorkerManager::resumeMessageFor(Worker *worker, GroupDialogue *dialogue,
         return QString::fromUtf8(
             "[Group dialogue DONE] seq=%1\nApproved result:\n%2\n\n"
             "New events since your cursor:\n%3\n\n"
-            "This ROUND is finished. To discuss again with the same members, "
-            "call group_speak or group_propose (opens a new round). "
+            "This round is finished. Do not start another round and do not pass the turn. "
+            "The chief reports this result. Interlocutors stop. "
             "Do not group_vote on the old proposal.")
             .arg(tipSeq)
             .arg(dialogue->outcome, delta);
@@ -1414,12 +1546,10 @@ QString WorkerManager::resumeMessageFor(Worker *worker, GroupDialogue *dialogue,
     Worker *speaker = currentSpeaker(*dialogue);
     if (speaker == worker)
     {
-        const QString tip = QString::fromUtf8(
-            "You are the NARRATOR now. Call group_speak(message), then group_end_turn(). "
-            "When the group has a concrete shared answer, call group_propose(result). "
-            "Do NOT call group_await while you are narrator. No hard limit on turns.");
+        const QString tip = narratorInstruction(worker->isGroupChief());
         return QString::fromUtf8(
-            "[Your turn as narrator] seq=%1\n%2\n\nNew events:\n%3")
+            "[Your turn as narrator] seq=%1\n%2\nDo NOT call group_await while you are narrator.\n\n"
+            "New events:\n%3")
             .arg(tipSeq)
             .arg(tip, delta);
     }
@@ -1776,13 +1906,9 @@ QString WorkerManager::groupSpeak(Worker *from, QString message, QString *error)
     }
     if (_groupDialogues.value(from->groupId()).phase == GroupDialogueDone)
     {
-        QString reopenError;
-        if (!reopenGroupDialogue(from->groupId(), from, &reopenError))
-        {
-            if (error)
-                *error = reopenError;
-            return QString();
-        }
+        if (error)
+            *error = roundClosedMessage(_groupDialogues.value(from->groupId()).outcome);
+        return QString();
     }
     GroupDialogue &d = _groupDialogues[from->groupId()];
     syncDialogueOrder(&d);
@@ -1817,13 +1943,21 @@ QString WorkerManager::groupSpeak(Worker *from, QString message, QString *error)
             "New discussion round started (previous outcome kept for context:\n%1).\n")
                      .arg(d.lastOutcome);
     }
+    const QString nextStep = from->isGroupChief()
+        ? QString::fromUtf8(
+            "Call group_end_turn() to hear the answer. "
+            "Keep going while you disagree, using the project, web_search, and read_page. "
+            "When you actually agree, group_propose(result) instead of passing the floor.")
+        : QString::fromUtf8(
+            "Call group_end_turn(). The chief proposes only when you agree. "
+            "If you still disagree, say the new evidence on your next turn. Do not repeat yourself.");
     return QString::fromUtf8(
         "%1Replica recorded (seq=%2). Your own words are already in this "
         "conversation, so they are not repeated back to you. Listeners are "
-        "NOT woken separately. Call group_end_turn() when finished, or "
-        "group_propose(result) for a vote.")
+        "NOT woken separately. %3")
         .arg(prefix)
-        .arg(latestSeq(d));
+        .arg(latestSeq(d))
+        .arg(nextStep);
 }
 
 //----------------------------------------------
@@ -1846,18 +1980,9 @@ QString WorkerManager::groupEndTurn(Worker *from, QString *error)
     syncDialogueOrder(&d);
     if (d.phase == GroupDialogueDone)
     {
-        QString reopenError;
-        if (!reopenGroupDialogue(from->groupId(), from, &reopenError))
-        {
-            if (error)
-                *error = reopenError.isEmpty()
-                    ? QString::fromUtf8("Dialogue finished. Call group_speak to start a new round.")
-                    : reopenError;
-            return QString();
-        }
-        return QString::fromUtf8(
-            "Previous round was finished. New round opened; you are narrator — "
-            "call group_speak, then group_end_turn when ready.");
+        if (error)
+            *error = roundClosedMessage(d.outcome);
+        return QString();
     }
     if (d.phase != GroupDialogueSpeaking)
     {
@@ -1869,6 +1994,14 @@ QString WorkerManager::groupEndTurn(Worker *from, QString *error)
     {
         if (error)
             *error = QString::fromUtf8("Only the current narrator may end the turn.");
+        return QString();
+    }
+    if (!spokeThisTenure(d, from->id()))
+    {
+        if (error)
+            *error = QString::fromUtf8(
+                "Say something new with group_speak before group_end_turn. "
+                "Use the project or web_search. Do not pass an empty turn.");
         return QString();
     }
     if (d.order.isEmpty())
@@ -1918,22 +2051,27 @@ QString WorkerManager::groupPropose(Worker *from, QString result, QString *error
     }
     if (_groupDialogues.value(from->groupId()).phase == GroupDialogueDone)
     {
-        QString reopenError;
-        if (!reopenGroupDialogue(from->groupId(), from, &reopenError))
-        {
-            if (error)
-                *error = reopenError;
-            return QString();
-        }
+        if (error)
+            *error = roundClosedMessage(_groupDialogues.value(from->groupId()).outcome);
+        return QString();
     }
     GroupDialogue &d = _groupDialogues[from->groupId()];
     syncDialogueOrder(&d);
-    if (d.phase == GroupDialogueSpeaking && currentSpeaker(d) != from
-        && !from->isGroupChief())
+    if (!from->isGroupChief())
     {
         if (error)
             *error = QString::fromUtf8(
-                "Only the current narrator (or chief) may group_propose.");
+                "Only the chief closes the round with group_propose. "
+                "Answer with group_speak, then group_end_turn.");
+        return QString();
+    }
+    if (!everyPeerSpoke(d, dialoguePeerIds(d)))
+    {
+        if (error)
+            *error = QString::fromUtf8(
+                "The interlocutor has not answered yet. "
+                "Keep the discussion: group_speak, group_end_turn, and answer what they bring back. "
+                "group_propose only when you agree.");
         return QString();
     }
     const QString body = result.trimmed();
@@ -1960,10 +2098,7 @@ QString WorkerManager::groupPropose(Worker *from, QString result, QString *error
     if (d.approvals.size() >= d.order.size() && !d.order.isEmpty())
     {
         finishGroupDialogue(from->groupId(), d.proposal);
-        return QString::fromUtf8(
-            "Proposal approved unanimously:\n%1\n"
-            "You may start another round later with group_speak / group_propose.")
-            .arg(_groupDialogues.value(from->groupId()).outcome);
+        return roundClosedMessage(_groupDialogues.value(from->groupId()).outcome);
     }
     advanceDialogueAfterChange(from->groupId());
     return QString::fromUtf8(
@@ -1995,11 +2130,9 @@ QString WorkerManager::groupVote(Worker *from, bool approve, QString comment, QS
         ackGroupCursor(&d, from, latestSeq(d));
         d.terminalDelivered.insert(from->id());
         saveGroupDialogues();
-        return QString::fromUtf8(
-            "No proposal pending — this round is finished.\nOutcome:\n%1\n"
-            "To discuss again with the same members, call group_speak or group_propose "
-            "(starts a new round).")
-            .arg(d.outcome);
+        if (error)
+            *error = roundClosedMessage(d.outcome);
+        return QString();
     }
     if (d.phase != GroupDialogueVoting)
     {
@@ -2029,9 +2162,7 @@ QString WorkerManager::groupVote(Worker *from, bool approve, QString comment, QS
     {
         d.phase = GroupDialogueSpeaking;
         d.proposal.clear();
-        const int idx = d.order.indexOf(from->id());
-        if (idx >= 0)
-            d.speakerIndex = (idx + 1) % d.order.size();
+        d.speakerIndex = chiefOrderIndex(d);
         d.voted.clear();
         d.approvals.clear();
         d.voteComments.clear();
@@ -2039,16 +2170,15 @@ QString WorkerManager::groupVote(Worker *from, bool approve, QString comment, QS
         saveGroupDialogues();
         advanceDialogueAfterChange(from->groupId());
         return QString::fromUtf8(
-            "Rejection recorded. Dialogue continues with the next narrator.");
+            "Objection recorded. The chief answers it with evidence, then the discussion "
+            "continues until you agree. Do not repeat the same objection without a new fact. "
+            "web_search and the project files are in play.");
     }
 
     if (d.approvals.size() >= d.order.size() && d.voted.size() >= d.order.size())
     {
         finishGroupDialogue(from->groupId(), d.proposal);
-        return QString::fromUtf8(
-            "Unanimous approval. Final result:\n%1\n"
-            "Same group can start another round with group_speak / group_propose.")
-            .arg(_groupDialogues.value(from->groupId()).outcome);
+        return roundClosedMessage(_groupDialogues.value(from->groupId()).outcome);
     }
     saveGroupDialogues();
     return QString::fromUtf8("Approve recorded (%1/%2). Waiting for remaining votes.")
@@ -2089,9 +2219,7 @@ QString WorkerManager::groupAwait(Worker *from, QString *error)
         from->clearPendingFollowUps();
         saveGroupDialogues();
         return status + QString::fromUtf8(
-            "\n\nTo start another discussion round with the same members, "
-            "call group_speak or group_propose (chief/narrator). "
-            "group_await alone does not reopen the round.");
+            "\n\nThe round is closed. Do not start another one.");
     }
 
     if (workerShouldAct(from, d))
@@ -2827,7 +2955,10 @@ static void addLookupTools(Agent *agent, ProjectWorkspace *workspace, Worker *wo
     agent->addTool(new FindInFilesAgentTool(workspace, worker, agent));
     agent->addTool(new ReadPdfAgentTool(workspace, worker, agent));
     if (worker)
+    {
         agent->addTool(new WebSearchAgentTool(worker, agent));
+        agent->addTool(new ReadPageAgentTool(worker, agent));
+    }
 }
 
 //----------------------------------------------
@@ -2910,11 +3041,6 @@ static void addLlmRoleTools(WorkerManager *manager, Agent *agent, Worker *worker
 
     if (worker->isGroupInterlocutor())
     {
-        if (worker->type() != WorkerTypeManager)
-        {
-            agent->addTool(new ListToolsTool(manager, agent));
-            agent->addTool(new RunToolTool(manager, worker, agent));
-        }
         agent->addTool(new CompleteTaskTool(worker, agent));
         return;
     }
@@ -3259,6 +3385,14 @@ void WorkerManager::installTools(Worker *worker)
         agent->addTool(new CompleteTaskTool(worker, agent));
         agent->addTool(new RequestPermissionTool(worker, agent));
     }
+    else if (worker->isGroupInterlocutor())
+    {
+        // A discussion partner answers the chief. File edits and child workers
+        // turn that answer into another task, and the dialogue never closes.
+        addReadOnlyFileTools(agent, _workspace);
+        addLookupTools(agent, _workspace, worker);
+        addLlmRoleTools(this, agent, worker);
+    }
     else if (modality == WorkerTaskKindDecisions)
     {
         addReadOnlyFileTools(agent, _workspace);
@@ -3292,7 +3426,7 @@ void WorkerManager::installTools(Worker *worker)
 
     // Settings are read and edited only with the user's confirmation.
     // A media worker does not run a chat and does not call these tools.
-    if (!workerTaskKindIsMediaExecutor(modality))
+    if (!workerTaskKindIsMediaExecutor(modality) && !worker->isGroupInterlocutor())
     {
         agent->addTool(new ReadSettingsTool(worker, agent));
         agent->addTool(new AskUserTool(worker, agent));
@@ -3300,7 +3434,8 @@ void WorkerManager::installTools(Worker *worker)
             agent->addTool(new EditSettingsTool(worker, agent));
     }
 
-    if (!worker->isCheckOnly() && !workerTaskKindIsMediaExecutor(modality))
+    if (!worker->isCheckOnly() && !worker->isGroupInterlocutor()
+        && !workerTaskKindIsMediaExecutor(modality))
     {
         const WorkerPreset preset = presetBoundTo(worker);
         if (preset.toolIdsSet)
@@ -3490,10 +3625,24 @@ static QString replyFormatRule(const AppLocale *locale)
         "Then at most 24 lines: Label | number.\n"
         "Diagram — a block that opens with three backticks and diagram, and closes with "
         "three backticks. At most 24 nodes. One relation per line: A -> B or A -> B: label. "
-        "A line that is only a name is a node. No extra caption.");
-    if (!locale)
-        return fallback;
-    return locale->model(QString::fromUtf8("reply_format"), fallback);
+        "A line that is only a name is a node. No extra caption.\n"
+        "Do not draw a schema, a diagram, or a picture with characters. No boxes, "
+        "no ASCII art, no lines made of symbols. A schema or a diagram is only the "
+        "diagram block. A chart is only the chart block. A picture is only an image "
+        "line that points at an existing file.\n"
+        "Work note: before a stretch of more than one step, write a short note in this "
+        "same format, in the language of the task. One sentence says what you are doing "
+        "now. When there are two or more coarse steps, add one list; each item is one "
+        "important step, not a tool name. Use a heading only when the note has two "
+        "sections, such as the plan and the current step. Do not narrate every call. "
+        "Do not repeat the note when the plan has not changed. The note is not the result "
+        "and does not finish the task. The finished result still follows the order above.");
+    QString text = fallback;
+    if (locale)
+        text = locale->model(QString::fromUtf8("reply_format"), fallback);
+    if (!text.startsWith(QLatin1Char('\n')))
+        text.prepend(QLatin1Char('\n'));
+    return text;
 }
 
 //----------------------------------------------
@@ -3511,7 +3660,11 @@ static QString builtinLookupRule(const AppLocale *locale)
         "offset and limit page through a long text (limit up to 80000 characters). "
         "It decodes Flate and LZW. Do not decompress a PDF in a script.\n"
         "web_search — titles, addresses, and snippets. You choose engine: duckduckgo, bing, "
-        "google, or yandex. limit up to 30. The call asks the user to confirm. "
+        "google, or yandex. limit up to 30. A title or a snippet is not the page. "
+        "If nothing was parsed, that is not an empty web.\n"
+        "read_page — text of one http(s) result address from web_search. Not a search page. "
+        "offset and limit page through a long text (limit up to 40000 characters). "
+        "The call asks the user to confirm, the same way web_search does. "
         "Do not curl a search page.\n"
         "replace_in_file — exact fragment replace in one file: path, old, new, "
         "replace_all. new may be empty to delete the fragment. If old occurs more "
@@ -3538,6 +3691,7 @@ static QString internetSearchRule(const AppLocale *locale)
         "\nINTERNET SEARCH: Any search on the internet requires the user's confirmation "
         "before it starts. Do not search the web, open a page to look something up, "
         "fetch online results, or delegate such a search until the user approves. "
+        "For one result address call read_page. It asks for the same confirmation as web_search. "
         "run_command shows the same dialog as other shell commands, including Always "
         "for that program. After the user presses Always, later searches with the same "
         "program run without another question. If you cannot run the search yourself, "
@@ -3633,7 +3787,27 @@ QString WorkerManager::promptFor(Worker *worker) const
     {
         base = locale->model(QString::fromUtf8("group_interlocutor"),
                              QString::fromUtf8(
-                                 "You are a GROUP INTERLOCUTOR named in your first message."));
+                                 "You are a group interlocutor. Your name is in the first message. "
+                                 "Discuss until you and the chief agree. One speaker at a time.\n"
+                                 "If you are not the narrator and not voting: call group_await once. "
+                                 "Do not poll it.\n"
+                                 "If you are the narrator: answer the chief's last point with evidence. "
+                                 "Read the project files that bear on it. When the fact is not in the project, "
+                                 "call web_search, then read_page on the result address. "
+                                 "A title or a snippet is not a checked fact. If it has no number, date, "
+                                 "or figure, read the page or say the point is unchecked. "
+                                 "Do not repeat the engines the chief already showed. "
+                                 "Take the price and the date from the page text. "
+                                 "Do not assign scenario percentages until that page contains them. "
+                                 "If you disagree, say what is wrong and what the evidence "
+                                 "supports. If you agree, say so and why. Do not repeat yourself and do not "
+                                 "open a side topic. Call group_speak, then group_end_turn. "
+                                 "Do not call group_await while you are narrator. Do not call group_propose.\n"
+                                 "When a proposal is open, call group_vote. "
+                                 "A rejection continues the discussion until you agree.\n"
+                                 "After a unanimous vote, stop. Do not start another round. "
+                                 "complete_task only if you still owe the parent a report.\n"
+                                 "Do not use talk_to. Do not delegate and do not create children."));
         base += verificationDepth;
         base += locale->model(QString::fromUtf8("sequence_suffix"));
         base += internetSearchRule(locale);

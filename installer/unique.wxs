@@ -2,7 +2,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
     <Package Name="Unique ($(var.ArchLabel))"
              Manufacturer="e-face"
-             Version="0.2.1.0"
+             Version="0.3.1.0"
              UpgradeCode="$(var.UpgradeCode)"
              Scope="perMachine"
              Compressed="yes">

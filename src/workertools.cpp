@@ -180,6 +180,7 @@ static bool isGenericFunction(const QString &name)
         QString::fromUtf8("run_command"),
         QString::fromUtf8("request_permission"),
         QString::fromUtf8("web_search"),
+        QString::fromUtf8("read_page"),
         QString::fromUtf8("complete_task"),
         QString::fromUtf8("ask_user"),
         QString::fromUtf8("read_settings"),
@@ -195,7 +196,7 @@ static bool isGenericFunction(const QString &name)
         QString::fromUtf8("dismiss_child_worker"),
         QString::fromUtf8("propose_decision")
     };
-    for (int i = 0; i < 28; ++i)
+    for (int i = 0; i < 29; ++i)
     {
         if (name == generic[i])
             return true;
@@ -3251,8 +3252,9 @@ QString AddGroupMemberTool::invoke(QString argumentsJson, bool *ok)
         *ok = true;
     return QString::fromUtf8(
         "Added group member %1 (type=%2, worker_id=%3, group_id=%4). "
-        "Turn-based dialogue started: narrator uses group_speak/group_end_turn; "
-        "others group_await; finish with group_propose + unanimous group_vote.")
+        "Discussion started. Exchange evidence from the project and from web_search "
+        "until you agree, then group_propose. Do not stop after the first statement. "
+        "After a unanimous vote, do not open another round.")
         .arg(peer->personName(), workerTypeToString(peer->type()), peer->id(),
              peer->groupId());
 }
@@ -3396,8 +3398,11 @@ QString GroupSpeakTool::name() const
 QString GroupSpeakTool::description() const
 {
     return QString::fromUtf8(
-        "As the current narrator, broadcast a replica to ALL group members. "
-        "Then call group_end_turn() or group_propose(result).");
+        "As the current narrator, answer the last point with evidence from the project "
+        "or from a page you opened with read_page after web_search. "
+        "A title or a short snippet is not the fact. Do not repeat yourself. "
+        "Then group_end_turn and keep discussing until you agree. "
+        "The chief calls group_propose only when there is consensus.");
 }
 
 //----------------------------------------------
@@ -3465,7 +3470,9 @@ QString GroupEndTurnTool::name() const
 QString GroupEndTurnTool::description() const
 {
     return QString::fromUtf8(
-        "Pass the narrator role to the next group member after group_speak.");
+        "Pass the floor so the other side can answer. "
+        "Discussion continues until consensus. "
+        "After a unanimous vote this does not open another round.");
 }
 
 //----------------------------------------------
@@ -3517,8 +3524,10 @@ QString GroupProposeTool::name() const
 QString GroupProposeTool::description() const
 {
     return QString::fromUtf8(
-        "Propose the group's shared result for a unanimous vote. "
-        "Current narrator or chief. Others must group_vote.");
+        "Chief only, when the group actually agrees. "
+        "Puts the shared result to a unanimous vote. "
+        "A rejection continues the discussion. "
+        "Does not open a new round after the vote passes.");
 }
 
 //----------------------------------------------
@@ -3587,8 +3596,10 @@ QString GroupVoteTool::name() const
 QString GroupVoteTool::description() const
 {
     return QString::fromUtf8(
-        "Vote on the current group_propose. approve=true to accept; false rejects and "
-        "continues the turn-based discussion. Unanimous approval ends the dialogue.");
+        "Vote on the current group_propose. approve=true accepts it. "
+        "approve=false continues the discussion: the chief must answer the objection "
+        "with evidence from the project or from read_page when the fact is outside it. "
+        "Unanimous approval ends the dialogue.");
 }
 
 //----------------------------------------------

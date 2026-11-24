@@ -3,6 +3,6 @@
 
 /** Unique application version (window title and About). */
 #define UNIQUE_APP_NAME    "Unique"
-#define UNIQUE_APP_VERSION "0.2.1"
+#define UNIQUE_APP_VERSION "0.3.1"
 
 #endif // APPVERSION_H

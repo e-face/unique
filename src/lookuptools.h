@@ -66,6 +66,26 @@ private:
 
 //----------------------------------------------
 
+class ReadPageAgentTool : public AgentTool
+{
+public:
+    explicit ReadPageAgentTool(Worker *owner, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+    virtual void        interrupt();
+
+private:
+    Worker         *_owner;
+    QNetworkReply  *_reply;
+    QEventLoop     *_loop;
+    bool            _interrupted;
+};
+
+//----------------------------------------------
+
 class ReadPdfAgentTool : public AgentTool
 {
 public:

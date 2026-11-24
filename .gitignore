@@ -24,6 +24,7 @@ debug/
 release/
 build/
 bin/
+bin-ubuntu/
 *.Debug
 *.Release
 *.zip

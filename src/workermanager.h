@@ -319,6 +319,8 @@ private:
                       QString *delta, bool *fullTranscript);
     void syncDialogueOrder(GroupDialogue *dialogue) const;
     Worker *currentSpeaker(const GroupDialogue &dialogue) const;
+    QStringList dialoguePeerIds(const GroupDialogue &dialogue) const;
+    int chiefOrderIndex(const GroupDialogue &dialogue) const;
     int appendGroupEvent(GroupDialogue *dialogue, QString kind, Worker *from, QString text);
     QString formatTranscript(const GroupDialogue &dialogue, int afterSeq = 0) const;
     int latestSeq(const GroupDialogue &dialogue) const;

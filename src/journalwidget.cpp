@@ -419,6 +419,8 @@ QString JournalWidget::actionTitleForTool(const QString &name)
         return JournalWidget::tr("поиск в файлах");
     if (n == QString::fromUtf8("web_search"))
         return JournalWidget::tr("поиск в сети");
+    if (n == QString::fromUtf8("read_page"))
+        return JournalWidget::tr("чтение страницы");
     if (n == QString::fromUtf8("read_pdf"))
         return JournalWidget::tr("текст PDF");
     if (n == QString::fromUtf8("pdf_page_image"))
@@ -488,6 +490,10 @@ QString JournalWidget::toolArgsExcerpt(const QString &name, const QString &argum
             if (!patterns.isEmpty())
                 excerpt = patterns.at(0).toString();
         }
+    }
+    else if (n == QString::fromUtf8("read_page"))
+    {
+        excerpt = o.value(QString::fromUtf8("url")).toString();
     }
     else if (n == QString::fromUtf8("web_search"))
     {

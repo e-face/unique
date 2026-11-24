@@ -37,6 +37,8 @@ const int kPdfDefaultChars = 16000;
 const int kPdfMaxChars = 80000;
 const int kPdfMaxBytes = 32 * 1024 * 1024;
 const int kHtmlMaxBytes = 2 * 1024 * 1024;
+const int kPageDefaultChars = 12000;
+const int kPageMaxChars = 40000;
 
 //----------------------------------------------
 
@@ -341,6 +343,129 @@ QString duckUrl(const QString &href)
 
 //----------------------------------------------
 
+QString elementInnerText(const QString &html, int mark)
+{
+    const int tagStart = html.lastIndexOf(QLatin1Char('<'), mark);
+    const int tagEnd = html.indexOf(QLatin1Char('>'), mark);
+    if (tagStart < 0 || tagEnd < 0 || tagStart > mark)
+        return QString();
+    QString open = html.mid(tagStart + 1, tagEnd - tagStart - 1).trimmed();
+    const int space = open.indexOf(QRegExp(QString::fromLatin1("[\\s/]")));
+    if (space >= 0)
+        open = open.left(space);
+    open = open.toLower();
+    if (open.isEmpty() || open.startsWith(QLatin1Char('/')) || open.startsWith(QLatin1Char('!')))
+        return QString();
+    const int close = html.indexOf(QString::fromLatin1("</%1>").arg(open),
+                                   tagEnd, Qt::CaseInsensitive);
+    if (close < 0 || close > tagEnd + 6000)
+        return QString();
+    return stripTags(html.mid(tagEnd + 1, close - tagEnd - 1));
+}
+
+//----------------------------------------------
+
+QString bingTargetUrl(const QString &href)
+{
+    QString raw = href.trimmed();
+    const int at = raw.indexOf(QString::fromLatin1("u="));
+    if (at >= 0)
+    {
+        int end = raw.indexOf(QLatin1Char('&'), at + 2);
+        if (end < 0)
+            end = raw.size();
+        QString u = QUrl::fromPercentEncoding(raw.mid(at + 2, end - at - 2).toUtf8());
+        if (u.startsWith(QString::fromLatin1("a1")))
+            u = u.mid(2);
+        QByteArray b64 = u.toLatin1();
+        b64.replace('-', '+');
+        b64.replace('_', '/');
+        while (b64.size() % 4 != 0)
+            b64.append('=');
+        const QString decoded = QString::fromUtf8(QByteArray::fromBase64(b64)).trimmed();
+        if (decoded.startsWith(QString::fromLatin1("http://"))
+            || decoded.startsWith(QString::fromLatin1("https://")))
+            return decoded;
+    }
+    QUrl url(raw);
+    if (url.host().contains(QString::fromLatin1("bing."), Qt::CaseInsensitive))
+        return QString();
+    return raw;
+}
+
+//----------------------------------------------
+
+bool isMicrosoftUtility(const QUrl &url)
+{
+    const QString host = url.host().toLower();
+    if (host == QString::fromLatin1("bing.com") || host.endsWith(QString::fromLatin1(".bing.com")))
+        return true;
+    if (host == QString::fromLatin1("support.microsoft.com")
+        || host == QString::fromLatin1("account.microsoft.com")
+        || host == QString::fromLatin1("go.microsoft.com")
+        || host == QString::fromLatin1("techcommunity.microsoft.com"))
+        return true;
+    if (host == QString::fromLatin1("www.microsoft.com") || host == QString::fromLatin1("microsoft.com"))
+    {
+        const QString path = url.path().toLower();
+        if (path.contains(QString::fromLatin1("/edge"))
+            || path.contains(QString::fromLatin1("/windows"))
+            || path.isEmpty()
+            || path == QString::fromLatin1("/"))
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+bool isSearchEnginePage(const QUrl &url)
+{
+    const QString host = url.host().toLower();
+    const QString path = url.path().toLower();
+    if (host.contains(QString::fromLatin1("duckduckgo."))
+        && (path.isEmpty() || path == QString::fromLatin1("/")
+            || path.contains(QString::fromLatin1("html"))))
+        return true;
+    if (host.contains(QString::fromLatin1("bing.")) && path.startsWith(QString::fromLatin1("/search")))
+        return true;
+    if (host.contains(QString::fromLatin1("google.")) && path.startsWith(QString::fromLatin1("/search")))
+        return true;
+    if ((host.contains(QString::fromLatin1("yandex.")) || host == QString::fromLatin1("ya.ru"))
+        && path.contains(QString::fromLatin1("search")))
+        return true;
+    return false;
+}
+
+//----------------------------------------------
+
+QString htmlToPlain(QString html)
+{
+    const QRegularExpression block(
+        QString::fromLatin1("<(script|style|noscript|svg)\\b[^>]*>.*?</\\1>"),
+        QRegularExpression::CaseInsensitiveOption
+            | QRegularExpression::DotMatchesEverythingOption);
+    html.replace(block, QString::fromLatin1(" "));
+    html.replace(QRegularExpression(QString::fromLatin1("<br\\s*/?>"),
+                                    QRegularExpression::CaseInsensitiveOption),
+                 QString::fromLatin1("\n"));
+    html.replace(QRegularExpression(
+                     QString::fromLatin1("</p>|</div>|</li>|</tr>|</h[1-6]>"),
+                     QRegularExpression::CaseInsensitiveOption),
+                 QString::fromLatin1("\n"));
+    html.replace(QRegularExpression(QString::fromLatin1("<[^>]+>")), QString());
+    html = htmlUnescape(html);
+    html.replace(QRegularExpression(QString::fromLatin1("[\\t\\f\\r ]+")),
+                 QString::fromLatin1(" "));
+    html.replace(QRegularExpression(QString::fromLatin1(" *\\n *")),
+                 QString::fromLatin1("\n"));
+    html.replace(QRegularExpression(QString::fromLatin1("\\n{3,}")),
+                 QString::fromLatin1("\n\n"));
+    return html.trimmed();
+}
+
+//----------------------------------------------
+
 void addHit(QList<WebHit> *hits, const QString &title, const QString &url,
             const QString &snippet, int limit)
 {
@@ -358,7 +483,7 @@ void addHit(QList<WebHit> *hits, const QString &title, const QString &url,
     WebHit hit;
     hit.title = cleanTitle;
     hit.url = cleanUrl;
-    hit.snippet = snippet.simplified().left(240);
+    hit.snippet = snippet.simplified().left(480);
     hits->append(hit);
 }
 
@@ -384,12 +509,7 @@ QList<WebHit> parseDuck(const QString &html, int limit)
         QString snippet;
         const int snip = html.indexOf(QString::fromLatin1("result__snippet"), close);
         if (snip >= 0 && snip < close + 2500)
-        {
-            const int snipEnd = html.indexOf(QChar('>'), snip);
-            const int snipClose = html.indexOf(QString::fromLatin1("</"), snipEnd);
-            if (snipEnd > 0 && snipClose > snipEnd)
-                snippet = stripTags(html.mid(snipEnd + 1, snipClose - snipEnd - 1));
-        }
+            snippet = elementInnerText(html, snip);
         addHit(&hits, title, href, snippet, limit);
         pos = close + 4;
     }
@@ -408,31 +528,49 @@ QList<WebHit> parseBing(const QString &html, int limit)
         if (mark < 0)
             break;
         const int end = html.indexOf(QString::fromLatin1("</li>"), mark);
-        const QString block = html.mid(mark, (end < 0 ? 4000 : end - mark));
-        const int hrefAt = block.indexOf(QString::fromLatin1("href=\""));
-        if (hrefAt < 0)
+        const QString block = html.mid(mark, (end < 0 ? 8000 : qMax(1, end - mark)));
+        QString href;
+        QString title;
+        int scan = 0;
+        while (scan < block.size())
         {
-            pos = mark + 6;
-            continue;
+            const int hrefAt = block.indexOf(QString::fromLatin1("href=\""), scan);
+            if (hrefAt < 0)
+                break;
+            const int hrefEnd = block.indexOf(QChar('"'), hrefAt + 6);
+            if (hrefEnd < 0)
+                break;
+            const QString target = bingTargetUrl(
+                htmlUnescape(block.mid(hrefAt + 6, hrefEnd - hrefAt - 6)));
+            const QUrl targetUrl(target);
+            if (target.startsWith(QString::fromLatin1("http")) && !isMicrosoftUtility(targetUrl))
+            {
+                href = target;
+                const int titleStart = block.indexOf(QChar('>'), hrefEnd);
+                const int titleEnd = block.indexOf(QString::fromLatin1("</a>"), titleStart);
+                if (titleStart > 0 && titleEnd > titleStart)
+                    title = stripTags(block.mid(titleStart + 1, titleEnd - titleStart - 1));
+                break;
+            }
+            scan = hrefEnd + 1;
         }
-        const int hrefEnd = block.indexOf(QChar('"'), hrefAt + 6);
-        const QString href = htmlUnescape(block.mid(hrefAt + 6, hrefEnd - hrefAt - 6));
-        const int titleStart = block.indexOf(QChar('>'), hrefEnd);
-        const int titleEnd = block.indexOf(QString::fromLatin1("</a>"), titleStart);
-        const QString title = titleStart > 0 && titleEnd > titleStart
-            ? stripTags(block.mid(titleStart + 1, titleEnd - titleStart - 1))
-            : QString();
+        const int h2 = block.indexOf(QString::fromLatin1("<h2"));
+        if (h2 >= 0)
+        {
+            const QString heading = elementInnerText(block, h2 + 2);
+            if (!heading.isEmpty())
+                title = heading;
+        }
+        const int httpAt = title.indexOf(QString::fromLatin1("http"));
+        if (httpAt > 0)
+            title = title.left(httpAt).simplified();
         QString snippet;
         const int p = block.indexOf(QString::fromLatin1("<p"));
         if (p >= 0)
-        {
-            const int pEnd = block.indexOf(QChar('>'), p);
-            const int pClose = block.indexOf(QString::fromLatin1("</p>"), pEnd);
-            if (pEnd > 0 && pClose > pEnd)
-                snippet = stripTags(block.mid(pEnd + 1, pClose - pEnd - 1));
-        }
-        addHit(&hits, title, href, snippet, limit);
-        pos = mark + block.size();
+            snippet = elementInnerText(block, p + 1);
+        if (!href.isEmpty())
+            addHit(&hits, title, href, snippet, limit);
+        pos = mark + qMax(6, block.size());
     }
     return hits;
 }
@@ -620,6 +758,16 @@ QString formatWebHits(const QString &engine, const QList<WebHit> &hits, int stat
 {
     if (hits.isEmpty())
     {
+        if (status >= 200 && status < 300)
+        {
+            return QString::fromUtf8(
+                "engine: %1\n"
+                "The result page was not parsed (HTTP %2). "
+                "The markup changed or the engine returned a consent page. "
+                "This is not an empty web. Try another engine.")
+                .arg(engine)
+                .arg(status);
+        }
         return QString::fromUtf8(
             "engine: %1\nNo results parsed (HTTP %2). Try another engine.")
             .arg(engine)
@@ -1131,8 +1279,11 @@ QString WebSearchAgentTool::description() const
     return QString::fromUtf8(
         "Search the web and return titles, addresses, and short snippets. "
         "You choose engine: duckduckgo, bing, google, or yandex. "
-        "limit is 1..30, default 10. The user confirms the first call; "
-        "Always then covers later web_search and read_pdf downloads. "
+        "limit is 1..30, default 10. A title or a snippet is not the page: "
+        "call read_page on the result address that bears on the fact. "
+        "If nothing was parsed, the engine page changed or asked for consent; "
+        "that is not an empty web. The user confirms the first call; "
+        "Always then covers later web_search, read_page, and read_pdf downloads. "
         "Do not curl a search page and do not parse its HTML yourself.");
 }
 
@@ -1250,6 +1401,185 @@ QString WebSearchAgentTool::invoke(QString argumentsJson, bool *ok)
     if (ok)
         *ok = true;
     return formatWebHits(engine, hits, status);
+}
+
+//----------------------------------------------
+
+ReadPageAgentTool::ReadPageAgentTool(Worker *owner, QObject *parent)
+    : AgentTool(parent)
+    , _owner(owner)
+    , _reply(0)
+    , _loop(0)
+    , _interrupted(false)
+{
+}
+
+//----------------------------------------------
+
+QString ReadPageAgentTool::name() const
+{
+    return QString::fromUtf8("read_page");
+}
+
+//----------------------------------------------
+
+QString ReadPageAgentTool::description() const
+{
+    return QString::fromUtf8(
+        "Read one http or https page as text. Pass a result address from web_search, "
+        "not a search-engine query page. A title or a short snippet is not the fact. "
+        "The user confirms the first call; Always then covers later web_search, "
+        "read_page, and read_pdf downloads. offset is the first character, 1-based, "
+        "default 1. limit is how many characters, default 12000, max 40000.");
+}
+
+//----------------------------------------------
+
+QJsonObject ReadPageAgentTool::parametersSchema() const
+{
+    QJsonObject url;
+    url.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    url.insert(QString::fromUtf8("description"),
+               QString::fromUtf8("http or https address of one result page."));
+
+    QJsonObject offset;
+    offset.insert(QString::fromUtf8("type"), QString::fromUtf8("integer"));
+    offset.insert(QString::fromUtf8("description"),
+                  QString::fromUtf8("First character to return, 1-based. Default 1."));
+
+    QJsonObject limit;
+    limit.insert(QString::fromUtf8("type"), QString::fromUtf8("integer"));
+    limit.insert(QString::fromUtf8("description"),
+                 QString::fromUtf8("Maximum characters to return. Default 12000, max 40000."));
+
+    QJsonObject properties;
+    properties.insert(QString::fromUtf8("url"), url);
+    properties.insert(QString::fromUtf8("offset"), offset);
+    properties.insert(QString::fromUtf8("limit"), limit);
+
+    QJsonArray required;
+    required.append(QString::fromUtf8("url"));
+
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), properties);
+    schema.insert(QString::fromUtf8("required"), required);
+    return schema;
+}
+
+//----------------------------------------------
+
+void ReadPageAgentTool::interrupt()
+{
+    _interrupted = true;
+    if (_reply)
+        _reply->abort();
+    if (_loop)
+        _loop->quit();
+}
+
+//----------------------------------------------
+
+QString ReadPageAgentTool::invoke(QString argumentsJson, bool *ok)
+{
+    QJsonObject args;
+    QString error;
+    if (!parseArgs(argumentsJson, &args, &error))
+    {
+        if (ok)
+            *ok = false;
+        return error;
+    }
+    const QString urlText = args.value(QString::fromUtf8("url")).toString().trimmed();
+    const QUrl url(urlText);
+    if (!url.isValid()
+        || (url.scheme() != QString::fromLatin1("http")
+            && url.scheme() != QString::fromLatin1("https")))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("url must be an http or https address.");
+    }
+    if (isSearchEnginePage(url))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8(
+            "This is a search page. Call web_search for the query, then read_page "
+            "on a result address.");
+    }
+
+    int offset = args.value(QString::fromUtf8("offset")).toInt(1);
+    if (offset < 1)
+        offset = 1;
+    int limit = args.value(QString::fromUtf8("limit")).toInt(kPageDefaultChars);
+    if (limit <= 0)
+        limit = kPageDefaultChars;
+    if (limit > kPageMaxChars)
+        limit = kPageMaxChars;
+
+    const QString action = QString::fromUtf8("Open web page:\n%1").arg(urlText);
+    if (!approvedInternet(_owner, action, ok, &error))
+        return error;
+
+    _interrupted = false;
+    int status = 0;
+    const QByteArray body = httpGet(url, 20000, kHtmlMaxBytes,
+                                    &_reply, &_loop, &_interrupted, &status, &error);
+    if (_interrupted)
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Interrupted.");
+    }
+    if (body.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return error.isEmpty() ? QString::fromUtf8("Empty response.") : error;
+    }
+    if (body.startsWith("%PDF"))
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("This address is a PDF. Call read_pdf with the same url.");
+    }
+    if (body.indexOf('\0') >= 0 && body.indexOf('\0') < 512)
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("This address is not a text page.");
+    }
+
+    const QString text = htmlToPlain(QString::fromUtf8(body));
+    if (text.isEmpty())
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("The page had no text (HTTP %1).").arg(status);
+    }
+    if (offset > text.size())
+    {
+        if (ok)
+            *ok = true;
+        return QString::fromUtf8("Page text is %1 characters. offset is past the end.")
+            .arg(text.size());
+    }
+    const QString slice = text.mid(offset - 1, limit);
+    QString report = QString::fromUtf8("url: %1\ncharacters: %2\noffset: %3\n\n%4")
+                         .arg(urlText)
+                         .arg(text.size())
+                         .arg(offset)
+                         .arg(slice);
+    if (offset - 1 + slice.size() < text.size())
+    {
+        report += QString::fromUtf8(
+                      "\n\nMore text remains. Call read_page again with offset %1.")
+                      .arg(offset + slice.size());
+    }
+    if (ok)
+        *ok = true;
+    return report;
 }
 
 //----------------------------------------------
