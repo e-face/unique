@@ -21,11 +21,11 @@ AdminQuietInstCmd=%AdminQuietInstCmd%
 UserQuietInstCmd=%UserQuietInstCmd%
 SourceFiles=SourceFiles
 [Strings]
-InstallPrompt=Install Unique 0.3.1 (32-bit)?
+InstallPrompt=Install Unique 0.4.3 (32-bit)?
 DisplayLicense=
-FinishMessage=Unique 0.3.1 (32-bit) setup finished.
-TargetName=D:\PROJECTS\github\unique\dist\Unique-0.3.1-win32-setup.exe
-FriendlyName=Unique 0.3.1 (32-bit)
+FinishMessage=Unique 0.4.3 (32-bit) setup finished.
+TargetName=D:\PROJECTS\github\unique\dist\Unique-0.4.3-win32-setup.exe
+FriendlyName=Unique 0.4.3 (32-bit)
 AppLaunched=setup.cmd
 PostInstallCmd=<None>
 AdminQuietInstCmd=

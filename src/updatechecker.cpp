@@ -15,6 +15,7 @@
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QSysInfo>
 #include <QProgressBar>
 #include <QStatusBar>
 #include <QTimer>
@@ -25,6 +26,13 @@
 //----------------------------------------------
 
 static const int kRequestTimeoutMs = 20000;
+
+//----------------------------------------------
+
+static QString operatingSystemName()
+{
+    return QSysInfo::productType().trimmed().toLower();
+}
 
 //----------------------------------------------
 
@@ -133,6 +141,65 @@ static bool launchMsiThenApp(const QString &msiPath)
 
 //----------------------------------------------
 
+static QString shellQuote(QString value)
+{
+    value.replace(QLatin1Char('\''), QLatin1String("'\\''"));
+    return QLatin1Char('\'') + value + QLatin1Char('\'');
+}
+
+//----------------------------------------------
+
+static bool launchDebThenApp(const QString &debPath)
+{
+    const QString scriptPath = QDir(QDir::tempPath()).filePath(
+        QLatin1String("unique-update.sh"));
+    const QString quotedDeb = shellQuote(debPath);
+    const QString quotedScript = shellQuote(scriptPath);
+
+    QString body;
+    body += QLatin1String("#!/bin/sh\n");
+    body += QLatin1String("deadline=$(($(date +%s) + 30))\n");
+    body += QLatin1String("while [ \"$(date +%s)\" -lt \"$deadline\" ]; do\n");
+    body += QLatin1String("    alive=0\n");
+    body += QLatin1String("    for comm in /proc/[0-9]*/comm; do\n");
+    body += QLatin1String("        if [ \"$(cat \"$comm\" 2>/dev/null)\" = Unique ]; then\n");
+    body += QLatin1String("            alive=1\n");
+    body += QLatin1String("            break\n");
+    body += QLatin1String("        fi\n");
+    body += QLatin1String("    done\n");
+    body += QLatin1String("    if [ \"$alive\" = 0 ]; then\n");
+    body += QLatin1String("        break\n");
+    body += QLatin1String("    fi\n");
+    body += QLatin1String("    sleep 0.2\n");
+    body += QLatin1String("done\n");
+    body += QLatin1String("sleep 1\n");
+    body += QLatin1String("pkexec /usr/bin/apt install -y ") + quotedDeb + QLatin1String("\n");
+    body += QLatin1String("if [ -x /opt/unique/Unique ]; then\n");
+    body += QLatin1String("    setsid /opt/unique/Unique >/dev/null 2>&1 &\n");
+    body += QLatin1String("fi\n");
+    body += QLatin1String("rm -f ") + quotedScript + QLatin1String("\n");
+
+    QFile script(scriptPath);
+    if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    script.write(body.toUtf8());
+    if (!script.flush())
+    {
+        script.close();
+        QFile::remove(scriptPath);
+        return false;
+    }
+    script.close();
+    script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner
+                          | QFile::ReadGroup | QFile::ExeGroup
+                          | QFile::ReadOther | QFile::ExeOther);
+    return QProcess::startDetached(QString::fromLatin1("/bin/sh"),
+                                   QStringList() << scriptPath,
+                                   QFileInfo(debPath).absolutePath());
+}
+
+//----------------------------------------------
+
 static void styleMessageBox(QMessageBox *box)
 {
     if (!box)
@@ -224,7 +291,7 @@ QUrl UpdateChecker::checkUrl() const
     query.addQueryItem(QLatin1String("operation"), QLatin1String("chkupd"));
     query.addQueryItem(QLatin1String("app"), QLatin1String("unique"));
     query.addQueryItem(QLatin1String("ver"), QString::fromUtf8(UNIQUE_APP_VERSION));
-    query.addQueryItem(QLatin1String("os"), QLatin1String("windows"));
+    query.addQueryItem(QLatin1String("os"), operatingSystemName());
 
     QString arch;
     if (sizeof(void *) == 4)
@@ -467,6 +534,10 @@ void UpdateChecker::handleDownload(const QByteArray &data, const QByteArray &con
     {
         started = launchMsiThenApp(path);
     }
+    else if (suffix.compare(QLatin1String("deb"), Qt::CaseInsensitive) == 0)
+    {
+        started = launchDebThenApp(path);
+    }
     else
     {
         started = QProcess::startDetached(
@@ -604,9 +675,15 @@ QString UpdateChecker::writeInstaller(const QByteArray &data, const QString &fil
         name.clear();
     if (name.isEmpty())
     {
+#if defined(Q_OS_LINUX)
+        name = QFileInfo(QString::fromUtf8("unique-%1.deb").arg(_newVersion)).fileName();
+        if (name.isEmpty())
+            name = QString::fromUtf8("unique-setup.deb");
+#else
         name = QFileInfo(QString::fromUtf8("unique-%1-setup.exe").arg(_newVersion)).fileName();
         if (name.isEmpty())
             name = QString::fromUtf8("unique-setup.exe");
+#endif
     }
 
     const QString dirPath = QDir::tempPath();
