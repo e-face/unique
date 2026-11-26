@@ -60,6 +60,7 @@ HEADERS += \
     src/qwencloudclient.h \
     src/settingspage.h \
     src/settingstools.h \
+    src/speechinput.h \
     src/teamschemaeditor.h \
     src/toolcatalog.h \
     src/toolplugin.h \
@@ -113,6 +114,7 @@ SOURCES += \
     src/qwencloudclient.cpp \
     src/settingspage.cpp \
     src/settingstools.cpp \
+    src/speechinput.cpp \
     src/teamschemaeditor.cpp \
     src/toolcatalog.cpp \
     src/updatechecker.cpp \
@@ -131,6 +133,8 @@ win32:RC_ICONS = icon/unique.ico
 # plugins/cad/cad.pro builds bin/plugins/cad.dll. Unique loads it from plugins/.
 # Qt 5.9 loads OpenSSL 1.0.2 (libeay32.dll / ssleay32.dll) from the executable directory.
 # The 64-bit kit uses its own OpenSSL. PDFium in this tree is 32-bit.
+win32: LIBS += -lwinmm
+
 win32 {
     equals(QT_ARCH, x86_64) {
         OPENSSL_DIR = $$PWD/3rdparty/openssl-win64

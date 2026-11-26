@@ -77,7 +77,7 @@ AppLocale *AppLocale::instance()
 
 QString AppLocale::stringsRoot()
 {
-    return AppSettings::configDir() + QString::fromUtf8("/strings");
+    return AppSettings::bundledConfigDir() + QString::fromUtf8("/strings");
 }
 
 //----------------------------------------------

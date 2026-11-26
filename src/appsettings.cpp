@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QSet>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QtGlobal>
 #include <QUuid>
@@ -200,12 +201,69 @@ QString AppSettings::projectStoreDir(QString projectRoot)
 
 //----------------------------------------------
 
+QString AppSettings::bundledConfigDir()
+{
+    return QDir::cleanPath(QCoreApplication::applicationDirPath()
+                           + QString::fromUtf8("/config"));
+}
+
+//----------------------------------------------
+
+static void copyConfigFileIfMissing(const QString &fromDir, const QString &toDir,
+                                    const QString &name)
+{
+    const QString from = QDir(fromDir).filePath(name);
+    const QString to = QDir(toDir).filePath(name);
+    if (!QFileInfo::exists(from) || QFileInfo::exists(to))
+        return;
+    QDir().mkpath(toDir);
+    QFile::copy(from, to);
+}
+
+static void migrateWritableConfig(const QString &dest)
+{
+    static bool done = false;
+    if (done)
+        return;
+    done = true;
+    const QString source = AppSettings::bundledConfigDir();
+    if (QDir::cleanPath(source) == QDir::cleanPath(dest))
+        return;
+    QDir().mkpath(dest);
+    copyConfigFileIfMissing(source, dest, QString::fromUtf8("settings.ini"));
+    copyConfigFileIfMissing(source, dest, QString::fromUtf8("mcp.ini"));
+    const QString aiFrom = QDir(source).filePath(QString::fromUtf8("ai"));
+    const QString aiTo = QDir(dest).filePath(QString::fromUtf8("ai"));
+    QDir fromDir(aiFrom);
+    if (!fromDir.exists())
+        return;
+    QDir().mkpath(aiTo);
+    const QStringList names = fromDir.entryList(QStringList() << QString::fromUtf8("*.ini"),
+                                                 QDir::Files);
+    foreach (const QString &name, names)
+        copyConfigFileIfMissing(aiFrom, aiTo, name);
+}
+
+//----------------------------------------------
+
 QString AppSettings::configDir()
 {
-    const QString dir = QDir::cleanPath(QCoreApplication::applicationDirPath()
-                                        + QString::fromUtf8("/config"));
+#if defined(Q_OS_WIN)
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (base.isEmpty())
+    {
+        base = QDir::cleanPath(QDir::homePath()
+                               + QString::fromUtf8("/AppData/Roaming/Unique/Unique"));
+    }
+    const QString dir = QDir::cleanPath(base + QString::fromUtf8("/config"));
+    migrateWritableConfig(dir);
     QDir().mkpath(dir);
     return dir;
+#else
+    const QString dir = bundledConfigDir();
+    QDir().mkpath(dir);
+    return dir;
+#endif
 }
 
 //----------------------------------------------

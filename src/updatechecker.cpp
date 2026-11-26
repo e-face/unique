@@ -5,16 +5,23 @@
 #include "mainwindow.h"
 //----------------------------------------------
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QDialog>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMainWindow>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QPushButton>
 #include <QSysInfo>
 #include <QProgressBar>
 #include <QStatusBar>
@@ -22,6 +29,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVariant>
+#include <QVBoxLayout>
 
 //----------------------------------------------
 
@@ -33,6 +41,20 @@ static QString operatingSystemName()
 {
     return QSysInfo::productType().trimmed().toLower();
 }
+
+//----------------------------------------------
+
+static QString readUpdatePageUrl();
+
+//----------------------------------------------
+
+#if defined(Q_OS_LINUX)
+static QString packagedOsToken()
+{
+    const QUrl page(readUpdatePageUrl());
+    return QUrlQuery(page).queryItemValue(QLatin1String("os")).trimmed().toLower();
+}
+#endif
 
 //----------------------------------------------
 
@@ -149,53 +171,273 @@ static QString shellQuote(QString value)
 
 //----------------------------------------------
 
-static bool launchDebThenApp(const QString &debPath)
+static bool writeExecutable(const QString &path, const QString &body)
 {
-    const QString scriptPath = QDir(QDir::tempPath()).filePath(
-        QLatin1String("unique-update.sh"));
-    const QString quotedDeb = shellQuote(debPath);
-    const QString quotedScript = shellQuote(scriptPath);
-
-    QString body;
-    body += QLatin1String("#!/bin/sh\n");
-    body += QLatin1String("deadline=$(($(date +%s) + 30))\n");
-    body += QLatin1String("while [ \"$(date +%s)\" -lt \"$deadline\" ]; do\n");
-    body += QLatin1String("    alive=0\n");
-    body += QLatin1String("    for comm in /proc/[0-9]*/comm; do\n");
-    body += QLatin1String("        if [ \"$(cat \"$comm\" 2>/dev/null)\" = Unique ]; then\n");
-    body += QLatin1String("            alive=1\n");
-    body += QLatin1String("            break\n");
-    body += QLatin1String("        fi\n");
-    body += QLatin1String("    done\n");
-    body += QLatin1String("    if [ \"$alive\" = 0 ]; then\n");
-    body += QLatin1String("        break\n");
-    body += QLatin1String("    fi\n");
-    body += QLatin1String("    sleep 0.2\n");
-    body += QLatin1String("done\n");
-    body += QLatin1String("sleep 1\n");
-    body += QLatin1String("pkexec /usr/bin/apt install -y ") + quotedDeb + QLatin1String("\n");
-    body += QLatin1String("if [ -x /opt/unique/Unique ]; then\n");
-    body += QLatin1String("    setsid /opt/unique/Unique >/dev/null 2>&1 &\n");
-    body += QLatin1String("fi\n");
-    body += QLatin1String("rm -f ") + quotedScript + QLatin1String("\n");
-
-    QFile script(scriptPath);
-    if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return false;
-    script.write(body.toUtf8());
-    if (!script.flush())
+    const QByteArray bytes = body.toUtf8();
+    if (file.write(bytes) != qint64(bytes.size()) || !file.flush())
     {
-        script.close();
-        QFile::remove(scriptPath);
+        file.close();
+        QFile::remove(path);
         return false;
     }
-    script.close();
-    script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner
-                          | QFile::ReadGroup | QFile::ExeGroup
-                          | QFile::ReadOther | QFile::ExeOther);
-    return QProcess::startDetached(QString::fromLatin1("/bin/sh"),
-                                   QStringList() << scriptPath,
-                                   QFileInfo(debPath).absolutePath());
+    file.close();
+    return file.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner
+                               | QFile::ReadGroup | QFile::ExeGroup
+                               | QFile::ReadOther | QFile::ExeOther);
+}
+
+//----------------------------------------------
+
+static bool writeOwnerFile(const QString &path, const QByteArray &bytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+    if (file.write(bytes) != qint64(bytes.size()) || !file.flush())
+    {
+        file.close();
+        QFile::remove(path);
+        return false;
+    }
+    file.close();
+    return file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+}
+
+//----------------------------------------------
+
+static QString publishedPackagePath(const QString &packagePath)
+{
+    const QFile::Permissions openPerms =
+        QFile::ReadOwner | QFile::WriteOwner | QFile::ReadGroup | QFile::ReadOther;
+    QFile::setPermissions(packagePath, openPerms);
+    const QString published = QString::fromLatin1("/var/tmp/")
+                              + QFileInfo(packagePath).fileName();
+    if (QFileInfo(published).absoluteFilePath()
+        == QFileInfo(packagePath).absoluteFilePath())
+        return published;
+    QFile::remove(published);
+    if (!QFile::copy(packagePath, published))
+        return QFileInfo(packagePath).absoluteFilePath();
+    QFile::setPermissions(published, openPerms);
+    return QFileInfo(published).absoluteFilePath();
+}
+
+//----------------------------------------------
+
+static QString debInstallBody(const QString &debPath)
+{
+    const QString quoted = shellQuote(debPath);
+    QString body;
+    body += QLatin1String("export DEBIAN_FRONTEND=noninteractive\n");
+    body += QLatin1String("if ! dpkg -i ") + quoted + QLatin1String("\n");
+    body += QLatin1String("then\n");
+    body += QLatin1String("    apt-get install -f -y || exit 1\n");
+    body += QLatin1String("    dpkg -i ") + quoted + QLatin1String(" || exit 1\n");
+    body += QLatin1String("fi\n");
+    return body;
+}
+
+//----------------------------------------------
+
+static QString rpmInstallBody(const QString &rpmPath)
+{
+    const QString quoted = shellQuote(rpmPath);
+    QString body;
+    body += QLatin1String("if [ -x /usr/bin/dnf ]; then\n");
+    body += QLatin1String("    dnf install -y ") + quoted + QLatin1String(" || exit 1\n");
+    body += QLatin1String("elif [ -x /usr/bin/yum ]; then\n");
+    body += QLatin1String("    yum install -y ") + quoted + QLatin1String(" || exit 1\n");
+    body += QLatin1String("else\n");
+    body += QLatin1String("    rpm -Uvh ") + quoted + QLatin1String(" || exit 1\n");
+    body += QLatin1String("fi\n");
+    return body;
+}
+
+//----------------------------------------------
+
+bool UpdateChecker::installLinuxPackage(const QString &packagePath,
+                                        const QString &rootInstall)
+{
+    // Ask for install rights while this window is still open. Polkit cannot
+    // find a session after the program has already exited, and the old copy
+    // would just be started again.
+    endDownloadProgress();
+    const QString rootPath = QDir(QDir::tempPath()).filePath(
+        QLatin1String("unique-update-root.sh"));
+    const QString userPath = QDir(QDir::tempPath()).filePath(
+        QLatin1String("unique-update.sh"));
+    const QString authPath = QDir(QDir::tempPath()).filePath(
+        QLatin1String("unique-update.authorized"));
+    const QString statusPath = QDir(QDir::tempPath()).filePath(
+        QLatin1String("unique-update.status"));
+    const QString passPath = QDir(QDir::tempPath()).filePath(
+        QLatin1String("unique-update.pass"));
+    const QString askPath = QDir(QDir::tempPath()).filePath(
+        QLatin1String("unique-update-askpass.sh"));
+    const QString logPath = QDir(QDir::tempPath()).filePath(
+        QLatin1String("unique-update.err"));
+    QFile::remove(authPath);
+    QFile::remove(statusPath);
+    QFile::remove(logPath);
+    QFile::remove(passPath);
+    QFile::remove(askPath);
+
+    const bool havePkexec = QFile::exists(QLatin1String("/usr/bin/pkexec"));
+    const bool haveSudo = QFile::exists(QLatin1String("/usr/bin/sudo"));
+    const QString failText = tr("Не удалось установить обновление.");
+    if (!havePkexec && !haveSudo)
+    {
+        showMessage(QMessageBox::Warning, failText);
+        return false;
+    }
+
+    // A detached installer has no terminal. sudo -n then answers
+    // "a password is required" even when this process could use sudo.
+    // Ask here and hand the password to sudo -A. The helper only prints
+    // the file; the password is not placed on the command line.
+    bool usePassword = false;
+    QString password;
+    if (!havePkexec && haveSudo)
+    {
+        if (!askInstallPassword(&password))
+        {
+            showMessage(QMessageBox::Warning, tr("Обновление отменено."));
+            return false;
+        }
+        if (!writeOwnerFile(passPath, password.toUtf8() + '\n'))
+        {
+            showMessage(QMessageBox::Warning, failText);
+            return false;
+        }
+        password.fill(QLatin1Char('x'));
+        password.clear();
+        usePassword = true;
+    }
+    const qint64 pid = QCoreApplication::applicationPid();
+
+    QString root;
+    root += QLatin1String("#!/bin/sh\n");
+    root += QLatin1String("exec </dev/null\n");
+    root += QLatin1String("/bin/rm -f ") + shellQuote(passPath) + QLatin1String("\n");
+    root += QLatin1String("touch ") + shellQuote(authPath) + QLatin1String("\n");
+    root += QLatin1String("pid=") + QString::number(pid) + QLatin1String("\n");
+    root += QLatin1String("deadline=$(($(date +%s) + 60))\n");
+    root += QLatin1String("while kill -0 \"$pid\" 2>/dev/null; do\n");
+    root += QLatin1String("    if [ \"$(date +%s)\" -ge \"$deadline\" ]; then\n");
+    root += QLatin1String("        exit 1\n");
+    root += QLatin1String("    fi\n");
+    root += QLatin1String("    sleep 1\n");
+    root += QLatin1String("done\n");
+    root += QLatin1String("sleep 1\n");
+    root += rootInstall;
+    root += QLatin1String("exit 0\n");
+
+    const QString quotedRoot = shellQuote(rootPath);
+    const QString quotedLog = shellQuote(logPath);
+    const QString quotedPass = shellQuote(passPath);
+    const QString quotedAsk = shellQuote(askPath);
+    QString ask;
+    if (usePassword)
+    {
+        ask += QLatin1String("#!/bin/sh\n");
+        ask += QLatin1String("/bin/cat ") + quotedPass
+                + QLatin1String(" 2>/dev/null || exit 1\n");
+    }
+    QString user;
+    user += QLatin1String("#!/bin/sh\n");
+    user += QLatin1String("if [ -x /usr/bin/pkexec ]; then\n");
+    user += QLatin1String("    pkexec /bin/sh ") + quotedRoot
+            + QLatin1String(" >> ") + quotedLog + QLatin1String(" 2>&1\n");
+    user += QLatin1String("    rc=$?\n");
+    user += QLatin1String("elif [ -x /usr/bin/sudo ]; then\n");
+    user += QLatin1String("    if [ -f ") + quotedPass + QLatin1String(" ]; then\n");
+    user += QLatin1String("        SUDO_ASKPASS=") + quotedAsk
+            + QLatin1String(" sudo -A -k -- /bin/sh ") + quotedRoot
+            + QLatin1String(" >> ") + quotedLog + QLatin1String(" 2>&1\n");
+    user += QLatin1String("        rc=$?\n");
+    user += QLatin1String("        /bin/rm -f ") + quotedPass + QLatin1String("\n");
+    user += QLatin1String("    else\n");
+    user += QLatin1String("        echo \"sudo: a password is required\" >> ")
+            + quotedLog + QLatin1String("\n");
+    user += QLatin1String("        rc=1\n");
+    user += QLatin1String("    fi\n");
+    user += QLatin1String("else\n");
+    user += QLatin1String("    echo \"pkexec: not found\" >> ") + quotedLog + QLatin1String("\n");
+    user += QLatin1String("    echo \"sudo: not found\" >> ") + quotedLog + QLatin1String("\n");
+    user += QLatin1String("    rc=127\n");
+    user += QLatin1String("fi\n");
+    user += QLatin1String("echo \"$rc\" > ") + shellQuote(statusPath) + QLatin1String("\n");
+    user += QLatin1String("if [ \"$rc\" -eq 0 ]; then\n");
+    user += QLatin1String("    if [ -x /opt/unique/Unique ]; then\n");
+    user += QLatin1String("        setsid /opt/unique/Unique >/dev/null 2>&1 &\n");
+    user += QLatin1String("    fi\n");
+    user += QLatin1String("elif [ -f ") + shellQuote(authPath) + QLatin1String(" ]; then\n");
+    user += QLatin1String("    if [ -x /usr/bin/zenity ]; then\n");
+    user += QLatin1String("        zenity --error --text=") + shellQuote(failText) + QLatin1String("\n");
+    user += QLatin1String("    elif [ -x /usr/bin/kdialog ]; then\n");
+    user += QLatin1String("        kdialog --error ") + shellQuote(failText) + QLatin1String("\n");
+    user += QLatin1String("    fi\n");
+    user += QLatin1String("    if [ -x /opt/unique/Unique ]; then\n");
+    user += QLatin1String("        setsid /opt/unique/Unique >/dev/null 2>&1 &\n");
+    user += QLatin1String("    fi\n");
+    user += QLatin1String("fi\n");
+    user += QLatin1String("rm -f ") + shellQuote(userPath) + QLatin1String(" ")
+            + shellQuote(rootPath) + QLatin1String(" ")
+            + shellQuote(authPath) + QLatin1String(" ")
+            + shellQuote(passPath) + QLatin1String(" ")
+            + shellQuote(askPath) + QLatin1String("\n");
+
+    const QString shownPath = QDir::toNativeSeparators(packagePath);
+    if (!writeExecutable(rootPath, root) || !writeExecutable(userPath, user)
+        || (usePassword && !writeExecutable(askPath, ask)))
+    {
+        QFile::remove(passPath);
+        QFile::remove(askPath);
+        showMessage(QMessageBox::Warning,
+                    tr("Не удалось запустить установщик: %1").arg(shownPath));
+        return false;
+    }
+    if (!QProcess::startDetached(QString::fromLatin1("/bin/sh"),
+                                 QStringList() << userPath,
+                                 QFileInfo(packagePath).absolutePath()))
+    {
+        QFile::remove(passPath);
+        QFile::remove(askPath);
+        showMessage(QMessageBox::Warning,
+                    tr("Не удалось запустить установщик: %1").arg(shownPath));
+        return false;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 300000)
+    {
+        if (QFile::exists(authPath))
+            return true;
+        if (QFile::exists(statusPath))
+        {
+            QString detail;
+            QFile err(logPath);
+            if (err.open(QIODevice::ReadOnly))
+                detail = QString::fromUtf8(err.readAll()).trimmed();
+            if (detail.size() > 400)
+                detail = detail.right(400).trimmed();
+            if (detail.isEmpty())
+                showMessage(QMessageBox::Warning, tr("Обновление отменено."));
+            else
+                showMessage(QMessageBox::Warning,
+                            tr("Не удалось установить обновление.")
+                            + QLatin1Char('\n') + detail);
+            return false;
+        }
+        QApplication::processEvents(QEventLoop::AllEvents, 100);
+    }
+    showMessage(QMessageBox::Warning, failText);
+    return false;
 }
 
 //----------------------------------------------
@@ -284,23 +526,66 @@ void UpdateChecker::check(bool manual)
 
 //----------------------------------------------
 
+static QString readUpdatePageUrl()
+{
+    const QString path = QCoreApplication::applicationDirPath()
+                         + QString::fromLatin1("/config/update.ini");
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    while (!file.atEnd())
+    {
+        QString line = QString::fromUtf8(file.readLine());
+        if (line.endsWith(QLatin1Char('\n')))
+            line.chop(1);
+        if (line.endsWith(QLatin1Char('\r')))
+            line.chop(1);
+        const QString trimmed = line.trimmed();
+        if (trimmed.isEmpty()
+            || trimmed.startsWith(QLatin1Char(';'))
+            || trimmed.startsWith(QLatin1Char('#'))
+            || trimmed.startsWith(QLatin1Char('[')))
+        {
+            continue;
+        }
+        const int eq = line.indexOf(QLatin1Char('='));
+        if (eq <= 0)
+            continue;
+        if (line.left(eq).trimmed() != QLatin1String("url"))
+            continue;
+        return line.mid(eq + 1).trimmed();
+    }
+    return QString();
+}
+
+//----------------------------------------------
+
 QUrl UpdateChecker::checkUrl() const
 {
-    QUrl url(QLatin1String("https://www.e-face.org/softcraft/api/"));
-    QUrlQuery query;
-    query.addQueryItem(QLatin1String("operation"), QLatin1String("chkupd"));
-    query.addQueryItem(QLatin1String("app"), QLatin1String("unique"));
-    query.addQueryItem(QLatin1String("ver"), QString::fromUtf8(UNIQUE_APP_VERSION));
-    query.addQueryItem(QLatin1String("os"), operatingSystemName());
-
-    QString arch;
-    if (sizeof(void *) == 4)
-        arch = QLatin1String("32");
-    else if (sizeof(void *) == 8)
-        arch = QLatin1String("64");
-    else
-        arch = QString::number(int(sizeof(void *) * 8));
-    query.addQueryItem(QLatin1String("arch"), arch);
+    QString page = readUpdatePageUrl();
+    if (page.isEmpty())
+        page = QString::fromLatin1("https://www.e-face.org/softcraft/api/");
+    QUrl url(page);
+    QUrlQuery query(url);
+    if (!query.hasQueryItem(QLatin1String("operation")))
+        query.addQueryItem(QLatin1String("operation"), QLatin1String("chkupd"));
+    if (!query.hasQueryItem(QLatin1String("app")))
+        query.addQueryItem(QLatin1String("app"), QLatin1String("unique"));
+    if (!query.hasQueryItem(QLatin1String("ver")))
+        query.addQueryItem(QLatin1String("ver"), QString::fromUtf8(UNIQUE_APP_VERSION));
+    if (!query.hasQueryItem(QLatin1String("os")))
+        query.addQueryItem(QLatin1String("os"), operatingSystemName());
+    if (!query.hasQueryItem(QLatin1String("arch")))
+    {
+        QString arch;
+        if (sizeof(void *) == 4)
+            arch = QLatin1String("32");
+        else if (sizeof(void *) == 8)
+            arch = QLatin1String("64");
+        else
+            arch = QString::number(int(sizeof(void *) * 8));
+        query.addQueryItem(QLatin1String("arch"), arch);
+    }
     url.setQuery(query);
     return url;
 }
@@ -536,7 +821,21 @@ void UpdateChecker::handleDownload(const QByteArray &data, const QByteArray &con
     }
     else if (suffix.compare(QLatin1String("deb"), Qt::CaseInsensitive) == 0)
     {
-        started = launchDebThenApp(path);
+        if (!installLinuxPackage(path, debInstallBody(publishedPackagePath(path))))
+        {
+            setIdle();
+            return;
+        }
+        started = true;
+    }
+    else if (suffix.compare(QLatin1String("rpm"), Qt::CaseInsensitive) == 0)
+    {
+        if (!installLinuxPackage(path, rpmInstallBody(publishedPackagePath(path))))
+        {
+            setIdle();
+            return;
+        }
+        started = true;
     }
     else
     {
@@ -676,9 +975,12 @@ QString UpdateChecker::writeInstaller(const QByteArray &data, const QString &fil
     if (name.isEmpty())
     {
 #if defined(Q_OS_LINUX)
-        name = QFileInfo(QString::fromUtf8("unique-%1.deb").arg(_newVersion)).fileName();
+        const QString ext = (packagedOsToken() == QLatin1String("redhat"))
+                            ? QString::fromLatin1("rpm")
+                            : QString::fromLatin1("deb");
+        name = QFileInfo(QString::fromUtf8("unique-%1.%2").arg(_newVersion, ext)).fileName();
         if (name.isEmpty())
-            name = QString::fromUtf8("unique-setup.deb");
+            name = QString::fromUtf8("unique-setup.") + ext;
 #else
         name = QFileInfo(QString::fromUtf8("unique-%1-setup.exe").arg(_newVersion)).fileName();
         if (name.isEmpty())
@@ -821,6 +1123,50 @@ int UpdateChecker::askYesNo(const QString &title, const QString &text)
     box.setButtonText(QMessageBox::No, tr("Нет"));
     styleMessageBox(&box);
     return box.exec();
+}
+
+//----------------------------------------------
+
+bool UpdateChecker::askInstallPassword(QString *password)
+{
+    if (!password)
+        return false;
+    QDialog dialog(_dialogParent);
+    dialog.setWindowTitle(tr("Обновление"));
+    dialog.setModal(true);
+    QLabel *label = new QLabel(tr("Введите пароль для установки обновления."), &dialog);
+    label->setWordWrap(true);
+    QLineEdit *edit = new QLineEdit(&dialog);
+    edit->setEchoMode(QLineEdit::Password);
+    QPushButton *ok = new QPushButton(tr("ОК"), &dialog);
+    QPushButton *cancel = new QPushButton(tr("Отмена"), &dialog);
+    ok->setDefault(true);
+    QHBoxLayout *buttons = new QHBoxLayout;
+    buttons->addStretch();
+    buttons->addWidget(ok);
+    buttons->addWidget(cancel);
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    layout->addWidget(label);
+    layout->addWidget(edit);
+    layout->addLayout(buttons);
+    connect(ok, SIGNAL(clicked()), &dialog, SLOT(accept()));
+    connect(cancel, SIGNAL(clicked()), &dialog, SLOT(reject()));
+    connect(edit, SIGNAL(returnPressed()), &dialog, SLOT(accept()));
+    AppSettings *settings = AppSettings::instance();
+    dialog.setStyleSheet(QString::fromUtf8(
+                             "QDialog { background:%1; color:%2; }"
+                             "QLabel { color:%2; background:transparent; }"
+                             "QLineEdit { background:%3; color:%2; border:1px solid %4; padding:4px; }"
+                             "QPushButton { background:%3; color:%2; border:1px solid %4;"
+                             "  border-radius:4px; padding:5px 12px; }")
+                             .arg(settings->panelColor().name(),
+                                  settings->textColor().name(),
+                                  settings->inputColor().name(),
+                                  settings->borderColor().name()));
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    *password = edit->text();
+    return true;
 }
 
 //----------------------------------------------

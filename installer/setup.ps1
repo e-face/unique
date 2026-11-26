@@ -17,12 +17,12 @@ if (-not (Test-Admin))
 
 $here = Split-Path -Parent $PSCommandPath
 $arch = (Get-Content -LiteralPath (Join-Path $here 'arch.txt') -Encoding ASCII).Trim()
-$version = '0.4.3'
+$version = '0.4.9'
 if ($arch -eq 'x64')
 {
     $dest = Join-Path $env:ProgramFiles 'Unique'
     $display = 'Unique (64-bit)'
-    $keyName = 'Unique-0.4.3-x64'
+    $keyName = 'Unique-0.4.9-x64'
 }
 else
 {
@@ -31,7 +31,7 @@ else
         $programFiles32 = $env:ProgramFiles
     $dest = Join-Path $programFiles32 'Unique'
     $display = 'Unique (32-bit)'
-    $keyName = 'Unique-0.4.3-x86'
+    $keyName = 'Unique-0.4.9-x86'
 }
 
 New-Item -ItemType Directory -Force -Path $dest | Out-Null

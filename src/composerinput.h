@@ -52,6 +52,8 @@ public:
     void applyTheme(QString panel, QString input, QString text, QString border,
                     QString muted, QString accent);
     void retranslateUi();
+    /** Finish voice input and keep the recognized words in the editor. */
+    void commitSpeech();
 
 signals:
     void sendClicked();
@@ -78,6 +80,10 @@ private slots:
     void sltReasoningToggled(bool checked);
     void sltDisplayOptionsChanged();
     void sltVcsActivated(int index);
+    void sltMicClicked();
+    void sltSpeechTranscript(QString text);
+    void sltSpeechFailed(QString message);
+    void sltSpeechListening(bool on);
 
 private:
     friend class ComposerEditor;
@@ -89,6 +95,8 @@ private:
     void updateAttachStripVisible();
     void setDropHighlight(bool on);
     bool handleChildDrag(QEvent *event);
+    void applySpeechText(const QString &said);
+    void updateMicAppearance();
 
     QWidget        *_attachHost;
     QHBoxLayout    *_attachLayout;
@@ -102,7 +110,12 @@ private:
     QCheckBox      *_autoApproveBox;
     QCheckBox      *_reasoningBox;
     QPushButton    *_stopButton;
+    QPushButton    *_micButton;
     QPushButton    *_sendButton;
+    class SpeechInput *_speech;
+    QString         _speechPrefix;
+    QString         _micIdleColor;
+    QString         _micLiveColor;
     bool            _dropHighlight;
     QStringList     _attachmentPaths;
 };

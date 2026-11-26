@@ -8,6 +8,7 @@
 #include <QIcon>
 #include <QTimer>
 #ifdef Q_OS_WIN
+#include <shlobj.h>
 #include <stdio.h>
 #include <wchar.h>
 #include <windows.h>
@@ -18,12 +19,16 @@
 #ifdef Q_OS_WIN
 static LONG WINAPI uniqueCrashFilter(EXCEPTION_POINTERS *info)
 {
+    wchar_t appData[MAX_PATH];
+    wchar_t dir[MAX_PATH];
     wchar_t path[MAX_PATH];
-    if (GetModuleFileNameW(0, path, MAX_PATH) == 0)
+    if (SHGetFolderPathW(0, CSIDL_APPDATA | CSIDL_FLAG_CREATE, 0, 0, appData) != S_OK)
         return EXCEPTION_CONTINUE_SEARCH;
-    wchar_t *slash = wcsrchr(path, L'\\');
-    if (slash)
-        wcscpy(slash + 1, L"Unique_crash.log");
+    _snwprintf(dir, MAX_PATH, L"%s\\Unique", appData);
+    CreateDirectoryW(dir, 0);
+    _snwprintf(dir, MAX_PATH, L"%s\\Unique\\Unique", appData);
+    CreateDirectoryW(dir, 0);
+    _snwprintf(path, MAX_PATH, L"%s\\Unique_crash.log", dir);
     FILE *file = _wfopen(path, L"w");
     if (file && info && info->ExceptionRecord)
     {

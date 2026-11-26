@@ -203,7 +203,11 @@ public:
     static AppSettings *instance();
 
     /**
-     * @brief config directory next to the executable (created when needed).
+     * @brief Shipped config next to the executable. Strings and update.ini stay here.
+     */
+    static QString bundledConfigDir();
+    /**
+     * @brief Writable config. On Windows this is AppData, not the install folder.
      */
     static QString configDir();
     /**

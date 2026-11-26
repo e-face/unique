@@ -60,6 +60,8 @@ private:
     QString unknownText(const QString &reason, bool download) const;
     QString installerFileName(const QByteArray &disposition) const;
     QString writeInstaller(const QByteArray &data, const QString &fileName) const;
+    bool installLinuxPackage(const QString &packagePath, const QString &rootInstall);
+    bool askInstallPassword(QString *password);
     void showStatus(const QString &text);
     void beginDownloadProgress();
     void updateDownloadProgress(qint64 received, qint64 total);

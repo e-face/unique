@@ -2,6 +2,7 @@
 //----------------------------------------------
 #include "applocale.h"
 #include "appsettings.h"
+#include "speechinput.h"
 //----------------------------------------------
 #include <QApplication>
 #include <QCheckBox>
@@ -20,6 +21,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMimeData>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -27,6 +29,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QStyleOption>
+#include <QTextCursor>
 #include <QToolButton>
 #include <QRegExp>
 #include <QUrl>
@@ -209,7 +212,11 @@ ComposerInput::ComposerInput(QWidget *parent)
     , _autoApproveBox(0)
     , _reasoningBox(0)
     , _stopButton(0)
+    , _micButton(0)
     , _sendButton(0)
+    , _speech(0)
+    , _micIdleColor(QString::fromUtf8("#222222"))
+    , _micLiveColor(QString::fromUtf8("#ffffff"))
     , _dropHighlight(false)
 {
     setObjectName(QString::fromUtf8("composerInput"));
@@ -304,6 +311,13 @@ ComposerInput::ComposerInput(QWidget *parent)
     _stopButton->setEnabled(false);
     connect(_stopButton, SIGNAL(clicked()), this, SIGNAL(stopClicked()));
 
+    _micButton = new QPushButton(this);
+    _micButton->setObjectName(QString::fromUtf8("composerMic"));
+    _micButton->setFixedSize(36, 36);
+    _micButton->setIconSize(QSize(22, 22));
+    _micButton->setCursor(Qt::PointingHandCursor);
+    connect(_micButton, SIGNAL(clicked()), this, SLOT(sltMicClicked()));
+
     _sendButton = new QPushButton(this);
     _sendButton->setObjectName(QString::fromUtf8("composerSend"));
     _sendButton->setFixedSize(36, 36);
@@ -324,6 +338,7 @@ ComposerInput::ComposerInput(QWidget *parent)
     toolbar->addWidget(_reasoningBox, 0, Qt::AlignVCenter);
     toolbar->addWidget(_autoApproveBox, 0, Qt::AlignVCenter);
     toolbar->addWidget(_stopButton, 0, Qt::AlignVCenter);
+    toolbar->addWidget(_micButton, 0, Qt::AlignVCenter);
     toolbar->addWidget(_sendButton, 0, Qt::AlignVCenter);
 
     QVBoxLayout *root = new QVBoxLayout(this);
@@ -417,6 +432,7 @@ void ComposerInput::retranslateUi()
         _sendButton->setToolTip(L("composer.send"));
         _sendButton->setAccessibleName(L("composer.send"));
     }
+    updateMicAppearance();
     if (_capsHint)
     {
         const QString cur = _capsHint->text().trimmed();
@@ -475,6 +491,8 @@ bool ComposerInput::isSendEnabled() const
 
 void ComposerInput::setComposerEnabled(bool on)
 {
+    if (!on)
+        commitSpeech();
     setEnabled(on);
     if (_editor)
         _editor->setEnabled(on);
@@ -575,6 +593,13 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
         "  font-size:16px; font-weight:bold; padding:0; }"
         "QPushButton#composerSend:hover { background:%4; }"
         "QPushButton#composerSend:disabled { background:%5; color:%1; }"
+        "QPushButton#composerMic {"
+        "  background:transparent; color:%3; border:1px solid %2; border-radius:18px;"
+        "  padding:0; }"
+        "QPushButton#composerMic:hover { background:%6; }"
+        "QPushButton#composerMic:disabled { color:%5; border-color:%5; }"
+        "QPushButton#composerMic[listening=\"true\"] {"
+        "  background:%4; border:none; }"
         "QCheckBox#composerAutoApprove, QCheckBox#composerReasoning {"
         "  background:transparent; color:%3; spacing:6px; }"
         "QCheckBox#composerAutoApprove::indicator, QCheckBox#composerReasoning::indicator {"
@@ -589,6 +614,9 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
         "QPushButton#composerStop:disabled { color:%5; border-color:%5; }"
         "QFrame#composerChip { background:transparent; border:none; }")
                       .arg(input, border, text, accent, muted, hover));
+    _micIdleColor = text;
+    _micLiveColor = input;
+    updateMicAppearance();
     // Chips use the input-field fill so the attachment strip does not stand out.
     setProperty("chipFill", input);
     update();
@@ -967,4 +995,106 @@ void ComposerInput::paintEvent(QPaintEvent *event)
         p.drawRoundedRect(rect().adjusted(2, 2, -2, -2), 16, 16);
     }
     Q_UNUSED(event);
+}
+
+//----------------------------------------------
+
+void ComposerInput::commitSpeech()
+{
+    if (!_speech || !_speech->isListening())
+        return;
+    const QString said = _speech->stop();
+    applySpeechText(said);
+}
+
+//----------------------------------------------
+
+void ComposerInput::applySpeechText(const QString &said)
+{
+    if (!_editor)
+        return;
+    QString text = _speechPrefix;
+    const QString body = said.trimmed();
+    if (!text.isEmpty() && !body.isEmpty()
+        && !text.endsWith(QLatin1Char(' '))
+        && !text.endsWith(QLatin1Char('\n')))
+        text += QLatin1Char(' ');
+    text += body;
+    _editor->setPlainText(text);
+    QTextCursor cursor = _editor->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    _editor->setTextCursor(cursor);
+}
+
+//----------------------------------------------
+
+void ComposerInput::updateMicAppearance()
+{
+    if (!_micButton)
+        return;
+    const bool listening = _speech && _speech->isListening();
+    _micButton->setProperty("listening", listening);
+    const QColor color(listening ? _micLiveColor : _micIdleColor);
+    _micButton->setIcon(microphoneIcon(color));
+    _micButton->setToolTip(listening ? L("composer.micStop") : L("composer.mic"));
+    _micButton->setAccessibleName(L("composer.mic"));
+    _micButton->style()->unpolish(_micButton);
+    _micButton->style()->polish(_micButton);
+}
+
+//----------------------------------------------
+
+void ComposerInput::sltMicClicked()
+{
+    if (!_speech)
+    {
+        _speech = new SpeechInput(this);
+        connect(_speech, SIGNAL(transcriptChanged(QString)),
+                this, SLOT(sltSpeechTranscript(QString)));
+        connect(_speech, SIGNAL(failed(QString)),
+                this, SLOT(sltSpeechFailed(QString)));
+        connect(_speech, SIGNAL(listeningChanged(bool)),
+                this, SLOT(sltSpeechListening(bool)));
+    }
+    if (_speech->isListening())
+    {
+        commitSpeech();
+        return;
+    }
+    _speechPrefix = _editor ? _editor->toPlainText() : QString();
+    QString error;
+    if (!_speech->start(&error))
+    {
+        updateMicAppearance();
+        if (!error.isEmpty())
+            QMessageBox::warning(this, L("composer.mic"), error);
+        return;
+    }
+    updateMicAppearance();
+}
+
+//----------------------------------------------
+
+void ComposerInput::sltSpeechTranscript(QString text)
+{
+    if (!_speech || !_speech->isListening())
+        return;
+    applySpeechText(text);
+}
+
+//----------------------------------------------
+
+void ComposerInput::sltSpeechFailed(QString message)
+{
+    updateMicAppearance();
+    if (!message.isEmpty())
+        QMessageBox::warning(this, L("composer.mic"), message);
+}
+
+//----------------------------------------------
+
+void ComposerInput::sltSpeechListening(bool on)
+{
+    Q_UNUSED(on);
+    updateMicAppearance();
 }

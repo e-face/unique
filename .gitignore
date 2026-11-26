@@ -42,3 +42,5 @@ ___project___/
 **/ai/*.ini
 .DS_Store
 Thumbs.db
+# Local Vosk library and speech models (downloaded, not part of the source tree).
+3rdparty/vosk/

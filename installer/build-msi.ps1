@@ -1,4 +1,4 @@
-﻿# Builds Unique-0.4.3-win32.msi and Unique-0.4.3-win64.msi from dist/stage-win32 and dist/stage-win64.
+﻿# Builds Unique-0.4.9-win32.msi and Unique-0.4.9-win64.msi from dist/stage-win32 and dist/stage-win64.
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
@@ -176,7 +176,7 @@ $builds = @(
         Stage = Join-Path $repo 'dist\stage-win32'
         UpgradeCode = '7C4E9A2B-1F6D-4C8A-9E3B-5A1D8F0C2E64'
         ShortcutGuid = '3B8E1D54-6A27-4F9C-8D10-C5E7A9B24F31'
-        Out = Join-Path $repo 'dist\Unique-0.4.3-win32.msi'
+        Out = Join-Path $repo 'dist\Unique-0.4.9-win32.msi'
     },
     @{
         Arch = 'x64'
@@ -186,7 +186,7 @@ $builds = @(
         Stage = Join-Path $repo 'dist\stage-win64'
         UpgradeCode = '9E2A6C48-5B71-4D0F-A3E8-1C7F5D9B60A2'
         ShortcutGuid = '6F1C4A90-8D32-4E5B-B7A1-2D8E0C5F93B6'
-        Out = Join-Path $repo 'dist\Unique-0.4.3-win64.msi'
+        Out = Join-Path $repo 'dist\Unique-0.4.9-win64.msi'
     }
 )
 

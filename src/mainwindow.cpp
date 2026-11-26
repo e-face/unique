@@ -2605,6 +2605,7 @@ void MainWindow::sltComposerSend()
 {
     if (!_composer || !_composerBar || !_composerBar->isSendEnabled())
         return;
+    _composerBar->commitSpeech();
     QString text = _composer->toPlainText();
     const LlmProfile profile = profileForComposerTarget();
     const ModelCapabilities caps =
