@@ -67,6 +67,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMouseEvent>
 #include <QPalette>
 #include <QMessageBox>
 #include <QMetaObject>
@@ -90,6 +91,7 @@
 #include <QTimer>
 #include <QThread>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QPainter>
@@ -97,6 +99,11 @@
 #include <QPen>
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <windowsx.h>
+#include <dwmapi.h>
+#endif
+#ifndef Q_OS_WIN
+#include <QDesktopWidget>
 #endif
 
 //----------------------------------------------
@@ -369,6 +376,210 @@ private:
 
 //----------------------------------------------
 
+class CaptionButton : public QToolButton
+{
+public:
+    enum Kind
+    {
+        Min,
+        Max,
+        Close
+    };
+
+    explicit CaptionButton(Kind kind, QWidget *parent = 0)
+        : QToolButton(parent)
+        , _kind(kind)
+        , _maximized(false)
+    {
+        setAutoRaise(true);
+        setFocusPolicy(Qt::NoFocus);
+        setCursor(Qt::ArrowCursor);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        setFixedWidth(46);
+        setMinimumHeight(32);
+    }
+
+    void setMaximized(bool on)
+    {
+        if (_maximized == on)
+            return;
+        _maximized = on;
+        update();
+    }
+
+protected:
+    virtual void enterEvent(QEvent *event)
+    {
+        QToolButton::enterEvent(event);
+        update();
+    }
+
+    virtual void leaveEvent(QEvent *event)
+    {
+        QToolButton::leaveEvent(event);
+        update();
+    }
+
+    virtual void paintEvent(QPaintEvent *)
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const bool hot = underMouse();
+        if (hot)
+        {
+            if (_kind == Close)
+                painter.fillRect(rect(), QColor(0xC4, 0x2B, 0x1C));
+            else
+            {
+                const QColor wash = AppSettings::instance()->isLightTheme()
+                                    ? QColor(0, 0, 0, 18)
+                                    : QColor(255, 255, 255, 28);
+                painter.fillRect(rect(), wash);
+            }
+        }
+        QColor ink = AppSettings::instance()->textColor();
+        if (_kind == Close && hot)
+            ink = QColor(Qt::white);
+        painter.setPen(QPen(ink, 1.15));
+        const int cx = width() / 2;
+        const int cy = height() / 2;
+        const int s = 5;
+        if (_kind == Min)
+        {
+            painter.drawLine(cx - s, cy, cx + s, cy);
+            return;
+        }
+        if (_kind == Close)
+        {
+            painter.drawLine(cx - s, cy - s, cx + s, cy + s);
+            painter.drawLine(cx - s, cy + s, cx + s, cy - s);
+            return;
+        }
+        if (_maximized)
+        {
+            painter.drawRect(cx - s + 2, cy - s, 8, 8);
+            painter.drawLine(cx - s, cy - s + 3, cx - s + 2, cy - s + 3);
+            painter.drawLine(cx - s, cy - s + 3, cx - s, cy + s);
+            painter.drawLine(cx - s, cy + s, cx + s - 2, cy + s);
+            return;
+        }
+        painter.drawRect(cx - s, cy - s, s * 2, s * 2);
+    }
+
+private:
+    Kind _kind;
+    bool _maximized;
+};
+
+//----------------------------------------------
+
+class CaptionIconButton : public QToolButton
+{
+public:
+    explicit CaptionIconButton(QWidget *parent = 0)
+        : QToolButton(parent)
+    {
+        setAutoRaise(true);
+        setFocusPolicy(Qt::NoFocus);
+        setCursor(Qt::ArrowCursor);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        setFixedWidth(28);
+        setMinimumHeight(32);
+        setIcon(AppIcons::appIcon());
+        setIconSize(QSize(16, 16));
+        setObjectName(QString::fromUtf8("captionIcon"));
+    }
+
+protected:
+    virtual void mouseDoubleClickEvent(QMouseEvent *event)
+    {
+        if (event->button() == Qt::LeftButton && window())
+        {
+            window()->close();
+            event->accept();
+            return;
+        }
+        QToolButton::mouseDoubleClickEvent(event);
+    }
+};
+
+//----------------------------------------------
+
+class WindowCaptionBar : public QWidget
+{
+public:
+    explicit WindowCaptionBar(QWidget *parent = 0)
+        : QWidget(parent)
+        , _drag(false)
+    {
+        setAttribute(Qt::WA_StyledBackground, true);
+        setObjectName(QString::fromUtf8("windowCaption"));
+        setMinimumHeight(32);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setCursor(Qt::ArrowCursor);
+    }
+
+protected:
+    virtual void mousePressEvent(QMouseEvent *event)
+    {
+#ifndef Q_OS_WIN
+        if (event->button() == Qt::LeftButton && window() && !window()->isMaximized()
+            && !window()->property("linuxMaximized").toBool())
+        {
+            _drag = true;
+            _offset = event->globalPos() - window()->frameGeometry().topLeft();
+            event->accept();
+            return;
+        }
+#else
+        Q_UNUSED(event);
+#endif
+        QWidget::mousePressEvent(event);
+    }
+
+    virtual void mouseMoveEvent(QMouseEvent *event)
+    {
+#ifndef Q_OS_WIN
+        if (_drag && window() && (event->buttons() & Qt::LeftButton))
+        {
+            window()->move(event->globalPos() - _offset);
+            event->accept();
+            return;
+        }
+#else
+        Q_UNUSED(event);
+#endif
+        QWidget::mouseMoveEvent(event);
+    }
+
+    virtual void mouseReleaseEvent(QMouseEvent *event)
+    {
+        _drag = false;
+        QWidget::mouseReleaseEvent(event);
+    }
+
+    virtual void mouseDoubleClickEvent(QMouseEvent *event)
+    {
+#ifndef Q_OS_WIN
+        if (event->button() == Qt::LeftButton && window())
+        {
+            QMetaObject::invokeMethod(window(), "sltCaptionMax");
+            event->accept();
+            return;
+        }
+#else
+        Q_UNUSED(event);
+#endif
+        QWidget::mouseDoubleClickEvent(event);
+    }
+
+private:
+    bool   _drag;
+    QPoint _offset;
+};
+
+//----------------------------------------------
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , _workspace(new ProjectWorkspace(this))
@@ -455,7 +666,21 @@ MainWindow::MainWindow(QWidget *parent)
     , _updateChecker(new UpdateChecker(this))
     , _updateCheckScheduled(false)
     , _vcsBusy(false)
+    , _captionBar(0)
+    , _menuBar(0)
+    , _captionMin(0)
+    , _captionMax(0)
+    , _captionClose(0)
+    , _captionIcon(0)
+    , _resizeEdge(0)
+    , _hoverEdge(0)
+    , _edgeCursorOn(false)
+    , _linuxMaximized(false)
+    , _winFrameReady(false)
 {
+#ifndef Q_OS_WIN
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+#endif
     setWindowTitle(QString::fromUtf8("%1 %2")
                        .arg(QString::fromUtf8(UNIQUE_APP_NAME),
                             QString::fromUtf8(UNIQUE_APP_VERSION)));
@@ -464,6 +689,7 @@ MainWindow::MainWindow(QWidget *parent)
     setStatusBar(new PillStatusBar(this));
 
     setupUi();
+    setupCaption();
     setupMenus();
     connect(AppLocale::instance(), SIGNAL(languageChanged(QString)),
             this, SLOT(sltLocaleChanged(QString)));
@@ -484,6 +710,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     sltBusyChanged(false);
     statusBar()->showMessage(tr("Откройте или создайте проект"));
+#ifndef Q_OS_WIN
+    qApp->installEventFilter(this);
+#endif
 }
 
 //----------------------------------------------
@@ -514,6 +743,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
+#ifdef Q_OS_WIN
+    polishWindowsFrame();
+#endif
     // One automatic check after the window is shown: in the constructor the window is not visible yet.
     if (!_updateCheckScheduled && _updateChecker)
     {
@@ -560,6 +792,10 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         return QMainWindow::eventFilter(watched, event);
     }
 
+#ifndef Q_OS_WIN
+    if (event && handleLinuxFrameEvent(watched, event))
+        return true;
+#endif
     return QMainWindow::eventFilter(watched, event);
 }
 
@@ -3958,9 +4194,408 @@ void MainWindow::setupUi()
 
 //----------------------------------------------
 
+void MainWindow::setupCaption()
+{
+    _captionBar = new WindowCaptionBar(this);
+    _menuBar = new QMenuBar(_captionBar);
+    _menuBar->setNativeMenuBar(false);
+    _menuBar->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+
+    _captionMin = new CaptionButton(CaptionButton::Min, _captionBar);
+    _captionMax = new CaptionButton(CaptionButton::Max, _captionBar);
+    _captionClose = new CaptionButton(CaptionButton::Close, _captionBar);
+    _captionIcon = new CaptionIconButton(_captionBar);
+    _captionMin->setObjectName(QString::fromUtf8("captionMin"));
+    _captionMax->setObjectName(QString::fromUtf8("captionMax"));
+    _captionClose->setObjectName(QString::fromUtf8("captionClose"));
+    _captionMin->setToolTip(tr("Свернуть окно"));
+    _captionMax->setToolTip(tr("Развернуть окно"));
+    _captionClose->setToolTip(tr("Закрыть"));
+    connect(_captionMin, SIGNAL(clicked()), this, SLOT(sltCaptionMin()));
+    connect(_captionMax, SIGNAL(clicked()), this, SLOT(sltCaptionMax()));
+    connect(_captionClose, SIGNAL(clicked()), this, SLOT(sltCaptionClose()));
+    connect(_captionIcon, SIGNAL(clicked()), this, SLOT(sltCaptionIcon()));
+
+    QHBoxLayout *layout = new QHBoxLayout(_captionBar);
+    layout->setContentsMargins(8, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(_captionIcon);
+    layout->addSpacing(2);
+    layout->addWidget(_menuBar, 0, Qt::AlignVCenter);
+    layout->addStretch(1);
+    layout->addWidget(_captionMin);
+    layout->addWidget(_captionMax);
+    layout->addWidget(_captionClose);
+    setMenuWidget(_captionBar);
+    setMinimumSize(640, 420);
+}
+
+//----------------------------------------------
+
+void MainWindow::updateCaptionButtons()
+{
+    const bool maxed = isMaximized() || _linuxMaximized;
+    if (CaptionButton *button = static_cast<CaptionButton *>(_captionMax))
+        button->setMaximized(maxed);
+    if (_captionMax)
+        _captionMax->setToolTip(maxed ? tr("Восстановить окно") : tr("Развернуть окно"));
+}
+
+//----------------------------------------------
+
+void MainWindow::sltCaptionMin()
+{
+    showMinimized();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltCaptionMax()
+{
+#ifdef Q_OS_WIN
+    if (isMaximized())
+        showNormal();
+    else
+        showMaximized();
+#else
+    if (_linuxMaximized)
+    {
+        _linuxMaximized = false;
+        setProperty("linuxMaximized", false);
+        setGeometry(_linuxRestore);
+        updateCaptionButtons();
+        return;
+    }
+    _linuxRestore = geometry();
+    _linuxMaximized = true;
+    setProperty("linuxMaximized", true);
+    setGeometry(QApplication::desktop()->availableGeometry(this));
+    updateCaptionButtons();
+#endif
+}
+
+//----------------------------------------------
+
+void MainWindow::sltCaptionClose()
+{
+    close();
+}
+
+//----------------------------------------------
+
+void MainWindow::sltCaptionIcon()
+{
+    if (!_captionIcon)
+        return;
+    const QPoint pos = _captionIcon->mapToGlobal(QPoint(0, _captionIcon->height()));
+#ifdef Q_OS_WIN
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    HMENU menu = GetSystemMenu(hwnd, FALSE);
+    if (!menu)
+        return;
+    const bool maxed = IsZoomed(hwnd) || isMaximized();
+    EnableMenuItem(menu, SC_RESTORE, MF_BYCOMMAND | (maxed ? MF_ENABLED : MF_GRAYED));
+    EnableMenuItem(menu, SC_MOVE, MF_BYCOMMAND | (maxed ? MF_GRAYED : MF_ENABLED));
+    EnableMenuItem(menu, SC_SIZE, MF_BYCOMMAND | (maxed ? MF_GRAYED : MF_ENABLED));
+    EnableMenuItem(menu, SC_MAXIMIZE, MF_BYCOMMAND | (maxed ? MF_GRAYED : MF_ENABLED));
+    EnableMenuItem(menu, SC_MINIMIZE, MF_BYCOMMAND | MF_ENABLED);
+    SetForegroundWindow(hwnd);
+    const int command = TrackPopupMenu(menu,
+                                       TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+                                       pos.x(), pos.y(), 0, hwnd, 0);
+    if (command)
+        SendMessage(hwnd, WM_SYSCOMMAND, command, 0);
+#else
+    QMenu menu(this);
+    menu.addAction(tr("Свернуть окно"), this, SLOT(sltCaptionMin()));
+    menu.addAction(_linuxMaximized ? tr("Восстановить окно") : tr("Развернуть окно"),
+                   this, SLOT(sltCaptionMax()));
+    menu.addSeparator();
+    menu.addAction(tr("Закрыть"), this, SLOT(sltCaptionClose()));
+    menu.exec(pos);
+#endif
+}
+
+//----------------------------------------------
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    if (event && event->type() == QEvent::WindowStateChange)
+        updateCaptionButtons();
+    QMainWindow::changeEvent(event);
+}
+
+//----------------------------------------------
+
+#ifndef Q_OS_WIN
+
+int MainWindow::frameEdgeAt(const QPoint &global) const
+{
+    if (isMaximized() || _linuxMaximized || isFullScreen())
+        return 0;
+    const int margin = 6;
+    const QRect frame = frameGeometry();
+    if (!frame.adjusted(-margin, -margin, margin, margin).contains(global))
+        return 0;
+    int edge = 0;
+    if (global.x() <= frame.left() + margin)
+        edge |= 1;
+    else if (global.x() >= frame.right() - margin)
+        edge |= 2;
+    if (global.y() <= frame.top() + margin)
+        edge |= 4;
+    else if (global.y() >= frame.bottom() - margin)
+        edge |= 8;
+    return edge;
+}
+
+//----------------------------------------------
+
+void MainWindow::updateEdgeCursor(int edge)
+{
+    if (edge == _hoverEdge)
+        return;
+    if (_edgeCursorOn)
+    {
+        QApplication::restoreOverrideCursor();
+        _edgeCursorOn = false;
+    }
+    _hoverEdge = edge;
+    if (!edge)
+        return;
+    Qt::CursorShape shape = Qt::ArrowCursor;
+    if (edge == (1 | 4) || edge == (2 | 8))
+        shape = Qt::SizeFDiagCursor;
+    else if (edge == (2 | 4) || edge == (1 | 8))
+        shape = Qt::SizeBDiagCursor;
+    else if (edge == 1 || edge == 2)
+        shape = Qt::SizeHorCursor;
+    else
+        shape = Qt::SizeVerCursor;
+    QApplication::setOverrideCursor(shape);
+    _edgeCursorOn = true;
+}
+
+//----------------------------------------------
+
+void MainWindow::applyEdgeResize(const QPoint &global)
+{
+    const QPoint delta = global - _edgeAnchor;
+    QRect next = _edgeGeom;
+    const int minW = 640;
+    const int minH = 420;
+    if (_resizeEdge & 1)
+    {
+        const int right = next.right();
+        int left = next.left() + delta.x();
+        if (right - left + 1 < minW)
+            left = right - minW + 1;
+        next.setLeft(left);
+    }
+    if (_resizeEdge & 2)
+    {
+        int right = next.right() + delta.x();
+        if (right - next.left() + 1 < minW)
+            right = next.left() + minW - 1;
+        next.setRight(right);
+    }
+    if (_resizeEdge & 4)
+    {
+        const int bottom = next.bottom();
+        int top = next.top() + delta.y();
+        if (bottom - top + 1 < minH)
+            top = bottom - minH + 1;
+        next.setTop(top);
+    }
+    if (_resizeEdge & 8)
+    {
+        int bottom = next.bottom() + delta.y();
+        if (bottom - next.top() + 1 < minH)
+            bottom = next.top() + minH - 1;
+        next.setBottom(bottom);
+    }
+    setGeometry(next);
+}
+
+//----------------------------------------------
+
+bool MainWindow::handleLinuxFrameEvent(QObject *watched, QEvent *event)
+{
+    const QEvent::Type type = event->type();
+    if (type != QEvent::MouseMove && type != QEvent::MouseButtonPress
+        && type != QEvent::MouseButtonRelease && type != QEvent::Leave)
+        return false;
+    if (QApplication::activePopupWidget())
+        return false;
+    QWidget *widget = qobject_cast<QWidget *>(watched);
+    if (!widget)
+        return false;
+    if (widget != this && !isAncestorOf(widget))
+        return false;
+
+    if (type == QEvent::Leave)
+    {
+        if (widget == this && !_resizeEdge)
+            updateEdgeCursor(0);
+        return false;
+    }
+
+    QMouseEvent *mouse = static_cast<QMouseEvent *>(event);
+    if (_resizeEdge)
+    {
+        if (type == QEvent::MouseMove)
+        {
+            applyEdgeResize(mouse->globalPos());
+            return true;
+        }
+        if (type == QEvent::MouseButtonRelease && mouse->button() == Qt::LeftButton)
+        {
+            _resizeEdge = 0;
+            releaseMouse();
+            updateEdgeCursor(frameEdgeAt(mouse->globalPos()));
+            return true;
+        }
+        return false;
+    }
+
+    const int edge = frameEdgeAt(mouse->globalPos());
+    if (type == QEvent::MouseMove)
+    {
+        updateEdgeCursor(edge);
+        return false;
+    }
+    if (type == QEvent::MouseButtonPress && edge && mouse->button() == Qt::LeftButton)
+    {
+        _resizeEdge = edge;
+        _edgeAnchor = mouse->globalPos();
+        _edgeGeom = geometry();
+        updateEdgeCursor(edge);
+        grabMouse();
+        return true;
+    }
+    return false;
+}
+
+#endif
+
+//----------------------------------------------
+
+#ifdef Q_OS_WIN
+
+void MainWindow::polishWindowsFrame()
+{
+    // A hung window otherwise gets a native title drawn over the custom caption.
+    DisableProcessWindowsGhosting();
+    if (_winFrameReady)
+        return;
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (!hwnd)
+        return;
+    LONG style = GetWindowLong(hwnd, GWL_STYLE);
+    style |= WS_THICKFRAME | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU;
+    SetWindowLong(hwnd, GWL_STYLE, style);
+    const MARGINS margins = {0, 0, 0, 1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+    SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    _winFrameReady = true;
+}
+
+//----------------------------------------------
+
+int MainWindow::captionHitTest(int x, int y) const
+{
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    RECT bounds;
+    if (!GetWindowRect(hwnd, &bounds))
+        return HTCLIENT;
+
+    const bool zoomed = IsZoomed(hwnd) || isMaximized();
+    int border = GetSystemMetrics(SM_CXSIZEFRAME);
+    if (border < 4)
+        border = 4;
+#ifndef SM_CXPADDEDBORDER
+#define SM_CXPADDEDBORDER 92
+#endif
+    if (const int pad = GetSystemMetrics(SM_CXPADDEDBORDER))
+        border += pad;
+
+    const int side = border;
+    const int topBand = 4;
+    const bool left = x >= bounds.left && x < bounds.left + side;
+    const bool right = x < bounds.right && x >= bounds.right - side;
+    const bool top = y >= bounds.top && y < bounds.top + topBand;
+    const bool bottom = y < bounds.bottom && y >= bounds.bottom - side;
+    if (!zoomed)
+    {
+        if (top && left)
+            return HTTOPLEFT;
+        if (top && right)
+            return HTTOPRIGHT;
+        if (bottom && left)
+            return HTBOTTOMLEFT;
+        if (bottom && right)
+            return HTBOTTOMRIGHT;
+        if (left)
+            return HTLEFT;
+        if (right)
+            return HTRIGHT;
+        if (top)
+            return HTTOP;
+        if (bottom)
+            return HTBOTTOM;
+    }
+
+    if (!_captionBar)
+        return HTCLIENT;
+    const QPoint local = mapFromGlobal(QPoint(x, y));
+    const QRect cap(_captionBar->mapTo(this, QPoint(0, 0)), _captionBar->size());
+    if (!cap.contains(local))
+        return HTCLIENT;
+    QWidget *child = childAt(local);
+    if (!child || child == _captionBar)
+        return HTCAPTION;
+    return HTCLIENT;
+}
+
+//----------------------------------------------
+
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, long *result)
+{
+    if (eventType != QByteArrayLiteral("windows_generic_MSG") || !message)
+        return QMainWindow::nativeEvent(eventType, message, result);
+    MSG *msg = static_cast<MSG *>(message);
+    if (msg->message == WM_NCCALCSIZE && msg->wParam)
+    {
+        NCCALCSIZE_PARAMS *params = reinterpret_cast<NCCALCSIZE_PARAMS *>(msg->lParam);
+        if (params && IsZoomed(msg->hwnd))
+        {
+            MONITORINFO info;
+            info.cbSize = sizeof(info);
+            if (GetMonitorInfo(MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST), &info))
+                params->rgrc[0] = info.rcWork;
+        }
+        if (result)
+            *result = 0;
+        return true;
+    }
+    if (msg->message == WM_NCHITTEST)
+    {
+        const int hit = captionHitTest(GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam));
+        if (result)
+            *result = hit;
+        return true;
+    }
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
+#endif
+
+//----------------------------------------------
+
 void MainWindow::setupMenus()
 {
-    _fileMenu = menuBar()->addMenu(L("menu.file"));
+    _fileMenu = _menuBar->addMenu(L("menu.file"));
 
     _newProjectMenu = _fileMenu->addMenu(L("menu.file.new"));
     _newProjectDirectoryAction = _newProjectMenu->addAction(L("menu.file.new.directory"));
@@ -4002,7 +4637,7 @@ void MainWindow::setupMenus()
     _quitAction->setShortcut(QKeySequence::Quit);
     connect(_quitAction, SIGNAL(triggered()), this, SLOT(close()));
 
-    _windowMenu = menuBar()->addMenu(L("menu.window"));
+    _windowMenu = _menuBar->addMenu(L("menu.window"));
 
     _windowChatAction = _windowMenu->addAction(L("menu.window.mainChat"));
     connect(_windowChatAction, SIGNAL(triggered()), this, SLOT(sltShowChat()));
@@ -4013,7 +4648,7 @@ void MainWindow::setupMenus()
     _windowJournalAction = _windowMenu->addAction(L("menu.window.journal"));
     connect(_windowJournalAction, SIGNAL(triggered()), this, SLOT(sltShowJournal()));
 
-    _workerMenu = menuBar()->addMenu(L("menu.worker"));
+    _workerMenu = _menuBar->addMenu(L("menu.worker"));
     _workerCompactAction = _workerMenu->addAction(L("menu.worker.compact"));
     _workerCompactAction->setToolTip(
         tr("Свернуть старую историю в краткое содержание, "
@@ -4027,7 +4662,7 @@ void MainWindow::setupMenus()
             this, SLOT(sltWorkerForceStop()));
     updateWorkerMenu();
 
-    _projectMenu = menuBar()->addMenu(L("menu.project"));
+    _projectMenu = _menuBar->addMenu(L("menu.project"));
 
     _projectSchemaAction = _projectMenu->addAction(L("menu.project.schema"));
     connect(_projectSchemaAction, SIGNAL(triggered()),
@@ -4041,7 +4676,7 @@ void MainWindow::setupMenus()
     connect(_projectSettingsAction, SIGNAL(triggered()),
             this, SLOT(sltShowProjectSettings()));
 
-    _vcsMenu = menuBar()->addMenu(L("menu.vcs"));
+    _vcsMenu = _menuBar->addMenu(L("menu.vcs"));
     _vcsCommitAction = _vcsMenu->addAction(L("vcs.commit"));
     connect(_vcsCommitAction, SIGNAL(triggered()), this, SLOT(sltVcsCommit()));
     _vcsPushAction = _vcsMenu->addAction(L("vcs.push"));
@@ -4056,7 +4691,7 @@ void MainWindow::setupMenus()
     _vcsAddAction = _vcsMenu->addAction(L("menu.vcs.add"));
     connect(_vcsAddAction, SIGNAL(triggered()), this, SLOT(sltVcsAdd()));
 
-    _helpMenu = menuBar()->addMenu(L("menu.help"));
+    _helpMenu = _menuBar->addMenu(L("menu.help"));
     _helpStatsAction = _helpMenu->addAction(L("menu.help.stats"));
     connect(_helpStatsAction, SIGNAL(triggered()), this, SLOT(sltShowStatistics()));
     _helpMenu->addSeparator();
@@ -5528,8 +6163,14 @@ void MainWindow::applyAppStyle()
     setStyleSheet(QString::fromUtf8(
         "QMainWindow { background:%1; color:%2; }"
         "QMainWindow::separator { background:%6; width:1px; height:1px; }"
-        "QMenuBar { background:%1; color:%2; border:none;"
-        "  border-bottom:1px solid %6; padding:2px 6px; }"
+        "QMenuBar { background:transparent; color:%2; border:none; padding:0 4px; }"
+        "QWidget#windowCaption { background:%1; border:none; border-bottom:1px solid %6; }"
+        "QToolButton#captionIcon { background:transparent; border:none; border-radius:0;"
+        "  padding:0; min-width:28px; max-width:28px; }"
+        "QToolButton#captionIcon:hover { background:%HOVER%; }"
+        "QToolButton#captionMin, QToolButton#captionMax, QToolButton#captionClose {"
+        "  background:transparent; border:none; border-radius:0; padding:0;"
+        "  min-width:46px; max-width:46px; }"
         "QMenuBar::item { background:transparent; padding:6px 10px; border-radius:6px; }"
         "QMenuBar::item:selected { background:%HOVER%; }"
         "QMenu { background:%3; color:%2; border:1px solid %6; border-radius:8px;"
@@ -5621,6 +6262,15 @@ void MainWindow::applyAppStyle()
                       .replace(QString::fromUtf8("%SCROLL%"), scroll)
                       .replace(QString::fromUtf8("%HOVER%"), hover)
                       .replace(QString::fromUtf8("%CHAT%"), chatBg));
+
+    if (_captionBar)
+        _captionBar->update();
+    if (_captionMin)
+        _captionMin->update();
+    if (_captionMax)
+        _captionMax->update();
+    if (_captionClose)
+        _captionClose->update();
 
     if (_projectDock)
         _projectDock->applyTheme();

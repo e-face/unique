@@ -25,6 +25,7 @@ class QCheckBox;
 class QCloseEvent;
 class QEvent;
 class QMenu;
+class QMenuBar;
 class QLabel;
 class QPlainTextEdit;
 class QProgressBar;
@@ -33,6 +34,7 @@ class QShowEvent;
 class QTabWidget;
 class QThread;
 class QTimer;
+class QToolButton;
 class SessionTabBar;
 class SettingsPage;
 class TeamSchemaDialog;
@@ -65,7 +67,11 @@ public:
 protected:
     virtual void closeEvent(QCloseEvent *event);
     virtual void showEvent(QShowEvent *event);
+    virtual void changeEvent(QEvent *event);
     virtual bool eventFilter(QObject *watched, QEvent *event);
+#ifdef Q_OS_WIN
+    virtual bool nativeEvent(const QByteArray &eventType, void *message, long *result);
+#endif
 
 private slots:
     void sltClear();
@@ -164,6 +170,10 @@ private slots:
     void sltVcsNewBranch();
     void sltVcsSwitchBranch();
     void sltVcsAdd();
+    void sltCaptionMin();
+    void sltCaptionMax();
+    void sltCaptionClose();
+    void sltCaptionIcon();
 
 private:
     /**
@@ -181,6 +191,8 @@ private:
     void updateGraphThumb();
     void setupUi();
     void setupMenus();
+    void setupCaption();
+    void updateCaptionButtons();
     void retranslateUi();
     ChatSession *createSession(QString id, QString title);
     void attachSessionUi(ChatSession *session);
@@ -376,6 +388,31 @@ private:
     UpdateChecker       *_updateChecker;
     bool                 _updateCheckScheduled;
     bool                 _vcsBusy;
+    QWidget             *_captionBar;
+    QMenuBar            *_menuBar;
+    QToolButton         *_captionMin;
+    QToolButton         *_captionMax;
+    QToolButton         *_captionClose;
+    QToolButton         *_captionIcon;
+    int                  _resizeEdge;
+    int                  _hoverEdge;
+    bool                 _edgeCursorOn;
+    bool                 _linuxMaximized;
+    bool                 _winFrameReady;
+    QPoint               _edgeAnchor;
+    QRect                _edgeGeom;
+    QRect                _linuxRestore;
+
+#ifndef Q_OS_WIN
+    int frameEdgeAt(const QPoint &global) const;
+    void updateEdgeCursor(int edge);
+    void applyEdgeResize(const QPoint &global);
+    bool handleLinuxFrameEvent(QObject *watched, QEvent *event);
+#endif
+#ifdef Q_OS_WIN
+    void polishWindowsFrame();
+    int captionHitTest(int x, int y) const;
+#endif
 };
 
 #endif // MAINWINDOW_H
