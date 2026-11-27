@@ -16,6 +16,7 @@ class QHBoxLayout;
 class QLabel;
 class QMimeData;
 class QPlainTextEdit;
+class QProgressBar;
 class QPushButton;
 class QScrollArea;
 class QToolButton;
@@ -49,6 +50,8 @@ public:
     void setSchemaAvailable(bool on);
     void setVersionControl(bool visible, QString branch, bool enabled);
     void setReadOnly(bool on);
+    /** Narrow fill under the editor. No caption. Hidden when @p visible is false. */
+    void setContextUsage(int usedTokens, int limitTokens, bool visible);
     void applyTheme(QString panel, QString input, QString text, QString border,
                     QString muted, QString accent);
     void retranslateUi();
@@ -97,11 +100,16 @@ private:
     bool handleChildDrag(QEvent *event);
     void applySpeechText(const QString &said);
     void updateMicAppearance();
+    void refreshContextMeter();
 
     QWidget        *_attachHost;
     QHBoxLayout    *_attachLayout;
     QScrollArea    *_attachScroll;
     QPlainTextEdit *_editor;
+    QProgressBar   *_contextMeter;
+    int             _contextUsed;
+    int             _contextLimit;
+    bool            _contextVisible;
     QLabel         *_capsHint;
     QToolButton    *_plusButton;
     QPushButton    *_schemaButton;

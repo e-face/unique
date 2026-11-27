@@ -17,7 +17,6 @@ class QLabel;
 class QLineEdit;
 class QTimer;
 class QPlainTextEdit;
-class QProgressBar;
 class QPushButton;
 class QScrollArea;
 class QTextBrowser;
@@ -149,9 +148,8 @@ public:
     void setReportToParentVisible(bool visible);
     void applyTheme();
     bool hasActivePrompt() const;
-    void setContextRowVisible(bool visible);
-    /** Context meter and compress button. Interrupt stays. */
-    void setContextMeterVisible(bool visible);
+    /** Readable plan text from a plan_work call. Empty when the call has no plan. */
+    static QString formatPlanWorkBody(const QString &arguments);
     /**
      * @brief Worker state that overrides the agent's reading
      *        (waiting for children, permission, or the queue). Empty clears it.
@@ -177,7 +175,6 @@ signals:
 public slots:
     void retranslateUi();
     void sltBusyChanged(bool busy);
-    void sltContextUsageChanged(int usedTokens, int limitTokens);
     void sltCompactingChanged(bool compacting);
 
 protected:
@@ -224,6 +221,10 @@ private:
     void recordDisplay(QString kind, QString title, QString text,
                        QString authorKey = QString());
     void replayDisplayItem(const ChatDisplayItem &item);
+    /** Consecutive function calls share one collapsed card. */
+    void appendServiceToolCall(const QString &kind, const QString &body);
+    ChatMessageFrame *lastMessageFrame() const;
+    QList<ChatDisplayItem> coalesceFeed(const QList<ChatDisplayItem> &items) const;
     void trimOldBubbles();
     void setActivity(QString text);
     void refreshActivity();
@@ -234,10 +235,8 @@ private:
     /** Normalize the kind of old feed records to a stable code. */
     QString normalizeDisplayKind(const ChatDisplayItem &item) const;
     void refreshDisplayTitles();
-    void refreshContextBar();
 
     Agent          *_agent;
-    QLabel         *_contextLabel;
     QLabel         *_liveActionLine;
     QTimer         *_activityTimer;
     QElapsedTimer   _activityClock;
@@ -246,8 +245,6 @@ private:
     QString         _shownActivity;
     QString         _userAuthor;
     QString         _assistantAuthor;
-    QProgressBar   *_contextBar;
-    QPushButton    *_compactButton;
     QScrollArea    *_scroll;
     QWidget        *_messagesHost;
     QVBoxLayout    *_messagesLayout;
@@ -255,8 +252,8 @@ private:
     QPushButton    *_sendButton;
     QCheckBox      *_autoApproveBox;
     QPushButton    *_stopButton;
-    QPushButton    *_interruptButton;
     QPushButton    *_reportButton;
+    QWidget        *_reportHost;
     QWidget        *_inputHost;
     QWidget        *_permissionHost;
     QLabel         *_permissionLabel;
@@ -272,9 +269,6 @@ private:
     bool            _restoring;
     bool            _userInputEnabled;
     bool            _scrollScheduled;
-    int             _contextUsedTokens;
-    int             _contextLimitTokens;
-    bool            _contextCompacting;
 };
 
 #endif // CONVERSATIONWIDGET_H

@@ -53,7 +53,6 @@ JournalWidget::JournalWidget(QWidget *parent)
     , _transientBody()
 {
     setUserInputEnabled(false);
-    setContextRowVisible(false);
     setChatLiveActionVisible(false);
 
     _liveRotateTimer = new QTimer(this);
@@ -296,6 +295,7 @@ void JournalWidget::detachAgent(Agent *agent)
     disconnect(agent, 0, this, 0);
     _labels.remove(agent);
     _workerIds.remove(agent);
+    _pendingToolArgs.remove(agent);
     clearAgentLiveAction(agent);
 }
 
@@ -313,6 +313,7 @@ void JournalWidget::sltAgentDestroyed(QObject *object)
 {
     _labels.remove(object);
     _workerIds.remove(object);
+    _pendingToolArgs.remove(object);
     clearAgentLiveAction(object);
 }
 
@@ -951,6 +952,7 @@ void JournalWidget::sltJournalFailed(const QString &error)
 
 void JournalWidget::sltToolCallStarted(const QString &name, const QString &arguments)
 {
+    _pendingToolArgs.insert(sender(), arguments);
     QString action = actionTitleForTool(name);
     const QString excerpt = toolArgsExcerpt(name, arguments);
     if (!excerpt.isEmpty())
@@ -962,9 +964,25 @@ void JournalWidget::sltToolCallStarted(const QString &name, const QString &argum
 
 void JournalWidget::sltToolCallFinished(const QString &name, const QString &result, bool ok)
 {
-    Q_UNUSED(name);
     Q_UNUSED(result);
-    Q_UNUSED(ok);
+    const QString arguments = _pendingToolArgs.take(sender());
+    if (ok && name == QString::fromUtf8("plan_work"))
+    {
+        const QString plan = ConversationWidget::formatPlanWorkBody(arguments);
+        if (!plan.isEmpty())
+        {
+            Agent *planAgent = qobject_cast<Agent *>(sender());
+            const QString from = shortNameFromLabel(labelFor(sender()));
+            QString to = planAgent ? planAgent->journalReplyTo() : QString();
+            if (to.isEmpty())
+                to = tr("Пользователь");
+            QString heading = firstJournalLine(plan);
+            while (heading.startsWith(QLatin1Char('#')))
+                heading = heading.mid(1).trimmed();
+            addPermanent(exchangeTitle(from, to, heading), plan, false,
+                         workerIdFor(sender()));
+        }
+    }
     Agent *agent = qobject_cast<Agent *>(sender());
     if (agent && agent->isBusy())
         setAgentLiveAction(agent, tr("Думаю . . ."));

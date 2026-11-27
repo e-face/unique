@@ -45,6 +45,7 @@
 #include <QEventLoop>
 #include <QVBoxLayout>
 #include <QFileDialog>
+#include <QInputDialog>
 #include <QFileInfo>
 #include <QFile>
 #include <QFont>
@@ -389,6 +390,7 @@ MainWindow::MainWindow(QWidget *parent)
     , _graphThumbDock(0)
     , _fileMenu(0)
     , _windowMenu(0)
+    , _workerMenu(0)
     , _projectMenu(0)
     , _vcsMenu(0)
     , _helpMenu(0)
@@ -399,11 +401,15 @@ MainWindow::MainWindow(QWidget *parent)
     , _windowGraphAction(0)
     , _windowJournalAction(0)
     , _windowSettingsAction(0)
+    , _workerCompactAction(0)
+    , _workerInterruptAction(0)
     , _helpStatsAction(0)
     , _helpUpdateAction(0)
     , _helpAboutAction(0)
     , _openProjectAction(0)
-    , _newProjectAction(0)
+    , _newProjectMenu(0)
+    , _newProjectDirectoryAction(0)
+    , _newProjectExistingAction(0)
     , _openLastAction(0)
     , _fileClearAction(0)
     , _clearAction(0)
@@ -967,7 +973,90 @@ void MainWindow::sltOpenProject()
 
 //----------------------------------------------
 
-void MainWindow::sltNewProject()
+static bool invalidProjectFolderName(const QString &name)
+{
+    if (name.isEmpty() || name == QString::fromUtf8(".") || name == QString::fromUtf8(".."))
+        return true;
+    if (name == QString::fromUtf8("___project___"))
+        return true;
+    const QString bad = QString::fromUtf8("\\/:*?\"<>|");
+    for (int i = 0; i < name.size(); ++i)
+    {
+        if (bad.contains(name.at(i)))
+            return true;
+    }
+    return false;
+}
+
+//----------------------------------------------
+
+void MainWindow::sltNewProjectDirectory()
+{
+    const QString parent = QFileDialog::getExistingDirectory(
+                               this,
+                               tr("Новая директория — где создать"),
+                               projectDialogStartPath());
+    if (parent.isEmpty())
+        return;
+
+    QInputDialog dialog(this);
+    dialog.setWindowTitle(tr("Новая директория"));
+    dialog.setLabelText(tr("Имя папки:"));
+    dialog.setInputMode(QInputDialog::TextInput);
+    dialog.setOkButtonText(tr("Создать"));
+    dialog.setCancelButtonText(tr("Отмена"));
+    AppSettings *s = AppSettings::instance();
+    dialog.setStyleSheet(QString::fromUtf8(
+                             "QInputDialog { background:%1; color:%2; }"
+                             "QInputDialog QLabel { color:%2; background:transparent; }"
+                             "QLineEdit { background:%3; color:%2; border:1px solid %4;"
+                             "  border-radius:4px; padding:4px; }"
+                             "QPushButton { background:%3; color:%2; border:1px solid %4;"
+                             "  border-radius:4px; padding:5px 12px; }")
+                             .arg(s->panelColor().name(),
+                                  s->textColor().name(),
+                                  s->inputColor().name(),
+                                  s->borderColor().name()));
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString name = dialog.textValue().trimmed();
+    if (invalidProjectFolderName(name))
+    {
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Warning);
+        box.setWindowTitle(tr("Новая директория"));
+        box.setText(tr("Недопустимое имя папки."));
+        box.setStandardButtons(QMessageBox::Ok);
+        box.setButtonText(QMessageBox::Ok, tr("ОК"));
+        box.setStyleSheet(dialog.styleSheet());
+        box.exec();
+        return;
+    }
+
+    const QString workspace = QDir::cleanPath(parent + QString::fromUtf8("/") + name);
+    if (!QDir(workspace).exists())
+    {
+        if (!QDir(parent).mkdir(name))
+        {
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::Warning);
+            box.setWindowTitle(tr("Новая директория"));
+            box.setText(tr("Не удалось создать папку."));
+            box.setStandardButtons(QMessageBox::Ok);
+            box.setButtonText(QMessageBox::Ok, tr("ОК"));
+            box.setStyleSheet(dialog.styleSheet());
+            box.exec();
+            return;
+        }
+    }
+
+    beginNewProject(workspace);
+}
+
+//----------------------------------------------
+
+void MainWindow::sltNewProjectExisting()
 {
     QString selected = QFileDialog::getExistingDirectory(
                            this,
@@ -981,6 +1070,13 @@ void MainWindow::sltNewProject()
     if (info.fileName() == QString::fromUtf8("___project___"))
         workspace = QDir::cleanPath(info.absolutePath());
 
+    beginNewProject(workspace);
+}
+
+//----------------------------------------------
+
+void MainWindow::beginNewProject(QString workspace)
+{
     const QString store = AppSettings::projectStoreDir(workspace);
     QString retire;
     if (QDir(store).exists())
@@ -1255,6 +1351,57 @@ void MainWindow::sendRootComposerMessage(QString text, QJsonArray contentParts)
 
 //----------------------------------------------
 
+void MainWindow::sltSessionContextUsage(int, int)
+{
+    Agent *agent = qobject_cast<Agent *>(sender());
+    ChatSession *visible = _tabs ? sessionByTabWidget(_tabs->currentWidget()) : 0;
+    if (!visible)
+        visible = rootSession();
+    if (!agent || !visible || visible->agent() != agent)
+        return;
+    refreshContextMeter();
+}
+
+//----------------------------------------------
+
+void MainWindow::updateWorkerMenu()
+{
+    ChatSession *session = _tabs ? sessionByTabWidget(_tabs->currentWidget()) : 0;
+    if (!session)
+        session = rootSession();
+    Agent *agent = session ? session->agent() : 0;
+    Worker *worker = session ? session->worker() : 0;
+    const bool busy = agent && agent->isBusy();
+    if (_workerCompactAction)
+    {
+        _workerCompactAction->setEnabled(agent && agent->tracksContext()
+                                         && !busy && !_resetting);
+    }
+    if (_workerInterruptAction)
+        _workerInterruptAction->setEnabled(anyWorkActive() && worker && !_resetting);
+}
+
+//----------------------------------------------
+
+void MainWindow::refreshContextMeter()
+{
+    if (!_composerBar)
+        return;
+    ChatSession *session = _tabs ? sessionByTabWidget(_tabs->currentWidget()) : 0;
+    if (!session)
+        session = rootSession();
+    Agent *agent = session ? session->agent() : 0;
+    if (!agent || !agent->tracksContext())
+    {
+        _composerBar->setContextUsage(0, 0, false);
+        return;
+    }
+    _composerBar->setContextUsage(agent->estimatedPromptTokens(),
+                                  agent->contextLimit(), true);
+}
+
+//----------------------------------------------
+
 void MainWindow::sltCompactRequested()
 {
     ConversationWidget *widget = qobject_cast<ConversationWidget *>(sender());
@@ -1456,6 +1603,8 @@ void MainWindow::sltCurrentTabChanged(int index)
     {
         if (_graphDirty)
             rebuildGraphIfVisible();
+        updateWorkerMenu();
+        refreshContextMeter();
         scheduleSaveOpenChats();
         return;
     }
@@ -1468,6 +1617,8 @@ void MainWindow::sltCurrentTabChanged(int index)
     }
     refreshBusyTabs();
     updateComposerState();
+    updateWorkerMenu();
+    refreshContextMeter();
     scheduleSaveOpenChats();
 }
 
@@ -1665,9 +1816,8 @@ void MainWindow::applyWorkerUi(Worker *worker)
     const bool root = worker->isRoot();
     worker->session()->widget()->setUserInputEnabled(root);
     worker->session()->widget()->setReportToParentVisible(!root);
-    if (worker->session()->agent())
-        worker->session()->widget()->setContextMeterVisible(
-            worker->session()->agent()->tracksContext());
+    updateWorkerMenu();
+    refreshContextMeter();
     // Name the main chat the way the model titled the assignment in plan_work:
     // that is more accurate than the first 48 characters of the user query.
     if (root && !worker->title().isEmpty()
@@ -3801,8 +3951,13 @@ void MainWindow::setupMenus()
     _openProjectAction->setShortcut(QKeySequence::Open);
     connect(_openProjectAction, SIGNAL(triggered()), this, SLOT(sltOpenProject()));
 
-    _newProjectAction = _fileMenu->addAction(L("menu.file.new"));
-    connect(_newProjectAction, SIGNAL(triggered()), this, SLOT(sltNewProject()));
+    _newProjectMenu = _fileMenu->addMenu(L("menu.file.new"));
+    _newProjectDirectoryAction = _newProjectMenu->addAction(L("menu.file.new.directory"));
+    connect(_newProjectDirectoryAction, SIGNAL(triggered()),
+            this, SLOT(sltNewProjectDirectory()));
+    _newProjectExistingAction = _newProjectMenu->addAction(L("menu.file.new.existing"));
+    connect(_newProjectExistingAction, SIGNAL(triggered()),
+            this, SLOT(sltNewProjectExisting()));
 
     _openLastAction = _fileMenu->addAction(L("menu.file.openLast"));
     connect(_openLastAction, SIGNAL(triggered()), this, SLOT(sltOpenLastProject()));
@@ -3842,6 +3997,20 @@ void MainWindow::setupMenus()
 
     _windowJournalAction = _windowMenu->addAction(L("menu.window.journal"));
     connect(_windowJournalAction, SIGNAL(triggered()), this, SLOT(sltShowJournal()));
+
+    _workerMenu = menuBar()->addMenu(L("menu.worker"));
+    _workerCompactAction = _workerMenu->addAction(L("menu.worker.compact"));
+    _workerCompactAction->setToolTip(
+        tr("Свернуть старую историю в краткое содержание, "
+           "чтобы продолжить беседу в окне модели."));
+    connect(_workerCompactAction, SIGNAL(triggered()),
+            this, SLOT(sltCompactRequested()));
+    _workerInterruptAction = _workerMenu->addAction(L("menu.worker.interrupt"));
+    _workerInterruptAction->setToolTip(
+        tr("Принудительно остановить этот воркер, включая зависшую команду."));
+    connect(_workerInterruptAction, SIGNAL(triggered()),
+            this, SLOT(sltWorkerForceStop()));
+    updateWorkerMenu();
 
     _projectMenu = menuBar()->addMenu(L("menu.project"));
 
@@ -3891,8 +4060,12 @@ void MainWindow::retranslateUi()
         _fileMenu->setTitle(L("menu.file"));
     if (_openProjectAction)
         _openProjectAction->setText(L("menu.file.open"));
-    if (_newProjectAction)
-        _newProjectAction->setText(L("menu.file.new"));
+    if (_newProjectMenu)
+        _newProjectMenu->setTitle(L("menu.file.new"));
+    if (_newProjectDirectoryAction)
+        _newProjectDirectoryAction->setText(L("menu.file.new.directory"));
+    if (_newProjectExistingAction)
+        _newProjectExistingAction->setText(L("menu.file.new.existing"));
     if (_openLastAction)
         _openLastAction->setText(L("menu.file.openLast"));
     if (_recentMenu)
@@ -3911,6 +4084,21 @@ void MainWindow::retranslateUi()
         _windowGraphAction->setText(L("menu.window.team"));
     if (_windowJournalAction)
         _windowJournalAction->setText(L("menu.window.journal"));
+    if (_workerMenu)
+        _workerMenu->setTitle(L("menu.worker"));
+    if (_workerCompactAction)
+    {
+        _workerCompactAction->setText(L("menu.worker.compact"));
+        _workerCompactAction->setToolTip(
+            tr("Свернуть старую историю в краткое содержание, "
+               "чтобы продолжить беседу в окне модели."));
+    }
+    if (_workerInterruptAction)
+    {
+        _workerInterruptAction->setText(L("menu.worker.interrupt"));
+        _workerInterruptAction->setToolTip(
+            tr("Принудительно остановить этот воркер, включая зависшую команду."));
+    }
     if (_windowSettingsAction)
         _windowSettingsAction->setText(L("menu.window.settings"));
     if (_projectMenu)
@@ -4207,6 +4395,11 @@ void MainWindow::attachSessionUi(ChatSession *session)
             this, SLOT(sltWorkerForceReport()));
     connect(chat, SIGNAL(compactRequested()),
             this, SLOT(sltCompactRequested()));
+    if (session->agent())
+    {
+        connect(session->agent(), SIGNAL(contextUsageChanged(int,int)),
+                this, SLOT(sltSessionContextUsage(int,int)));
+    }
     connect(session->agent(), SIGNAL(busyChanged(bool)),
             this, SLOT(sltBusyChanged(bool)), Qt::UniqueConnection);
     connect(session->agent(), SIGNAL(usageUpdated(int,int,int,int)),
@@ -5161,8 +5354,12 @@ void MainWindow::updateProjectActions()
     const bool allowSwitch = !busy && !_resetting && !_closing;
     if (_openProjectAction)
         _openProjectAction->setEnabled(allowSwitch);
-    if (_newProjectAction)
-        _newProjectAction->setEnabled(allowSwitch);
+    if (_newProjectMenu)
+        _newProjectMenu->setEnabled(allowSwitch);
+    if (_newProjectDirectoryAction)
+        _newProjectDirectoryAction->setEnabled(allowSwitch);
+    if (_newProjectExistingAction)
+        _newProjectExistingAction->setEnabled(allowSwitch);
     if (_openLastAction)
         _openLastAction->setEnabled(allowSwitch && !_recentProjects.isEmpty());
     if (_recentMenu)
@@ -5533,6 +5730,8 @@ void MainWindow::updateComposerState()
     _composerBar->setSendEnabled(canSend);
     _composerBar->setStopEnabled(active && !_resetting);
     setAllStopEnabled(active && !_resetting);
+    updateWorkerMenu();
+    refreshContextMeter();
 
     const LlmProfile profile = profileForComposerTarget();
     ModelCapabilities caps =

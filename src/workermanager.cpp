@@ -195,7 +195,8 @@ QString WorkerManager::limitsSummaryFor(Worker *worker) const
         else
         {
             text += QString::fromUtf8(
-                "First call list_tools, then list_worker_presets, then plan_work. "
+                "The tool list and the worker presets are in the system prefix. "
+                "Then call plan_work. "
                 "Save tokens and time. Do the work yourself unless a child or a "
                 "tool is cheaper. If a specialized worker or a specialized tool "
                 "exists for the assignment, you must use it. Do not do that part "
@@ -553,8 +554,11 @@ static QString liveToolFunctions(Worker *tool)
         foreach (const QString &id, preset.toolIds)
         {
             const QString clean = id.trimmed();
-            if (!clean.isEmpty())
-                ids.append(clean);
+            if (clean.isEmpty()
+                || clean == QString::fromUtf8("list_tools")
+                || clean == QString::fromUtf8("list_worker_presets"))
+                continue;
+            ids.append(clean);
         }
         if (!ids.isEmpty())
             return ids.join(QString::fromUtf8(","));
@@ -562,7 +566,7 @@ static QString liveToolFunctions(Worker *tool)
     }
     return QString::fromUtf8(
         "(default: files, shell, complete_task, read_settings, ask_user, "
-        "edit_settings; not plan_work, delegate_task, create_tool, list_tools)");
+        "edit_settings; not plan_work, delegate_task, create_tool)");
 }
 
 //----------------------------------------------
@@ -3059,12 +3063,6 @@ static void addLlmRoleTools(WorkerManager *manager, Agent *agent, Worker *worker
             agent->addTool(new AddGroupMemberTool(manager, worker, agent));
             agent->addTool(new CreateToolTool(manager, worker, agent));
             agent->addTool(new PlanWorkTool(worker, agent));
-            agent->addTool(new ListWorkerPresetsTool(manager, worker, agent));
-        }
-        {
-            ListToolsTool *listTools = new ListToolsTool(manager, agent);
-            listTools->setOwner(worker);
-            agent->addTool(listTools);
         }
         agent->addTool(new RunToolTool(manager, worker, agent));
         if (!worker->isRoot())
@@ -3374,7 +3372,6 @@ void WorkerManager::installTools(Worker *worker)
         addLookupTools(agent, _workspace, worker);
         agent->addTool(new RunCommandAgentTool(_workspace, worker, agent));
         agent->addTool(new RequestPermissionTool(worker, agent));
-        agent->addTool(new ListToolsTool(this, agent));
         agent->addTool(new RunToolTool(this, worker, agent));
         agent->addTool(new CompleteTaskTool(worker, agent));
     }
@@ -3408,12 +3405,6 @@ void WorkerManager::installTools(Worker *worker)
             agent->addTool(new DismissChildWorkerTool(this, worker, agent));
             agent->addTool(new CreateToolTool(this, worker, agent));
             agent->addTool(new PlanWorkTool(worker, agent));
-            agent->addTool(new ListWorkerPresetsTool(this, worker, agent));
-            {
-                ListToolsTool *listTools = new ListToolsTool(this, agent);
-                listTools->setOwner(worker);
-                agent->addTool(listTools);
-            }
             agent->addTool(new RunToolTool(this, worker, agent));
         }
     }
@@ -3741,11 +3732,26 @@ static QString specializationPrompt(const WorkerPreset &preset, bool textWorker)
                "already created worker with worker_id, or run the existing tool "
                "with run_tool. Create a new child only when no such worker exists "
                "yet. "
-               "If list_tools, list_worker_presets, or plan_work is missing "
-               "from the list, skip that step.\n")
+               "If plan_work is missing from the list, skip that step.\n")
         .arg(note, preset.id.trimmed().isEmpty()
                        ? QString::fromUtf8("(none)")
                        : preset.id.trimmed());
+}
+
+//----------------------------------------------
+
+static QString fixedCatalog(const WorkerManager *manager, Worker *worker)
+{
+    if (!manager || !worker || worker->isTool() || worker->isGroupInterlocutor())
+        return QString();
+    if (workerTaskKindIsMediaExecutor(manager->modalityOf(worker)))
+        return QString();
+    return QString::fromUtf8(
+               "\n\nTOOLS AND WORKER PRESETS:\n"
+               "This list belongs to the system prefix of this chat and is not repeated. "
+               "Do not request it again. A tool created later is named by that call's result. "
+               "Read functions= here before create_tool, run_tool, and delegate_task.\n%1\n%2")
+        .arg(AppSettings::instance()->workerPresetsSummary(), manager->toolsSummary());
 }
 
 //----------------------------------------------
@@ -3780,7 +3786,7 @@ QString WorkerManager::promptFor(Worker *worker) const
         base += internetSearchRule(locale);
         base += builtinLookupRule(locale);
         base += replyFormatRule(locale);
-        return base + specNote;
+        return base + specNote + fixedCatalog(this, worker);
     }
     QString base;
     if (worker->isGroupInterlocutor())
@@ -3869,8 +3875,9 @@ QString WorkerManager::promptFor(Worker *worker) const
             "read_settings, then edit_settings. Say in reason what is wrong and what "
             "each value becomes. The user sees every field as old → new and confirms. "
             "Nothing changes without that confirmation. Do not work around a bad setting.\n"
-            "Then, in order: list_tools, list_worker_presets, "
-            "plan_work. In the plan and in the work, spend as few tokens and as "
+            "Then call plan_work. The tool list and the worker presets are already "
+            "in this chat's system prefix; do not request them again. "
+            "In the plan and in the work, spend as few tokens and as "
             "little time as the task allows.\n"
             "Default is how=self: you do the work in this chat. A lookup, a list, "
             "one piece, and a step that will not repeat stay here.\n"
@@ -3945,7 +3952,7 @@ QString WorkerManager::promptFor(Worker *worker) const
     base += internetSearchRule(locale);
     base += builtinLookupRule(locale);
     base += replyFormatRule(locale);
-    return base + specNote;
+    return base + specNote + fixedCatalog(this, worker);
 }
 
 //----------------------------------------------
@@ -4080,7 +4087,8 @@ QString WorkerManager::startupContextFor(Worker *worker) const
                         "When you spawn children, pick preset_id whose modality AND "
                         "purpose fit the subtask (e.g. text-to-image vs object segmentation are "
                         "both image-related but different purposes; TTS vs STT within speech; "
-                        "coding→llm). Read purpose on every preset — do not treat same-modality "
+                        "coding→llm). The presets are in the system prefix. "
+                        "Read purpose on every preset — do not treat same-modality "
                         "models as interchangeable."))
                     .arg(profileName, model, workerTaskKindToString(profile.modality),
                          ownPurpose);
@@ -4093,14 +4101,6 @@ QString WorkerManager::startupContextFor(Worker *worker) const
                     "(question, options, chosen, rationale). A child then reports with "
                     "complete_task. The top executor answers the user."));
         }
-        text += QString::fromUtf8("\n");
-        text += AppSettings::instance()->workerPresetsSummary();
-    }
-    const QList<Worker *> list = tools();
-    if (!list.isEmpty() && !worker->isTool())
-    {
-        text += QString::fromUtf8("\n");
-        text += toolsSummary();
     }
     return text;
 }

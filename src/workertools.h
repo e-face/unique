@@ -145,48 +145,6 @@ private:
 //----------------------------------------------
 
 /**
- * @brief List of the project's tools and whether they are busy.
- */
-class ListToolsTool : public AgentTool
-{
-public:
-    explicit ListToolsTool(WorkerManager *manager, QObject *parent = 0);
-
-    void setOwner(Worker *owner);
-
-    virtual QString     name() const;
-    virtual QString     description() const;
-    virtual QJsonObject parametersSchema() const;
-    virtual QString     invoke(QString argumentsJson, bool *ok);
-
-private:
-    WorkerManager *_manager;
-    Worker        *_owner;
-};
-
-//----------------------------------------------
-
-/**
- * @brief Worker presets an executor may create.
- */
-class ListWorkerPresetsTool : public AgentTool
-{
-public:
-    ListWorkerPresetsTool(WorkerManager *manager, Worker *owner, QObject *parent = 0);
-
-    virtual QString     name() const;
-    virtual QString     description() const;
-    virtual QJsonObject parametersSchema() const;
-    virtual QString     invoke(QString argumentsJson, bool *ok);
-
-private:
-    WorkerManager *_manager;
-    Worker        *_owner;
-};
-
-//----------------------------------------------
-
-/**
  * @brief Run a tool and wait for its reply. The queue runs one at a time.
  */
 class RunToolTool : public AgentTool

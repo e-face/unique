@@ -241,7 +241,7 @@ public:
     QString limitsSummaryFor(Worker *worker) const;
     QString loadSummary() const;
     /**
-     * @brief The variable part of the startup context (limits and the tool list).
+     * @brief The variable part of the startup context (limits and current load).
      *
      * It goes into the worker's first message, not the system prompt, so
      * the request prefix stays stable for the provider cache.

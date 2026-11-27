@@ -5,6 +5,7 @@
 //----------------------------------------------
 #include <QByteArray>
 #include <QColor>
+#include <QHash>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -549,6 +550,11 @@ private:
     int                    _leftDockWidth;
     int                    _projectDockHeight;
     int                    _graphThumbDockHeight;
+    /**
+     * Sealed apiKey kept when this computer could not open it,
+     * so a later save does not wipe the stored secret.
+     */
+    mutable QHash<QString, QString> _keptSealedApiKeys;
 };
 
 #endif // APPSETTINGS_H

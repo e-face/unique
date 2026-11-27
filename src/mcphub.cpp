@@ -4,6 +4,7 @@
 #include "agenttool.h"
 #include "appsettings.h"
 #include "appversion.h"
+#include "secretbox.h"
 //----------------------------------------------
 #include <QCoreApplication>
 #include <QDir>
@@ -996,9 +997,46 @@ QString McpHub::statusText(const QString &serverId) const
 
 //----------------------------------------------
 
+static QString plainSecret(const QString &stored, bool *wasPlain, bool *failed)
+{
+    if (wasPlain)
+        *wasPlain = false;
+    if (failed)
+        *failed = false;
+    if (stored.isEmpty())
+        return QString();
+    if (!SecretBox::isSealed(stored))
+    {
+        if (wasPlain)
+            *wasPlain = true;
+        return stored;
+    }
+    bool ok = true;
+    const QString plain = SecretBox::open(stored, &ok);
+    if (!ok && failed)
+        *failed = true;
+    return plain;
+}
+
+//----------------------------------------------
+
+static QString sealSecret(const QString &id, const QString &plain,
+                          QHash<QString, QString> *kept)
+{
+    if (plain.isEmpty() && kept && kept->contains(id))
+        return kept->value(id);
+    if (kept)
+        kept->remove(id);
+    return SecretBox::seal(plain);
+}
+
+//----------------------------------------------
+
 void McpHub::load()
 {
     _servers.clear();
+    bool reseal = false;
+    {
     QSettings settings(AppSettings::configDir() + QString::fromUtf8("/mcp.ini"),
                        QSettings::IniFormat);
     settings.setIniCodec("UTF-8");
@@ -1014,17 +1052,37 @@ void McpHub::load()
         config.command = settings.value(QString::fromUtf8("command")).toString();
         config.arguments = settings.value(QString::fromUtf8("arguments")).toString();
         config.workDir = settings.value(QString::fromUtf8("workDir")).toString();
-        config.environment = settings.value(QString::fromUtf8("environment")).toString();
+        const QString storedEnv = settings.value(QString::fromUtf8("environment")).toString();
+        const QString storedHeaders = settings.value(QString::fromUtf8("headers")).toString();
+        bool envPlain = false;
+        bool envFailed = false;
+        bool headersPlain = false;
+        bool headersFailed = false;
+        config.environment = plainSecret(storedEnv, &envPlain, &envFailed);
         config.url = settings.value(QString::fromUtf8("url")).toString();
-        config.headers = settings.value(QString::fromUtf8("headers")).toString();
+        config.headers = plainSecret(storedHeaders, &headersPlain, &headersFailed);
         config.enabled = settings.value(QString::fromUtf8("enabled"), true).toBool();
         if (config.id.isEmpty() || config.name.isEmpty())
             continue;
+        if (envFailed && !storedEnv.isEmpty())
+            _keptSealedEnv.insert(config.id, storedEnv);
+        else
+            _keptSealedEnv.remove(config.id);
+        if (headersFailed && !storedHeaders.isEmpty())
+            _keptSealedHeaders.insert(config.id, storedHeaders);
+        else
+            _keptSealedHeaders.remove(config.id);
+        if ((envPlain && !config.environment.isEmpty())
+            || (headersPlain && !config.headers.isEmpty()))
+            reseal = true;
         if (config.transport != QString::fromUtf8("http"))
             config.transport = QString::fromUtf8("stdio");
         _servers.append(config);
     }
     settings.endArray();
+    }
+    if (reseal)
+        save();
 }
 
 //----------------------------------------------
@@ -1047,9 +1105,11 @@ void McpHub::save() const
         settings.setValue(QString::fromUtf8("command"), config.command);
         settings.setValue(QString::fromUtf8("arguments"), config.arguments);
         settings.setValue(QString::fromUtf8("workDir"), config.workDir);
-        settings.setValue(QString::fromUtf8("environment"), config.environment);
+        settings.setValue(QString::fromUtf8("environment"),
+                          sealSecret(config.id, config.environment, &_keptSealedEnv));
         settings.setValue(QString::fromUtf8("url"), config.url);
-        settings.setValue(QString::fromUtf8("headers"), config.headers);
+        settings.setValue(QString::fromUtf8("headers"),
+                          sealSecret(config.id, config.headers, &_keptSealedHeaders));
         settings.setValue(QString::fromUtf8("enabled"), config.enabled);
     }
     settings.endArray();

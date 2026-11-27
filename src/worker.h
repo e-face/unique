@@ -233,11 +233,7 @@ public:
     /** A successful run_tool covers the plan parts marked how=tool. */
     void noteToolRan();
     void clearWorkPlan();
-    void noteListedTools();
-    void noteListedPresets();
     void noteWorkAction();
-    bool listedTools() const;
-    bool listedPresets() const;
     bool needsWorkOpening() const;
     QString openingBlockReason() const;
 
@@ -342,8 +338,6 @@ private:
     int           _pendingSubtreeGrantBatches;
     qint64        _pendingSubtreeGrantMs;
     QString       _subtreeBudgetPromptText;
-    bool          _listedTools;
-    bool          _listedPresets;
     bool          _actedAfterPlan;
     int           _idleNudges;
 };

@@ -60,8 +60,6 @@ Worker::Worker(QObject *parent)
     , _subtreeBudgetLoopActive(false)
     , _pendingSubtreeGrantBatches(0)
     , _pendingSubtreeGrantMs(0)
-    , _listedTools(false)
-    , _listedPresets(false)
     , _actedAfterPlan(false)
     , _idleNudges(0)
 {
@@ -1518,8 +1516,6 @@ void Worker::startTask()
     if (!isTool())
         _changedFiles.clear();
     clearWorkPlan();
-    _listedTools = false;
-    _listedPresets = false;
     _actedAfterPlan = false;
     _idleNudges = 0;
     _hasVerification = false;
@@ -2314,38 +2310,10 @@ void Worker::clearWorkPlan()
 
 //----------------------------------------------
 
-void Worker::noteListedTools()
-{
-    _listedTools = true;
-}
-
-//----------------------------------------------
-
-void Worker::noteListedPresets()
-{
-    _listedPresets = true;
-}
-
-//----------------------------------------------
-
 void Worker::noteWorkAction()
 {
     if (hasWorkPlan())
         _actedAfterPlan = true;
-}
-
-//----------------------------------------------
-
-bool Worker::listedTools() const
-{
-    return _listedTools;
-}
-
-//----------------------------------------------
-
-bool Worker::listedPresets() const
-{
-    return _listedPresets;
 }
 
 //----------------------------------------------
@@ -2378,14 +2346,8 @@ QString Worker::openingBlockReason() const
 {
     if (!needsWorkOpening() || hasWorkPlan())
         return QString();
-    const bool needTools = workerHasTool(this, "list_tools");
-    const bool needPresets = workerHasTool(this, "list_worker_presets");
     const bool needPlan = workerHasTool(this, "plan_work");
     QStringList steps;
-    if (needTools && !_listedTools)
-        steps << QString::fromUtf8("list_tools");
-    if (needPresets && !_listedPresets)
-        steps << QString::fromUtf8("list_worker_presets");
     if (needPlan)
         steps << QString::fromUtf8("plan_work");
     if (steps.isEmpty())

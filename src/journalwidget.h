@@ -36,8 +36,9 @@ struct JournalEntry
  * @brief Journal: the combined feed of the project's chats.
  *
  * User and assistant messages carry an author caption.
- * Function calls do not enter the permanent feed. The current action
- * is not printed in the journal: it flickers in the status line.
+ * Function calls do not enter the permanent feed. A finished work plan
+ * does: it is the executor's message, the same text as in that chat.
+ * The current action is not printed in the journal: it flickers in the status line.
  * Notes and errors are temporary collapsed records; a new one replaces the previous.
  * Permanent records are saved in ___project___/journal.json
  * (no more than the last 100).
@@ -121,6 +122,7 @@ private:
     QHash<QObject *, QString>  _labels;
     QHash<QObject *, QString>  _workerIds;
     QHash<QObject *, QString>  _agentActions;
+    QHash<QObject *, QString>  _pendingToolArgs;
     QList<LiveAction>          _liveActions;
     QList<JournalEntry>        _entries;
     QPointer<QWidget>          _transient;

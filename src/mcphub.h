@@ -98,6 +98,9 @@ private:
     };
 
     QList<McpServerConfig>       _servers;
+    /** Sealed header/environment text this computer could not open. */
+    mutable QHash<QString, QString> _keptSealedHeaders;
+    mutable QHash<QString, QString> _keptSealedEnv;
     QList<McpSession *>          _sessions;
     mutable QHash<QString, McpBound> _bound;
     bool                         _loading;

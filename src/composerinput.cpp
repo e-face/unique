@@ -26,8 +26,10 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QStyleOption>
 #include <QTextCursor>
 #include <QToolButton>
@@ -204,6 +206,10 @@ ComposerInput::ComposerInput(QWidget *parent)
     , _attachLayout(0)
     , _attachScroll(0)
     , _editor(0)
+    , _contextMeter(0)
+    , _contextUsed(0)
+    , _contextLimit(0)
+    , _contextVisible(false)
     , _capsHint(0)
     , _plusButton(0)
     , _schemaButton(0)
@@ -259,6 +265,15 @@ ComposerInput::ComposerInput(QWidget *parent)
     _editor->viewport()->setAcceptDrops(false);
     _editor->installEventFilter(this);
     _editor->viewport()->installEventFilter(this);
+
+    _contextMeter = new QProgressBar(this);
+    _contextMeter->setObjectName(QString::fromUtf8("composerContext"));
+    _contextMeter->setTextVisible(false);
+    _contextMeter->setFixedHeight(4);
+    _contextMeter->setRange(0, 1000);
+    _contextMeter->setValue(0);
+    _contextMeter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    _contextMeter->hide();
 
     _plusButton = new QToolButton(this);
     _plusButton->setObjectName(QString::fromUtf8("composerPlus"));
@@ -341,11 +356,17 @@ ComposerInput::ComposerInput(QWidget *parent)
     toolbar->addWidget(_micButton, 0, Qt::AlignVCenter);
     toolbar->addWidget(_sendButton, 0, Qt::AlignVCenter);
 
+    QVBoxLayout *field = new QVBoxLayout();
+    field->setContentsMargins(0, 0, 0, 0);
+    field->setSpacing(0);
+    field->addWidget(_editor, 1);
+    field->addWidget(_contextMeter);
+
     QVBoxLayout *root = new QVBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 10);
     root->setSpacing(6);
     root->addWidget(_attachScroll);
-    root->addWidget(_editor, 1);
+    root->addLayout(field, 1);
     root->addLayout(toolbar);
 
     applyTheme(QString::fromUtf8("#ffffff"), QString::fromUtf8("#ffffff"),
@@ -553,6 +574,56 @@ void ComposerInput::setReadOnly(bool on)
 
 //----------------------------------------------
 
+void ComposerInput::setContextUsage(int usedTokens, int limitTokens, bool visible)
+{
+    _contextUsed = qMax(0, usedTokens);
+    _contextLimit = qMax(0, limitTokens);
+    _contextVisible = visible;
+    refreshContextMeter();
+}
+
+//----------------------------------------------
+
+void ComposerInput::refreshContextMeter()
+{
+    if (!_contextMeter)
+        return;
+    _contextMeter->setVisible(_contextVisible);
+    if (!_contextVisible)
+        return;
+
+    int percent = 0;
+    if (_contextLimit <= 0)
+        _contextMeter->setValue(0);
+    else
+    {
+        const int permille = (int)qBound(qint64(0),
+                                        qint64(_contextUsed) * 1000 / qint64(_contextLimit),
+                                        qint64(1000));
+        percent = (permille + 5) / 10;
+        _contextMeter->setValue(permille);
+    }
+
+    QString chunk = QString::fromUtf8("#26a69a");
+    if (percent >= 90)
+        chunk = QString::fromUtf8("#e53935");
+    else if (percent >= 75)
+        chunk = QString::fromUtf8("#fb8c00");
+    else if (percent >= 60)
+        chunk = QString::fromUtf8("#fdd835");
+    const QString track = AppSettings::instance()->isLightTheme()
+                          ? QString::fromUtf8("#e5e5e5")
+                          : QString::fromUtf8("#5a5a5a");
+    _contextMeter->setStyleSheet(
+        QString::fromUtf8("QProgressBar#composerContext { background:%2; border:none;"
+                          " border-radius:2px; min-height:4px; max-height:4px; }"
+                          "QProgressBar#composerContext::chunk { background:%1;"
+                          " border-radius:2px; }")
+        .arg(chunk, track));
+}
+
+//----------------------------------------------
+
 void ComposerInput::applyTheme(QString panel, QString input, QString text, QString border,
                                QString muted, QString accent)
 {
@@ -617,6 +688,7 @@ void ComposerInput::applyTheme(QString panel, QString input, QString text, QStri
     _micIdleColor = text;
     _micLiveColor = input;
     updateMicAppearance();
+    refreshContextMeter();
     // Chips use the input-field fill so the attachment strip does not stand out.
     setProperty("chipFill", input);
     update();

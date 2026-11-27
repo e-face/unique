@@ -1,6 +1,7 @@
 #include "appsettings.h"
 //----------------------------------------------
 #include "applocale.h"
+#include "secretbox.h"
 #include "modelcapabilities.h"
 #include <QCoreApplication>
 #include <QDateTime>
@@ -16,6 +17,29 @@
 #include <QTimer>
 #include <QtGlobal>
 #include <QUuid>
+
+//----------------------------------------------
+
+static QString plainSecret(const QString &stored, bool *wasPlain, bool *failed)
+{
+    if (wasPlain)
+        *wasPlain = false;
+    if (failed)
+        *failed = false;
+    if (stored.isEmpty())
+        return QString();
+    if (!SecretBox::isSealed(stored))
+    {
+        if (wasPlain)
+            *wasPlain = true;
+        return stored;
+    }
+    bool ok = true;
+    const QString plain = SecretBox::open(stored, &ok);
+    if (!ok && failed)
+        *failed = true;
+    return plain;
+}
 
 //----------------------------------------------
 
@@ -2256,9 +2280,11 @@ void AppSettings::migrateLegacyProviders(QSettings *settings, WorkspaceSettings 
     if (deepseek.model.isEmpty())
         deepseek.model = settings->value(QString::fromUtf8("model"),
                                          QString::fromUtf8("deepseek-v4-flash")).toString();
-    deepseek.apiKey = settings->value(QString::fromUtf8("apiKey/deepseek")).toString();
+    deepseek.apiKey = plainSecret(settings->value(QString::fromUtf8("apiKey/deepseek")).toString(),
+                                  0, 0);
     if (deepseek.apiKey.isEmpty())
-        deepseek.apiKey = settings->value(QString::fromUtf8("apiKey")).toString();
+        deepseek.apiKey = plainSecret(settings->value(QString::fromUtf8("apiKey")).toString(),
+                                      0, 0);
     if (deepseek.apiKey.isEmpty())
         deepseek.apiKey = QString::fromLocal8Bit(qgetenv("DEEPSEEK_API_KEY"));
     deepseek.balanceUrl = QString::fromUtf8("/user/balance");
@@ -2271,7 +2297,8 @@ void AppSettings::migrateLegacyProviders(QSettings *settings, WorkspaceSettings 
     groq.baseUrl = QString::fromUtf8("https://api.groq.com/openai/v1");
     groq.model = settings->value(QString::fromUtf8("model/groq"),
                                  QString::fromUtf8("llama-3.3-70b-versatile")).toString();
-    groq.apiKey = settings->value(QString::fromUtf8("apiKey/groq")).toString();
+    groq.apiKey = plainSecret(settings->value(QString::fromUtf8("apiKey/groq")).toString(),
+                              0, 0);
     if (groq.apiKey.isEmpty())
         groq.apiKey = QString::fromLocal8Bit(qgetenv("GROQ_API_KEY"));
     groq.purpose = QString::fromUtf8(
@@ -2284,7 +2311,8 @@ void AppSettings::migrateLegacyProviders(QSettings *settings, WorkspaceSettings 
         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1");
     qwen.model = settings->value(QString::fromUtf8("model/qwencloud"),
                                  QString::fromUtf8("qwen3.7-plus")).toString();
-    qwen.apiKey = settings->value(QString::fromUtf8("apiKey/qwencloud")).toString();
+    qwen.apiKey = plainSecret(settings->value(QString::fromUtf8("apiKey/qwencloud")).toString(),
+                              0, 0);
     if (qwen.apiKey.isEmpty())
         qwen.apiKey = QString::fromLocal8Bit(qgetenv("DASHSCOPE_API_KEY"));
     if (qwen.apiKey.isEmpty())
@@ -2326,7 +2354,15 @@ void AppSettings::writeProfileFile(const LlmProfile &profile) const
     file.setValue(QString::fromUtf8("name"), profile.name);
     file.setValue(QString::fromUtf8("baseUrl"), profile.baseUrl);
     file.setValue(QString::fromUtf8("model"), profile.model);
-    file.setValue(QString::fromUtf8("apiKey"), profile.apiKey);
+    QString storedKey;
+    if (profile.apiKey.isEmpty() && _keptSealedApiKeys.contains(profile.id))
+        storedKey = _keptSealedApiKeys.value(profile.id);
+    else
+    {
+        storedKey = SecretBox::seal(profile.apiKey);
+        _keptSealedApiKeys.remove(profile.id);
+    }
+    file.setValue(QString::fromUtf8("apiKey"), storedKey);
     file.setValue(QString::fromUtf8("modality"), workerTaskKindToString(profile.modality));
     file.setValue(QString::fromUtf8("purpose"), profile.purpose);
     file.setValue(QString::fromUtf8("balanceUrl"), profile.balanceUrl);
@@ -2383,7 +2419,7 @@ void AppSettings::migrateFromNativeRegistry()
         profile.name = native.value(QString::fromUtf8("name")).toString();
         profile.baseUrl = native.value(QString::fromUtf8("baseUrl")).toString();
         profile.model = native.value(QString::fromUtf8("model")).toString();
-        profile.apiKey = native.value(QString::fromUtf8("apiKey")).toString();
+        profile.apiKey = plainSecret(native.value(QString::fromUtf8("apiKey")).toString(), 0, 0);
         profile.balanceUrl = native.value(QString::fromUtf8("balanceUrl")).toString();
         profile.balanceJsonPath = native.value(QString::fromUtf8("balanceJsonPath")).toString();
         if (profile.id.isEmpty())
@@ -2423,7 +2459,7 @@ void AppSettings::migrateProjectLocalProfiles()
         profile.name = file.value(QString::fromUtf8("name")).toString();
         profile.baseUrl = file.value(QString::fromUtf8("baseUrl")).toString();
         profile.model = file.value(QString::fromUtf8("model")).toString();
-        profile.apiKey = file.value(QString::fromUtf8("apiKey")).toString();
+        profile.apiKey = plainSecret(file.value(QString::fromUtf8("apiKey")).toString(), 0, 0);
         profile.modality = workerTaskKindFromString(
             file.value(QString::fromUtf8("modality")).toString());
         profile.purpose = file.value(QString::fromUtf8("purpose")).toString();
@@ -2463,6 +2499,7 @@ void AppSettings::loadProfiles()
         const QDir dir(dirPath);
         const QStringList files = dir.entryList(QStringList() << QString::fromUtf8("*.ini"),
                                                 QDir::Files, QDir::Name);
+        QStringList resealIds;
         foreach (const QString &fileName, files)
         {
             QSettings file(dir.filePath(fileName), QSettings::IniFormat);
@@ -2472,7 +2509,10 @@ void AppSettings::loadProfiles()
             profile.name = file.value(QString::fromUtf8("name")).toString();
             profile.baseUrl = file.value(QString::fromUtf8("baseUrl")).toString();
             profile.model = file.value(QString::fromUtf8("model")).toString();
-            profile.apiKey = file.value(QString::fromUtf8("apiKey")).toString();
+            const QString storedKey = file.value(QString::fromUtf8("apiKey")).toString();
+            bool wasPlain = false;
+            bool failed = false;
+            profile.apiKey = plainSecret(storedKey, &wasPlain, &failed);
             profile.modality = workerTaskKindFromString(
                 file.value(QString::fromUtf8("modality")).toString());
             profile.purpose = file.value(QString::fromUtf8("purpose")).toString();
@@ -2493,7 +2533,19 @@ void AppSettings::loadProfiles()
                 profile.id = QFileInfo(fileName).completeBaseName();
             if (profile.name.trimmed().isEmpty())
                 profile.name = profile.id;
+            if (failed && !storedKey.isEmpty())
+                _keptSealedApiKeys.insert(profile.id, storedKey);
+            else
+                _keptSealedApiKeys.remove(profile.id);
+            if (wasPlain && !profile.apiKey.isEmpty())
+                resealIds.append(profile.id);
             _defaults.profiles.append(profile);
+        }
+        for (int i = 0; i < resealIds.size(); ++i)
+        {
+            const int index = profileIndexById(resealIds.at(i));
+            if (index >= 0)
+                writeProfileFile(_defaults.profiles.at(index));
         }
     }
 
@@ -2510,7 +2562,8 @@ void AppSettings::loadProfiles()
             profile.name = settings.value(QString::fromUtf8("name")).toString();
             profile.baseUrl = settings.value(QString::fromUtf8("baseUrl")).toString();
             profile.model = settings.value(QString::fromUtf8("model")).toString();
-            profile.apiKey = settings.value(QString::fromUtf8("apiKey")).toString();
+            profile.apiKey = plainSecret(settings.value(QString::fromUtf8("apiKey")).toString(),
+                                         0, 0);
             profile.modality = workerTaskKindFromString(
                 settings.value(QString::fromUtf8("modality")).toString());
             profile.purpose = settings.value(QString::fromUtf8("purpose")).toString();
@@ -2552,6 +2605,14 @@ void AppSettings::loadProfiles()
             _defaults.workerProfileId[i] = id;
     }
     ensureWorkerProfileIds(&_defaults);
+
+    // Legacy copies of tokens stay in settings.ini as plain text after
+    // the profiles have been written. Drop them.
+    settings.remove(QString::fromUtf8("apiKey"));
+    settings.remove(QString::fromUtf8("apiKey/deepseek"));
+    settings.remove(QString::fromUtf8("apiKey/groq"));
+    settings.remove(QString::fromUtf8("apiKey/qwencloud"));
+    settings.sync();
 }
 
 //----------------------------------------------
@@ -3286,14 +3347,17 @@ static QString presetFunctionList(const WorkerPreset &preset)
     {
         return QString::fromUtf8(
             "(default: files, shell, complete_task, read_settings, ask_user, "
-            "edit_settings; not plan_work, delegate_task, create_tool, list_tools)");
+            "edit_settings; not plan_work, delegate_task, create_tool)");
     }
     QStringList ids;
     foreach (const QString &id, preset.toolIds)
     {
         const QString clean = id.trimmed();
-        if (!clean.isEmpty())
-            ids.append(clean);
+        if (clean.isEmpty()
+            || clean == QString::fromUtf8("list_tools")
+            || clean == QString::fromUtf8("list_worker_presets"))
+            continue;
+        ids.append(clean);
     }
     if (ids.isEmpty())
         return QString::fromUtf8("(none)");

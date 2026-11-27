@@ -185,8 +185,6 @@ static bool isGenericFunction(const QString &name)
         QString::fromUtf8("ask_user"),
         QString::fromUtf8("read_settings"),
         QString::fromUtf8("edit_settings"),
-        QString::fromUtf8("list_tools"),
-        QString::fromUtf8("list_worker_presets"),
         QString::fromUtf8("plan_work"),
         QString::fromUtf8("delegate_task"),
         QString::fromUtf8("create_tool"),
@@ -196,7 +194,7 @@ static bool isGenericFunction(const QString &name)
         QString::fromUtf8("dismiss_child_worker"),
         QString::fromUtf8("propose_decision")
     };
-    for (int i = 0; i < 29; ++i)
+    for (int i = 0; i < 27; ++i)
     {
         if (name == generic[i])
             return true;
@@ -856,7 +854,8 @@ QString PlanWorkTool::name() const
 QString PlanWorkTool::description() const
 {
     return QString::fromUtf8(
-        "Record YOUR plan, then carry it out. Call list_tools and list_worker_presets first. "
+        "Record YOUR plan, then carry it out. The tool list and the worker presets "
+        "are already in this chat's system prefix. "
         "If a needed detail is not in the assignment, the project files, or the settings, "
         "call ask_user and wait; do not put a guess into the plan. "
         "If a model profile or a program setting is wrong, call read_settings and "
@@ -968,14 +967,6 @@ QString PlanWorkTool::invoke(QString argumentsJson, bool *ok)
             *ok = false;
         return QString::fromUtf8("Worker is missing.");
     }
-    if (!_owner->listedTools() || !_owner->listedPresets())
-    {
-        if (ok)
-            *ok = false;
-        return QString::fromUtf8(
-            "Call list_tools and list_worker_presets first, then plan_work.");
-    }
-
     const QJsonArray raw = args.value(QString::fromUtf8("subtasks")).toArray();
     QList<WorkSubtask> items;
     for (int i = 0; i < raw.size(); ++i)
@@ -1209,7 +1200,7 @@ QJsonObject DelegateTaskTool::parametersSchema() const
     presetId.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     presetId.insert(QString::fromUtf8("description"),
                     QString::fromUtf8(
-                        "Worker preset_id from list_worker_presets. Required for "
+                        "Worker preset_id from the system prefix. Required for "
                         "why=specialization: the preset whose specialization matches "
                         "the part, only when creating a new child. Also selects "
                         "modality and purpose. Omit when reusing worker_id."));
@@ -2128,8 +2119,9 @@ QString CreateToolTool::description() const
         "executor for a repetition. Pass preset_id to bind the model: match "
         "modality AND purpose from the "
         "presets list (e.g. text-to-image vs object segmentation). Without preset_id the "
-        "default Tool LLM profile is used (cannot generate images). Call list_tools "
-        "and list_worker_presets first. Before you create the tool and before you "
+        "default Tool LLM profile is used (cannot generate images). "
+        "The presets and the tools are in this chat's system prefix. "
+        "Before you create the tool and before you "
         "give it a task, read functions= and write the purpose and the task only "
         "from those functions. The same model answers as a worker and does not "
         "answer as a tool when the task needs a function the tool does not have. "
@@ -2277,137 +2269,6 @@ QString CreateToolTool::invoke(QString argumentsJson, bool *ok)
 
 //----------------------------------------------
 
-ListToolsTool::ListToolsTool(WorkerManager *manager, QObject *parent)
-    : AgentTool(parent)
-    , _manager(manager)
-    , _owner(0)
-{
-}
-
-//----------------------------------------------
-
-void ListToolsTool::setOwner(Worker *owner)
-{
-    _owner = owner;
-}
-
-//----------------------------------------------
-
-QString ListToolsTool::name() const
-{
-    return QString::fromUtf8("list_tools");
-}
-
-//----------------------------------------------
-
-QString ListToolsTool::description() const
-{
-    return QString::fromUtf8(
-        "List shared tools: tool_id, name, busy/free/stopped, queue, purpose. "
-        "Call this before plan_work. "
-        "If a specialized tool for the part already exists, you must run_tool. "
-        "Do not do that part yourself. A specialized tool has priority over "
-        "doing that part yourself and over a worker that does not have the "
-        "tool's functions. "
-        "Each line has functions=. Before create_tool and before the task, write "
-        "only from those functions. The same model answers as a worker and does "
-        "not answer as a tool when the task needs a function the tool does not have. "
-        "A repeated utilitarian step may become a tool "
-        "when you judge that cheaper; you decide. "
-        "A tool marked stopped was interrupted. Resume it with run_tool. "
-        "Do not do that tool's work yourself.");
-}
-
-//----------------------------------------------
-
-QJsonObject ListToolsTool::parametersSchema() const
-{
-    QJsonObject schema;
-    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
-    schema.insert(QString::fromUtf8("properties"), QJsonObject());
-    return schema;
-}
-
-//----------------------------------------------
-
-QString ListToolsTool::invoke(QString, bool *ok)
-{
-    if (!_manager)
-    {
-        if (ok)
-            *ok = false;
-        return QString::fromUtf8("Worker manager is missing.");
-    }
-    if (_owner)
-        _owner->noteListedTools();
-    if (ok)
-        *ok = true;
-    return _manager->toolsSummary();
-}
-
-//----------------------------------------------
-
-ListWorkerPresetsTool::ListWorkerPresetsTool(WorkerManager *manager, Worker *owner,
-                                             QObject *parent)
-    : AgentTool(parent)
-    , _manager(manager)
-    , _owner(owner)
-{
-}
-
-//----------------------------------------------
-
-QString ListWorkerPresetsTool::name() const
-{
-    return QString::fromUtf8("list_worker_presets");
-}
-
-//----------------------------------------------
-
-QString ListWorkerPresetsTool::description() const
-{
-    return QString::fromUtf8(
-        "List the worker presets you can create: preset_id, type, modality, model, "
-        "purpose, specialization. specialization is what that text worker is for. "
-        "Call this before plan_work, together with list_tools. "
-        "If a specialized worker exists for the assignment, you must use it. "
-        "Do not do that part yourself. Reuse an already created worker with "
-        "worker_id. Create a new child with that preset_id and why=specialization "
-        "only when no such worker exists yet. "
-        "A preset line includes functions=. A tool made from that preset has only "
-        "those functions. Write its task from that list. "
-        "If your own specialization matches, do it here.");
-}
-
-//----------------------------------------------
-
-QJsonObject ListWorkerPresetsTool::parametersSchema() const
-{
-    QJsonObject schema;
-    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
-    schema.insert(QString::fromUtf8("properties"), QJsonObject());
-    return schema;
-}
-
-//----------------------------------------------
-
-QString ListWorkerPresetsTool::invoke(QString, bool *ok)
-{
-    if (!_manager)
-    {
-        if (ok)
-            *ok = false;
-        return QString::fromUtf8("Worker manager is missing.");
-    }
-    if (_owner)
-        _owner->noteListedPresets();
-    if (ok)
-        *ok = true;
-    return AppSettings::instance()->workerPresetsSummary();
-}
-
-//----------------------------------------------
-
 RunToolTool::RunToolTool(WorkerManager *manager, Worker *owner, QObject *parent)
     : AgentTool(parent)
     , _manager(manager)
@@ -2429,7 +2290,7 @@ QString RunToolTool::description() const
     return QString::fromUtf8(
         "Run a shared tool and wait for its report. One caller at a time (others queue). "
         "If this tool is the specialist for the part, you must use this call. "
-        "Before you write the task, read this tool's functions= from list_tools. "
+        "Before you write the task, read this tool's functions= in the system prefix. "
         "Name the functions the task must call. Do not tell it to implement "
         "that operation itself, in any language. "
         "The task may use only those functions. The same model answers as a worker "
@@ -2438,7 +2299,7 @@ QString RunToolTool::description() const
         "A tool marked stopped is resumed by this call; do not redo its work here. "
         "An llm tool gets a plain-language task. "
         "An image, audio, video, speech or embedding tool is not a chat model. "
-        "request is one JSON object. The keys are that tool's params from list_tools "
+        "request is one JSON object. The keys are that tool's params in the system prefix "
         "(the same list is on the preset line). Set required keys. Set any other key "
         "only when the task asks for that setting. prompt or text is the content, "
         "not an instruction to save a file. output_path is the new file. "
@@ -2454,7 +2315,7 @@ QJsonObject RunToolTool::parametersSchema() const
     QJsonObject toolId;
     toolId.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     toolId.insert(QString::fromUtf8("description"),
-                  QString::fromUtf8("tool_id (or exact name) from list_tools."));
+                  QString::fromUtf8("tool_id (or exact name) from the system prefix."));
 
     QJsonObject request;
     request.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
@@ -2462,7 +2323,7 @@ QJsonObject RunToolTool::parametersSchema() const
                    QString::fromUtf8(
                        "For an llm tool: what to do. For an image/audio/video/speech/"
                        "embedding tool: one JSON object whose keys are that tool's "
-                       "params from list_tools. Not a chat instruction."));
+                       "params in the system prefix. Not a chat instruction."));
 
     QJsonObject properties;
     properties.insert(QString::fromUtf8("tool_id"), toolId);

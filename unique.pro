@@ -58,6 +58,7 @@ HEADERS += \
     src/usagestatswidget.h \
     src/projectworkspace.h \
     src/qwencloudclient.h \
+    src/secretbox.h \
     src/settingspage.h \
     src/settingstools.h \
     src/speechinput.h \
@@ -112,6 +113,7 @@ SOURCES += \
     src/usagestatswidget.cpp \
     src/projectworkspace.cpp \
     src/qwencloudclient.cpp \
+    src/secretbox.cpp \
     src/settingspage.cpp \
     src/settingstools.cpp \
     src/speechinput.cpp \

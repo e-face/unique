@@ -71,12 +71,14 @@ private slots:
     void sltClear();
     void sltResetWorkspace();
     void sltOpenProject();
-    void sltNewProject();
+    void sltNewProjectDirectory();
+    void sltNewProjectExisting();
     void sltOpenLastProject();
     void sltOpenRecentProject();
     void sltRebuildRecentMenu();
     void sltSendRequested(const QString &text);
     void sltCompactRequested();
+    void sltSessionContextUsage(int usedTokens, int limitTokens);
     void sltBusyChanged(bool busy);
     void sltUsageUpdated(int promptTokens, int completionTokens, int totalTokens,
                          int cachedPromptTokens);
@@ -170,6 +172,7 @@ private:
      *        a live invoke() stack crashes the program.
      */
     void requestProjectSwitch(QString root, bool loadExisting, QString retireStore);
+    void beginNewProject(QString workspace);
     bool anyAgentInsideToolCall() const;
     void performProjectSwitch();
     void scheduleUiRefresh();
@@ -278,6 +281,8 @@ private:
     QList<Worker *> pendingConfirmationWorkers() const;
     void cycleConfirmation(int delta);
     void updatePermissionHighlights();
+    void updateWorkerMenu();
+    void refreshContextMeter();
 
     ProjectWorkspace    *_workspace;
     WorkerManager       *_workers;
@@ -299,6 +304,7 @@ private:
     QDockWidget         *_graphThumbDock;
     QMenu               *_fileMenu;
     QMenu               *_windowMenu;
+    QMenu               *_workerMenu;
     QMenu               *_projectMenu;
     QMenu               *_vcsMenu;
     QMenu               *_helpMenu;
@@ -309,11 +315,15 @@ private:
     QAction             *_windowGraphAction;
     QAction             *_windowJournalAction;
     QAction             *_windowSettingsAction;
+    QAction             *_workerCompactAction;
+    QAction             *_workerInterruptAction;
     QAction             *_helpStatsAction;
     QAction             *_helpUpdateAction;
     QAction             *_helpAboutAction;
     QAction             *_openProjectAction;
-    QAction             *_newProjectAction;
+    QMenu               *_newProjectMenu;
+    QAction             *_newProjectDirectoryAction;
+    QAction             *_newProjectExistingAction;
     QAction             *_openLastAction;
     QAction             *_fileClearAction;
     QAction             *_clearAction;

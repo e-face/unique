@@ -22,7 +22,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QRegExp>
 #include <QResizeEvent>
@@ -61,6 +60,30 @@ static QString firstPhrase(QString text)
     if (t.size() > 88)
         t = t.left(85) + QString::fromUtf8("…");
     return t;
+}
+
+//----------------------------------------------
+
+static QString toolRunSeparator()
+{
+    return QString::fromUtf8("\n\x1e\n");
+}
+
+//----------------------------------------------
+
+static bool isPlanReportText(const QString &text)
+{
+    const QString trimmed = text.trimmed();
+    return trimmed.startsWith(QString::fromUtf8("# "))
+           || trimmed.startsWith(QString::fromUtf8("## "));
+}
+
+//----------------------------------------------
+
+static bool isServiceToolKind(const QString &kind)
+{
+    return kind == QString::fromUtf8("tool")
+           || kind == QString::fromUtf8("tool_error");
 }
 
 //----------------------------------------------
@@ -455,11 +478,8 @@ void ChatMessageFrame::resizeEvent(QResizeEvent *event)
 ConversationWidget::ConversationWidget(QWidget *parent)
     : QWidget(parent)
     , _agent(0)
-    , _contextLabel(0)
     , _liveActionLine(0)
     , _activityTimer(0)
-    , _contextBar(0)
-    , _compactButton(0)
     , _scroll(0)
     , _messagesHost(0)
     , _messagesLayout(0)
@@ -467,8 +487,8 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     , _sendButton(0)
     , _autoApproveBox(0)
     , _stopButton(0)
-    , _interruptButton(0)
     , _reportButton(0)
+    , _reportHost(0)
     , _inputHost(0)
     , _permissionHost(0)
     , _permissionLabel(0)
@@ -481,53 +501,24 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     , _restoring(false)
     , _userInputEnabled(true)
     , _scrollScheduled(false)
-    , _contextUsedTokens(0)
-    , _contextLimitTokens(0)
-    , _contextCompacting(false)
 {
-    _contextLabel = new QLabel(this);
-    _contextLabel->hide();
-    _contextBar = new QProgressBar(this);
-    _contextBar->setRange(0, 1000);
-    _contextBar->setValue(0);
-    _contextBar->setTextVisible(true);
-    _contextBar->setAlignment(Qt::AlignCenter);
-    _contextBar->setFixedHeight(18);
-    _contextBar->setMinimumWidth(72);
-    _contextBar->setMaximumWidth(160);
-    _contextBar->setFormat(QString::fromUtf8("—"));
-
     _activityTimer = new QTimer(this);
     _activityTimer->setInterval(1000);
     connect(_activityTimer, SIGNAL(timeout()), this, SLOT(sltActivityTick()));
 
-    _compactButton = new QPushButton(tr("Сжать контекст"), this);
-    _compactButton->setToolTip(tr("Свернуть старую историю в краткое содержание, "
-                                  "чтобы продолжить беседу в окне модели."));
-    connect(_compactButton, SIGNAL(clicked()), this, SIGNAL(compactRequested()));
-
-    _interruptButton = new QPushButton(tr("Прервать"), this);
-    _interruptButton->setToolTip(tr("Принудительно остановить этот воркер, "
-                                    "включая зависшую команду."));
-    _interruptButton->setEnabled(false);
-    connect(_interruptButton, SIGNAL(clicked()),
-            this, SIGNAL(workerInterruptRequested()));
-
-    _reportButton = new QPushButton(tr("Отчёт родителю"), this);
+    _reportHost = new QWidget(this);
+    _reportButton = new QPushButton(tr("Отчёт родителю"), _reportHost);
     _reportButton->setToolTip(tr("Прервать работу и сразу отправить родителю "
                                  "текущий отчёт."));
     _reportButton->hide();
     connect(_reportButton, SIGNAL(clicked()),
             this, SIGNAL(reportToParentRequested()));
-
-    QHBoxLayout *contextRow = new QHBoxLayout();
-    contextRow->setContentsMargins(12, 10, 12, 8);
-    contextRow->setSpacing(8);
-    contextRow->addWidget(_contextBar);
-    contextRow->addStretch(1);
-    contextRow->addWidget(_compactButton);
-    contextRow->addWidget(_interruptButton);
-    contextRow->addWidget(_reportButton);
+    QHBoxLayout *reportRow = new QHBoxLayout(_reportHost);
+    reportRow->setContentsMargins(12, 4, 12, 4);
+    reportRow->setSpacing(0);
+    reportRow->addStretch(1);
+    reportRow->addWidget(_reportButton);
+    _reportHost->hide();
 
     _messagesHost = new QWidget(this);
     _messagesHost->setObjectName(QString::fromUtf8("messagesHost"));
@@ -635,8 +626,8 @@ ConversationWidget::ConversationWidget(QWidget *parent)
 
     QVBoxLayout *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
-    root->addLayout(contextRow);
     root->addWidget(_scroll, 1);
+    root->addWidget(_reportHost);
     root->addWidget(_permissionHost);
     root->addWidget(_inputHost);
 
@@ -647,18 +638,6 @@ ConversationWidget::ConversationWidget(QWidget *parent)
 
 void ConversationWidget::retranslateUi()
 {
-    if (_compactButton)
-    {
-        _compactButton->setText(tr("Сжать контекст"));
-        _compactButton->setToolTip(tr("Свернуть старую историю в краткое содержание, "
-                                      "чтобы продолжить беседу в окне модели."));
-    }
-    if (_interruptButton)
-    {
-        _interruptButton->setText(tr("Прервать"));
-        _interruptButton->setToolTip(tr("Принудительно остановить этот воркер, "
-                                        "включая зависшую команду."));
-    }
     if (_reportButton)
     {
         _reportButton->setText(tr("Отчёт родителю"));
@@ -701,9 +680,6 @@ void ConversationWidget::retranslateUi()
             _rejectButton->setText(tr("Пропустить"));
     }
 
-    if (_contextBar)
-        refreshContextBar();
-
     // Bubble captions follow kind, not the language saved with the record.
     refreshDisplayTitles();
 }
@@ -739,8 +715,6 @@ void ConversationWidget::setAgent(Agent *agent)
             this, SLOT(sltFailed(QString)));
     connect(_agent, SIGNAL(busyChanged(bool)),
             this, SLOT(sltBusyChanged(bool)));
-    connect(_agent, SIGNAL(contextUsageChanged(int,int)),
-            this, SLOT(sltContextUsageChanged(int,int)));
     connect(_agent, SIGNAL(compactingChanged(bool)),
             this, SLOT(sltCompactingChanged(bool)));
     connect(_agent, SIGNAL(toolBudgetExhausted(int)),
@@ -789,14 +763,14 @@ void ConversationWidget::restoreDisplayLog(const QList<ChatDisplayItem> &items)
 {
     _restoring = true;
     clearMessages();
-    _displayLog = items;
+    _displayLog = coalesceFeed(items);
     // Only the tail of the feed is put on screen: hundreds of QTextBrowser
     // widgets in a hidden tab cost memory and endless layout recalculations.
     int first = 0;
-    if (items.size() > kMaxVisibleBubbles)
-        first = items.size() - kMaxVisibleBubbles;
-    for (int i = first; i < items.size(); ++i)
-        replayDisplayItem(items.at(i));
+    if (_displayLog.size() > kMaxVisibleBubbles)
+        first = _displayLog.size() - kMaxVisibleBubbles;
+    for (int i = first; i < _displayLog.size(); ++i)
+        replayDisplayItem(_displayLog.at(i));
     _restoring = false;
     _pinBottom = true;
     scheduleScrollToBottom();
@@ -888,6 +862,20 @@ void ConversationWidget::restoreFromHistory(const QList<LlmMessage> &history)
                     args = pendingCalls.at(i).arguments;
                     pendingCalls.removeAt(i);
                     break;
+                }
+            }
+            if (name == QString::fromUtf8("plan_work"))
+            {
+                const QString plan = formatPlanWorkBody(args);
+                if (!plan.isEmpty())
+                {
+                    ChatDisplayItem planItem;
+                    planItem.kind = QString::fromUtf8("assistant");
+                    planItem.title = titleForKind(planItem.kind);
+                    planItem.authorKey = planItem.title;
+                    planItem.text = plan;
+                    items.append(planItem);
+                    continue;
                 }
             }
             ChatDisplayItem item;
@@ -1333,6 +1321,88 @@ void ConversationWidget::sltPermissionReject()
 
 //----------------------------------------------
 
+QList<ChatDisplayItem> ConversationWidget::coalesceFeed(
+    const QList<ChatDisplayItem> &items) const
+{
+    QList<ChatDisplayItem> out;
+    for (int i = 0; i < items.size(); ++i)
+    {
+        ChatDisplayItem row = items.at(i);
+        row.kind = normalizeDisplayKind(row);
+        if (row.kind == QString::fromUtf8("tool") && isPlanReportText(row.text))
+        {
+            row.kind = QString::fromUtf8("assistant");
+            row.title = titleForKind(row.kind);
+            row.authorKey = row.title;
+            out.append(row);
+            continue;
+        }
+        if (isServiceToolKind(row.kind) && !out.isEmpty()
+            && isServiceToolKind(out.last().kind))
+        {
+            ChatDisplayItem &prev = out.last();
+            prev.text += toolRunSeparator() + row.text;
+            prev.kind = row.kind;
+            prev.title = titleForKind(row.kind);
+            prev.authorKey = row.kind;
+            continue;
+        }
+        const QString fresh = titleForKind(row.kind);
+        if (!fresh.isEmpty())
+            row.title = fresh;
+        out.append(row);
+    }
+    return out;
+}
+
+//----------------------------------------------
+
+ChatMessageFrame *ConversationWidget::lastMessageFrame() const
+{
+    if (!_messagesLayout)
+        return 0;
+    for (int i = _messagesLayout->count() - 1; i >= 0; --i)
+    {
+        QLayoutItem *layoutItem = _messagesLayout->itemAt(i);
+        if (!layoutItem)
+            continue;
+        ChatMessageFrame *frame = qobject_cast<ChatMessageFrame *>(layoutItem->widget());
+        if (frame)
+            return frame;
+    }
+    return 0;
+}
+
+//----------------------------------------------
+
+void ConversationWidget::appendServiceToolCall(const QString &kind, const QString &body)
+{
+    const QString title = titleForKind(kind);
+    ChatMessageFrame *frame = lastMessageFrame();
+    const bool extend = frame
+                        && frame->objectName() == QString::fromUtf8("toolMsg")
+                        && !_displayLog.isEmpty()
+                        && isServiceToolKind(_displayLog.last().kind);
+    if (extend)
+    {
+        ChatDisplayItem &last = _displayLog.last();
+        last.kind = kind;
+        last.title = title;
+        last.authorKey = kind;
+        last.text += toolRunSeparator() + body;
+        frame->appendEscapedParagraph(body);
+        frame->setPreview(firstPhrase(body));
+        frame->setCaption(title, kind);
+        if (!_restoring && _pinBottom)
+            scheduleScrollToBottom();
+        return;
+    }
+    recordDisplay(kind, title, body, kind);
+    addPlainBubble(title, body, QString::fromUtf8("toolMsg"), false, false, false, kind);
+}
+
+//----------------------------------------------
+
 void ConversationWidget::recordDisplay(QString kind, QString title, QString text,
                                         QString authorKey)
 {
@@ -1368,15 +1438,18 @@ void ConversationWidget::replayDisplayItem(const ChatDisplayItem &item)
     else if (kind == QString::fromUtf8("tool")
              || kind == QString::fromUtf8("tool_error"))
     {
-        const bool report = kind == QString::fromUtf8("tool")
-                            && (item.text.startsWith(QString::fromUtf8("# "))
-                                || item.text.startsWith(QString::fromUtf8("## ")));
-        if (report)
-            addBubble(title, MarkdownFormatter::toHtml(item.text, imageBaseFor(_agent)),
-                      item.text, QString::fromUtf8("toolMsg"), false, false, key);
-        else
-            addPlainBubble(title, item.text, QString::fromUtf8("toolMsg"), false,
-                           false, false, key);
+        const QStringList parts = item.text.split(toolRunSeparator());
+        const QString first = parts.isEmpty() ? item.text : parts.first();
+        QWidget *bubble = addPlainBubble(title, first, QString::fromUtf8("toolMsg"), false,
+                                         false, false, key);
+        ChatMessageFrame *frame = qobject_cast<ChatMessageFrame *>(bubble);
+        if (frame)
+        {
+            for (int i = 1; i < parts.size(); ++i)
+                frame->appendEscapedParagraph(parts.at(i));
+            const QString last = parts.isEmpty() ? item.text : parts.last();
+            frame->setPreview(firstPhrase(last));
+        }
     }
     else if (kind == QString::fromUtf8("error"))
         addPlainBubble(title, item.text, QString::fromUtf8("errorMsg"), false,
@@ -1399,8 +1472,6 @@ void ConversationWidget::setStopEnabled(bool enabled)
 {
     if (_stopButton)
         _stopButton->setEnabled(enabled);
-    if (_interruptButton)
-        _interruptButton->setEnabled(enabled);
 }
 
 //----------------------------------------------
@@ -1409,6 +1480,8 @@ void ConversationWidget::setReportToParentVisible(bool visible)
 {
     if (_reportButton)
         _reportButton->setVisible(visible);
+    if (_reportHost)
+        _reportHost->setVisible(visible);
 }
 
 //----------------------------------------------
@@ -1429,7 +1502,6 @@ void ConversationWidget::applyTheme()
                            ? QString::fromUtf8("#f3f4f6")
                            : s->panelColor().lighter(114).name();
     const QString input = s->inputColor().name();
-    const QString accent = s->accentColor().name();
     const QString user = s->chatUserColor().name();
     const QString assistant = s->chatAssistantColor().name();
     const QString other = s->chatOtherColor().name();
@@ -1449,20 +1521,17 @@ void ConversationWidget::applyTheme()
                             : QString::fromUtf8("#8f3424");
     setStyleSheet(QString::fromUtf8(
         "ConversationWidget { background:%1; color:%2; }"
-        "QProgressBar { background:%3; color:%2; border:none; border-radius:6px;"
-        "  text-align:center; min-height:16px; max-height:18px; }"
-        "QProgressBar::chunk { background:%4; border-radius:6px; }"
         "QScrollArea { background:%1; border:none; }"
         "QWidget#messagesHost { background:%1; }"
-        "QFrame#userMsg QFrame#bubble { background:%6; border:1px solid %9;"
+        "QFrame#userMsg QFrame#bubble { background:%4; border:1px solid %7;"
         "  border-radius:12px; }"
-        "QFrame#assistantMsg QFrame#bubble { background:%7; border:1px solid %9;"
+        "QFrame#assistantMsg QFrame#bubble { background:%5; border:1px solid %7;"
         "  border-radius:12px; }"
-        "QFrame#toolMsg QFrame#bubble { background:%8; border:1px solid %9;"
+        "QFrame#toolMsg QFrame#bubble { background:%6; border:1px solid %7;"
         "  border-radius:10px; }"
-        "QFrame#noticeMsg QFrame#bubble { background:%8; border:1px solid %9;"
+        "QFrame#noticeMsg QFrame#bubble { background:%6; border:1px solid %7;"
         "  border-radius:10px; }"
-        "QFrame#errorMsg QFrame#bubble { background:%8; border:1px solid %9;"
+        "QFrame#errorMsg QFrame#bubble { background:%6; border:1px solid %7;"
         "  border-radius:10px; }"
         "QWidget#permissionHost { background:%PERMBG%; border-top:1px solid %PERMBORDER%; }"
         "QWidget#permissionHost QLabel { color:%2; }"
@@ -1471,13 +1540,13 @@ void ConversationWidget::applyTheme()
         "QLabel { color:%2; background:transparent; }"
         "QTextBrowser { color:%2; background:transparent; border:none;"
         "  padding:0; margin:0; }"
-        "QPlainTextEdit { background:%5; color:%2; border:1px solid %9;"
+        "QPlainTextEdit { background:%3; color:%2; border:1px solid %7;"
         "  border-radius:10px; padding:8px; }"
-        "QPushButton { background:%PANEL%; color:%2; border:1px solid %9;"
+        "QPushButton { background:%PANEL%; color:%2; border:1px solid %7;"
         "  border-radius:8px; padding:6px 14px; }"
         "QPushButton:hover { background:%HOVER%; }"
         "QPushButton:disabled { color:%MUTED%; }")
-                      .arg(chatBg, text, bubble, accent, input, user, assistant, other, border)
+                      .arg(chatBg, text, input, user, assistant, other, border)
                       .replace(QString::fromUtf8("%MUTED%"), muted)
                       .replace(QString::fromUtf8("%HOVER%"), hover)
                       .replace(QString::fromUtf8("%PANEL%"), s->panelColor().name())
@@ -1486,8 +1555,6 @@ void ConversationWidget::applyTheme()
                       .replace(QString::fromUtf8("%PERMBTN%"), permBtn));
 
     applyChatLiveActionStyle();
-    if (_contextBar)
-        refreshContextBar();
 
     if (_messagesLayout)
     {
@@ -1518,9 +1585,6 @@ void ConversationWidget::sltBusyChanged(bool busy)
 {
     _sendButton->setEnabled(_userInputEnabled && !busy);
     _input->setReadOnly(!_userInputEnabled || busy);
-    _compactButton->setEnabled(!busy);
-    if (_interruptButton)
-        _interruptButton->setEnabled(busy);
     if (_reportButton)
         _reportButton->setEnabled(true);
     if (busy)
@@ -1642,105 +1706,14 @@ void ConversationWidget::setChatLiveActionVisible(bool visible)
 
 //----------------------------------------------
 
-void ConversationWidget::sltContextUsageChanged(int usedTokens, int limitTokens)
-{
-    _contextUsedTokens = usedTokens;
-    _contextLimitTokens = limitTokens;
-    _contextCompacting = false;
-    refreshContextBar();
-}
-
-//----------------------------------------------
-
-static QFont contextBarFont()
-{
-    QFont font = QApplication::font();
-    if (font.pointSize() > 0)
-        font.setPointSize(qMax(6, (font.pointSize() * 2) / 3));
-    else if (font.pixelSize() > 0)
-        font.setPixelSize(qMax(8, (font.pixelSize() * 2) / 3));
-    return font;
-}
-
-//----------------------------------------------
-
-void ConversationWidget::refreshContextBar()
-{
-    if (!_contextBar)
-        return;
-
-    const QFont font = contextBarFont();
-    _contextBar->setFont(font);
-    QString fontCss;
-    if (font.pointSize() > 0)
-        fontCss = QString::number(font.pointSize()) + QString::fromUtf8("pt");
-    else if (font.pixelSize() > 0)
-        fontCss = QString::number(font.pixelSize()) + QString::fromUtf8("px");
-    else
-        fontCss = QString::fromUtf8("6pt");
-
-    const int used = qMax(0, _contextUsedTokens);
-    const int limit = qMax(0, _contextLimitTokens);
-    const int usedK = (used + 500) / 1000;
-    QString text;
-    int percent = 0;
-    if (limit <= 0)
-    {
-        _contextBar->setValue(0);
-        text = used > 0
-               ? QString::number(usedK) + QString::fromUtf8("k/—")
-               : QString::fromUtf8("—");
-    }
-    else
-    {
-        const int limitK = (limit + 500) / 1000;
-        const int permille = (int)qBound(qint64(0),
-                                        qint64(used) * 1000 / qint64(limit),
-                                        qint64(1000));
-        percent = (permille + 5) / 10;
-        _contextBar->setValue(permille);
-        text = QString::number(usedK) + QString::fromUtf8("k/")
-               + QString::number(limitK) + QString::fromUtf8("k");
-    }
-    _contextBar->setFormat(text);
-
-    QString chunk = QString::fromUtf8("#26a69a");
-    if (percent >= 90)
-        chunk = QString::fromUtf8("#e53935");
-    else if (percent >= 75)
-        chunk = QString::fromUtf8("#fb8c00");
-    else if (percent >= 60)
-        chunk = QString::fromUtf8("#fdd835");
-    const QString track = AppSettings::instance()->isLightTheme()
-                          ? QString::fromUtf8("#e5e5e5")
-                          : QString::fromUtf8("#5a5a5a");
-    const QString ink = AppSettings::instance()->textColor().name();
-    _contextBar->setStyleSheet(
-        QString::fromUtf8("QProgressBar { background:%2; color:%3; border:none;"
-                          " border-radius:4px; text-align:center; font-size:%4;"
-                          " min-height:16px; max-height:18px; }"
-                          "QProgressBar::chunk { background:%1; border-radius:4px; }")
-        .arg(chunk, track, ink, fontCss));
-}
-
-//----------------------------------------------
-
 void ConversationWidget::sltCompactingChanged(bool compacting)
 {
-    _contextCompacting = compacting;
     if (compacting)
         setActivity(tr("Сжатие контекста"));
+    else if (_agent && _agent->isBusy())
+        setActivity(tr("Ожидание ответа модели"));
     else
-    {
-        if (_agent && _agent->isBusy())
-            setActivity(tr("Ожидание ответа модели"));
-        else if (_contextLimitTokens > 0)
-            sltContextUsageChanged(_contextUsedTokens, _contextLimitTokens);
-        else if (_contextUsedTokens > 0)
-            sltContextUsageChanged(_contextUsedTokens, _contextLimitTokens);
-        else if (_contextLabel)
-            refreshContextBar();
-    }
+        setActivity(QString());
 }
 
 //----------------------------------------------
@@ -1837,6 +1810,13 @@ void ConversationWidget::sltToolCallStarted(const QString &name, const QString &
     _pendingToolName = name;
     _pendingToolArgs = arguments;
     setActivity(tr("Выполняется функция %1").arg(name));
+    if (name == QString::fromUtf8("plan_work"))
+        return;
+    ChatMessageFrame *frame = lastMessageFrame();
+    if (!frame || frame->objectName() != QString::fromUtf8("toolMsg"))
+        return;
+    frame->setCaption(titleForKind(QString::fromUtf8("tool")), QString::fromUtf8("tool"));
+    frame->setPreview(firstPhrase(QString::fromUtf8("%1(%2)").arg(name, arguments)));
 }
 
 //----------------------------------------------
@@ -1852,7 +1832,7 @@ static QString planHowLabel(const QString &how)
 
 //----------------------------------------------
 
-static QString formatPlanWorkBody(const QString &arguments)
+QString ConversationWidget::formatPlanWorkBody(const QString &arguments)
 {
     const QJsonDocument doc = QJsonDocument::fromJson(arguments.toUtf8());
     if (!doc.isObject())
@@ -1904,29 +1884,26 @@ static QString formatPlanWorkBody(const QString &arguments)
 
 void ConversationWidget::sltToolCallFinished(const QString &name, const QString &result, bool ok)
 {
-    QString body;
+    QString plan;
     if (ok && name == QString::fromUtf8("plan_work"))
-        body = formatPlanWorkBody(_pendingToolArgs);
-    if (body.isEmpty())
+        plan = formatPlanWorkBody(_pendingToolArgs);
+    if (!plan.isEmpty())
     {
-        body = QString::fromUtf8("%1(%2)").arg(name, _pendingToolArgs);
+        const QString kind = QString::fromUtf8("assistant");
+        const QString title = titleForKind(kind);
+        recordDisplay(kind, title, plan, title);
+        addBubble(title, MarkdownFormatter::toHtml(plan, imageBaseFor(_agent)),
+                  plan, QString::fromUtf8("assistantMsg"), false, false, title);
+    }
+    else
+    {
+        QString body = QString::fromUtf8("%1(%2)").arg(name, _pendingToolArgs);
         body += QChar('\n');
         body += result;
+        const QString kind = ok ? QString::fromUtf8("tool")
+                                : QString::fromUtf8("tool_error");
+        appendServiceToolCall(kind, body);
     }
-    const QString kind = ok ? QString::fromUtf8("tool")
-                            : QString::fromUtf8("tool_error");
-    const QString title = titleForKind(kind);
-    recordDisplay(kind, title, body, kind);
-    const bool report = ok && name == QString::fromUtf8("plan_work")
-                        && body.startsWith(QString::fromUtf8("# "));
-    if (report)
-        addBubble(title, MarkdownFormatter::toHtml(body, imageBaseFor(_agent)),
-                  body, QString::fromUtf8("toolMsg"), false, false, kind);
-    else
-        addPlainBubble(title,
-                       body,
-                       QString::fromUtf8("toolMsg"),
-                       false, false, false, kind);
     _pendingToolName.clear();
     _pendingToolArgs.clear();
     // A media executor calls invokeTool without setBusy; otherwise the
@@ -2144,28 +2121,4 @@ void ConversationWidget::removeBubble(QWidget *bubble)
     }
     bubble->hide();
     bubble->deleteLater();
-}
-
-//----------------------------------------------
-
-void ConversationWidget::setContextRowVisible(bool visible)
-{
-    if (_contextLabel)
-        _contextLabel->hide();
-    if (_contextBar)
-        _contextBar->setVisible(visible);
-    if (_compactButton)
-        _compactButton->setVisible(visible);
-    if (_interruptButton)
-        _interruptButton->setVisible(visible);
-}
-
-//----------------------------------------------
-
-void ConversationWidget::setContextMeterVisible(bool visible)
-{
-    if (_contextBar)
-        _contextBar->setVisible(visible);
-    if (_compactButton)
-        _compactButton->setVisible(visible);
 }
