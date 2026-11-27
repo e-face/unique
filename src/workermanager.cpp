@@ -3437,6 +3437,10 @@ void WorkerManager::installTools(Worker *worker)
         }
     }
 
+    // After retainTools so a preset cannot drop it. Media workers do not chat.
+    if (!workerTaskKindIsMediaExecutor(modality) && _workspace)
+        agent->addTool(new AttachImageAgentTool(_workspace, agent));
+
     const LlmProfile profile = AppSettings::instance()->profileForWorker(
                                    worker->type(), worker->llmProfileId());
     agent->applyProfileLimits(profile);
@@ -3627,7 +3631,10 @@ static QString replyFormatRule(const AppLocale *locale)
         "important step, not a tool name. Use a heading only when the note has two "
         "sections, such as the plan and the current step. Do not narrate every call. "
         "Do not repeat the note when the plan has not changed. The note is not the result "
-        "and does not finish the task. The finished result still follows the order above.");
+        "and does not finish the task. The finished result still follows the order above.\n"
+        "On every function call, set for_user to one short sentence in the user's language "
+        "that says what this call does for them. The chat shows that sentence instead of "
+        "the function name. It is not the work note and does not replace the result.");
     QString text = fallback;
     if (locale)
         text = locale->model(QString::fromUtf8("reply_format"), fallback);
@@ -3653,10 +3660,12 @@ static QString builtinLookupRule(const AppLocale *locale)
         "web_search — titles, addresses, and snippets. You choose engine: duckduckgo, bing, "
         "google, or yandex. limit up to 30. A title or a snippet is not the page. "
         "If nothing was parsed, that is not an empty web.\n"
-        "read_page — text of one http(s) result address from web_search. Not a search page. "
-        "offset and limit page through a long text (limit up to 40000 characters). "
-        "The call asks the user to confirm, the same way web_search does. "
-        "Do not curl a search page.\n"
+        "read_page — text of http(s) result addresses from web_search. Pass url for one "
+        "page, or urls for up to 30 pages in one call. Not a search page. "
+        "offset and limit apply to each page (one page: default 12000, max 40000 "
+        "characters). A batch shares about 90000 characters, so each page is shorter "
+        "when many addresses are requested. The call asks the user to confirm, the "
+        "same way web_search does. Do not curl a search page.\n"
         "replace_in_file — exact fragment replace in one file: path, old, new, "
         "replace_all. new may be empty to delete the fragment. If old occurs more "
         "than once and replace_all is false, the file is left unchanged. "
@@ -3682,7 +3691,8 @@ static QString internetSearchRule(const AppLocale *locale)
         "\nINTERNET SEARCH: Any search on the internet requires the user's confirmation "
         "before it starts. Do not search the web, open a page to look something up, "
         "fetch online results, or delegate such a search until the user approves. "
-        "For one result address call read_page. It asks for the same confirmation as web_search. "
+        "For result addresses call read_page (urls, up to 30 in one call). "
+        "It asks for the same confirmation as web_search. "
         "run_command shows the same dialog as other shell commands, including Always "
         "for that program. After the user presses Always, later searches with the same "
         "program run without another question. If you cannot run the search yourself, "

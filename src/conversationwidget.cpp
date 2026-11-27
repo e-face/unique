@@ -57,9 +57,55 @@ static QString firstPhrase(QString text)
         t = t.left(nl);
     t.replace(QRegExp(QString::fromUtf8("\\s+")), QString::fromUtf8(" "));
     t = t.trimmed();
-    if (t.size() > 88)
-        t = t.left(85) + QString::fromUtf8("…");
+    if (t.size() > 140)
+        t = t.left(137) + QString::fromUtf8("…");
     return t;
+}
+
+//----------------------------------------------
+
+static bool isContextDropNotice(const QString &text)
+{
+    const QString trimmed = text.trimmed();
+    return trimmed.startsWith(QString::fromUtf8("Убрал из контекста файлы:"))
+           || trimmed.startsWith(QString::fromUtf8("Removed files from context:"))
+           || trimmed.startsWith(QString::fromUtf8("已从上下文移除文件："));
+}
+
+//----------------------------------------------
+
+static bool isToolCallLine(const QString &line)
+{
+    const int open = line.indexOf(QChar('('));
+    if (open <= 0 || !line.endsWith(QChar(')')))
+        return false;
+    const QString name = line.left(open).trimmed();
+    if (name.isEmpty())
+        return false;
+    for (int i = 0; i < name.size(); ++i)
+    {
+        const QChar c = name.at(i);
+        if (!c.isLetterOrNumber() && c != QChar('_'))
+            return false;
+    }
+    return true;
+}
+
+//----------------------------------------------
+
+static QString toolSegmentBody(const QString &segment, QString *headerNote)
+{
+    if (headerNote)
+        headerNote->clear();
+    const int nl = segment.indexOf(QChar('\n'));
+    if (nl <= 0)
+        return segment;
+    const QString first = segment.left(nl).trimmed();
+    if (first.isEmpty() || isToolCallLine(first))
+        return segment;
+    if (headerNote)
+        *headerNote = first;
+    return segment.mid(nl + 1);
 }
 
 //----------------------------------------------
@@ -501,6 +547,8 @@ ConversationWidget::ConversationWidget(QWidget *parent)
     , _restoring(false)
     , _userInputEnabled(true)
     , _scrollScheduled(false)
+    , _adjustingScroll(false)
+    , _scrollRetried(false)
 {
     _activityTimer = new QTimer(this);
     _activityTimer->setInterval(1000);
@@ -701,8 +749,10 @@ void ConversationWidget::setAgent(Agent *agent)
             this, SLOT(sltUserMessage(QString)));
     connect(_agent, SIGNAL(assistantMessage(QString)),
             this, SLOT(sltAssistantMessage(QString)));
-    connect(_agent, SIGNAL(toolCallStarted(QString,QString)),
-            this, SLOT(sltToolCallStarted(QString,QString)));
+    connect(_agent, SIGNAL(assistantRetracted(QString)),
+            this, SLOT(sltAssistantRetracted(QString)));
+    connect(_agent, SIGNAL(toolCallStarted(QString,QString,QString)),
+            this, SLOT(sltToolCallStarted(QString,QString,QString)));
     connect(_agent, SIGNAL(toolCallFinished(QString,QString,bool)),
             this, SLOT(sltToolCallFinished(QString,QString,bool)));
     connect(_agent, SIGNAL(notice(QString)),
@@ -878,6 +928,17 @@ void ConversationWidget::restoreFromHistory(const QList<LlmMessage> &history)
                     continue;
                 }
             }
+            QString note;
+            QJsonParseError noteError;
+            const QJsonDocument noteDoc = QJsonDocument::fromJson(args.toUtf8(), &noteError);
+            if (noteError.error == QJsonParseError::NoError && noteDoc.isObject()
+                && noteDoc.object().contains(QString::fromUtf8("for_user")))
+            {
+                QJsonObject noteObject = noteDoc.object();
+                note = noteObject.value(QString::fromUtf8("for_user")).toString().trimmed();
+                noteObject.remove(QString::fromUtf8("for_user"));
+                args = QString::fromUtf8(QJsonDocument(noteObject).toJson(QJsonDocument::Compact));
+            }
             ChatDisplayItem item;
             item.kind = QString::fromUtf8("tool");
             item.title = titleForKind(item.kind);
@@ -886,6 +947,8 @@ void ConversationWidget::restoreFromHistory(const QList<LlmMessage> &history)
                 item.text = QString::fromUtf8("%1(%2)\n%3").arg(name, args, message.content);
             else
                 item.text = QString::fromUtf8("%1\n%2").arg(name, message.content);
+            if (!note.isEmpty())
+                item.text = note + QString::fromUtf8("\n") + item.text;
             items.append(item);
         }
     }
@@ -923,16 +986,23 @@ QString ConversationWidget::userAuthorLabel() const
 {
     if (!_userAuthor.isEmpty())
         return _userAuthor;
-    return _userInputEnabled ? tr("Вы") : tr("Пользователь");
+    return tr("Вы");
 }
 
 //----------------------------------------------
 
 QString ConversationWidget::assistantAuthorLabel() const
 {
-    if (!_assistantAuthor.isEmpty())
-        return _assistantAuthor;
-    return tr("Ассистент");
+    QString label = _assistantAuthor.trimmed();
+    if (label.isEmpty())
+        return tr("Ассистент");
+    // The task title is a short description. It belongs in a collapsed
+    // header, not in the caption of an open message.
+    const QString dash = QString::fromUtf8(" \xE2\x80\x94 ");
+    const int at = label.indexOf(dash);
+    if (at > 0)
+        label = label.left(at).trimmed();
+    return label;
 }
 
 //----------------------------------------------
@@ -1329,6 +1399,8 @@ QList<ChatDisplayItem> ConversationWidget::coalesceFeed(
     {
         ChatDisplayItem row = items.at(i);
         row.kind = normalizeDisplayKind(row);
+        if (row.kind == QString::fromUtf8("notice") && isContextDropNotice(row.text))
+            continue;
         if (row.kind == QString::fromUtf8("tool") && isPlanReportText(row.text))
         {
             row.kind = QString::fromUtf8("assistant");
@@ -1383,6 +1455,9 @@ void ConversationWidget::appendServiceToolCall(const QString &kind, const QStrin
                         && frame->objectName() == QString::fromUtf8("toolMsg")
                         && !_displayLog.isEmpty()
                         && isServiceToolKind(_displayLog.last().kind);
+    QString headerNote;
+    const QString shown = toolSegmentBody(body, &headerNote);
+    const QString preview = headerNote.isEmpty() ? firstPhrase(shown) : headerNote;
     if (extend)
     {
         ChatDisplayItem &last = _displayLog.last();
@@ -1390,15 +1465,19 @@ void ConversationWidget::appendServiceToolCall(const QString &kind, const QStrin
         last.title = title;
         last.authorKey = kind;
         last.text += toolRunSeparator() + body;
-        frame->appendEscapedParagraph(body);
-        frame->setPreview(firstPhrase(body));
+        frame->appendEscapedParagraph(shown);
+        frame->setPreview(firstPhrase(preview));
         frame->setCaption(title, kind);
         if (!_restoring && _pinBottom)
             scheduleScrollToBottom();
         return;
     }
     recordDisplay(kind, title, body, kind);
-    addPlainBubble(title, body, QString::fromUtf8("toolMsg"), false, false, false, kind);
+    QWidget *bubble = addPlainBubble(title, shown, QString::fromUtf8("toolMsg"), false,
+                                     false, false, kind);
+    ChatMessageFrame *created = qobject_cast<ChatMessageFrame *>(bubble);
+    if (created)
+        created->setPreview(firstPhrase(preview));
 }
 
 //----------------------------------------------
@@ -1439,16 +1518,26 @@ void ConversationWidget::replayDisplayItem(const ChatDisplayItem &item)
              || kind == QString::fromUtf8("tool_error"))
     {
         const QStringList parts = item.text.split(toolRunSeparator());
-        const QString first = parts.isEmpty() ? item.text : parts.first();
-        QWidget *bubble = addPlainBubble(title, first, QString::fromUtf8("toolMsg"), false,
+        QString firstNote;
+        const QString firstBody = toolSegmentBody(parts.isEmpty() ? item.text : parts.first(),
+                                                  &firstNote);
+        QWidget *bubble = addPlainBubble(title, firstBody, QString::fromUtf8("toolMsg"), false,
                                          false, false, key);
         ChatMessageFrame *frame = qobject_cast<ChatMessageFrame *>(bubble);
         if (frame)
         {
+            QString lastNote = firstNote;
+            QString lastBody = firstBody;
             for (int i = 1; i < parts.size(); ++i)
-                frame->appendEscapedParagraph(parts.at(i));
-            const QString last = parts.isEmpty() ? item.text : parts.last();
-            frame->setPreview(firstPhrase(last));
+            {
+                QString note;
+                const QString shown = toolSegmentBody(parts.at(i), &note);
+                frame->appendEscapedParagraph(shown);
+                lastNote = note;
+                lastBody = shown;
+            }
+            const QString preview = lastNote.isEmpty() ? firstPhrase(lastBody) : lastNote;
+            frame->setPreview(firstPhrase(preview));
         }
     }
     else if (kind == QString::fromUtf8("error"))
@@ -1789,6 +1878,9 @@ void ConversationWidget::sltUserMessage(const QString &text)
     const QString title = titleForKind(kind);
     const QString colorKey = kind;
     recordDisplay(kind, title, body, colorKey);
+    // A new request belongs at the end of that chat, even if the feed
+    // was scrolled up or the previous scroll had not landed yet.
+    _pinBottom = true;
     addPlainBubble(title, body, QString::fromUtf8("userMsg"), true, false, false, colorKey);
 }
 
@@ -1805,10 +1897,57 @@ void ConversationWidget::sltAssistantMessage(const QString &text)
 
 //----------------------------------------------
 
-void ConversationWidget::sltToolCallStarted(const QString &name, const QString &arguments)
+void ConversationWidget::sltAssistantRetracted(const QString &text)
+{
+    const QString wanted = text.trimmed();
+    if (wanted.isEmpty())
+        return;
+    int found = -1;
+    for (int i = _displayLog.size() - 1; i >= 0; --i)
+    {
+        const ChatDisplayItem &item = _displayLog.at(i);
+        if (item.kind == QString::fromUtf8("assistant") && item.text.trimmed() == wanted)
+        {
+            found = i;
+            break;
+        }
+    }
+    if (found < 0)
+        return;
+    int first = 0;
+    if (_displayLog.size() > kMaxVisibleBubbles)
+        first = _displayLog.size() - kMaxVisibleBubbles;
+    if (found >= first && _messagesLayout)
+    {
+        const int frameIndex = found - first;
+        int seen = 0;
+        for (int i = 0; i < _messagesLayout->count(); ++i)
+        {
+            QLayoutItem *layoutItem = _messagesLayout->itemAt(i);
+            ChatMessageFrame *frame = layoutItem
+                                      ? qobject_cast<ChatMessageFrame *>(layoutItem->widget())
+                                      : 0;
+            if (!frame)
+                continue;
+            if (seen == frameIndex)
+            {
+                removeBubble(frame);
+                break;
+            }
+            ++seen;
+        }
+    }
+    _displayLog.removeAt(found);
+}
+
+//----------------------------------------------
+
+void ConversationWidget::sltToolCallStarted(const QString &name, const QString &arguments,
+                                            const QString &forUser)
 {
     _pendingToolName = name;
     _pendingToolArgs = arguments;
+    _pendingForUser = forUser.trimmed();
     setActivity(tr("Выполняется функция %1").arg(name));
     if (name == QString::fromUtf8("plan_work"))
         return;
@@ -1816,7 +1955,10 @@ void ConversationWidget::sltToolCallStarted(const QString &name, const QString &
     if (!frame || frame->objectName() != QString::fromUtf8("toolMsg"))
         return;
     frame->setCaption(titleForKind(QString::fromUtf8("tool")), QString::fromUtf8("tool"));
-    frame->setPreview(firstPhrase(QString::fromUtf8("%1(%2)").arg(name, arguments)));
+    const QString header = _pendingForUser.isEmpty()
+                           ? QString::fromUtf8("%1(%2)").arg(name, arguments)
+                           : _pendingForUser;
+    frame->setPreview(firstPhrase(header));
 }
 
 //----------------------------------------------
@@ -1900,11 +2042,14 @@ void ConversationWidget::sltToolCallFinished(const QString &name, const QString 
         QString body = QString::fromUtf8("%1(%2)").arg(name, _pendingToolArgs);
         body += QChar('\n');
         body += result;
+        if (!_pendingForUser.isEmpty())
+            body = _pendingForUser + QString::fromUtf8("\n") + body;
         const QString kind = ok ? QString::fromUtf8("tool")
                                 : QString::fromUtf8("tool_error");
         appendServiceToolCall(kind, body);
     }
     _pendingToolName.clear();
+    _pendingForUser.clear();
     _pendingToolArgs.clear();
     // A media executor calls invokeTool without setBusy; otherwise the
     // running-function timer keeps ticking after completion.
@@ -1984,7 +2129,19 @@ void ConversationWidget::sltScrollToBottom()
     if (!_scroll || !_pinBottom)
         return;
     QScrollBar *bar = _scroll->verticalScrollBar();
+    _adjustingScroll = true;
     bar->setValue(bar->maximum());
+    _adjustingScroll = false;
+    if (bar->value() >= bar->maximum() - 2)
+    {
+        _scrollRetried = false;
+        return;
+    }
+    if (_scrollRetried || bar->maximum() <= 0)
+        return;
+    _scrollRetried = true;
+    _scrollScheduled = true;
+    QTimer::singleShot(0, this, SLOT(sltScrollToBottom()));
 }
 
 //----------------------------------------------
@@ -2008,6 +2165,17 @@ void ConversationWidget::scheduleScrollToBottom()
         return;
     _scrollScheduled = true;
     QTimer::singleShot(0, this, SLOT(sltScrollToBottom()));
+}
+
+//----------------------------------------------
+
+void ConversationWidget::revealEnd()
+{
+    if (!_pinBottom || !_scroll)
+        return;
+    _scrollRetried = false;
+    _scrollScheduled = false;
+    scheduleScrollToBottom();
 }
 
 //----------------------------------------------
@@ -2048,8 +2216,10 @@ void ConversationWidget::trimOldBubbles()
 
 void ConversationWidget::sltScrollRangeChanged(int, int)
 {
-    if (_pinBottom)
-        sltScrollToBottom();
+    if (!_pinBottom)
+        return;
+    _scrollRetried = false;
+    sltScrollToBottom();
 }
 
 //----------------------------------------------
@@ -2058,7 +2228,7 @@ void ConversationWidget::sltScrollValueChanged(int)
 {
     // While a deferred scroll-to-bottom is pending, value is not yet at the edge.
     // Do not clear _pinBottom, or the feed will unstick.
-    if (_scrollScheduled)
+    if (_scrollScheduled || _adjustingScroll)
         return;
     _pinBottom = isNearBottom();
 }
@@ -2069,9 +2239,9 @@ QWidget *ConversationWidget::addBubble(QString title, QString html, QString prev
                                        QString objectName, bool alignRight, bool collapsed,
                                        QString authorKey)
 {
-    // Capture the stuck-to-bottom flag BEFORE the layout change: after an insert
-    // maximum is already greater than value and the feed would always look not-at-end.
-    if (!_restoring)
+    // Keep an explicit pin (a new request). Only stick to the end from
+    // the scrollbar when the feed was not already pinned.
+    if (!_restoring && !_pinBottom)
         _pinBottom = isNearBottom();
 
     ChatMessageFrame *frame = new ChatMessageFrame(title, html, preview, objectName,

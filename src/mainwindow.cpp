@@ -869,15 +869,24 @@ void MainWindow::switchToProject(QString workspaceRoot, bool loadExisting)
         _projectDock->setProjectRoot(hasOpenProject() ? _workspace->root() : QString());
     pumpUi(true);
 
-    _loadingProject = false;
     // The tree is already built. Next is restoring workers (reading their
     // chats from disk, rebuilding the graph). Show that as a separate caption,
     // otherwise the file-tree caption stays on screen for the whole restore.
     updateStatusProgress(0, 0, tr("Восстановление воркеров"));
+    // _loadingProject stays set so a brand-new root chat is not opened
+    // and saved over the journal tab.
     if (loadExisting)
         restoreProjectUiState(false);
     else
+    {
         restoreProjectUiState(true);
+        createJournalWindow();
+        ensureTabVisible(_journal, tr("Журнал"), AppIcons::journal());
+        saveProjectUiState();
+    }
+    _loadingProject = false;
+    if (_tabs)
+        sltCurrentTabChanged(_tabs->currentIndex());
     if (rootSession() && rootSession()->agent())
         rootSession()->agent()->refreshContextUsage();
     if (_chatsShown)
@@ -1587,9 +1596,13 @@ void MainWindow::sltTabCloseRequested(int index)
     _tabs->removeTab(index);
     if (page == _graph || page == _settingsPage || page == _projectSettingsPage
         || page == _journal)
+    {
+        scheduleSaveOpenChats();
         return;
+    }
     if (page)
         page->hide();
+    scheduleSaveOpenChats();
 }
 
 //----------------------------------------------
@@ -1849,7 +1862,7 @@ void MainWindow::applyWorkerUi(Worker *worker)
     updateSessionTabTitle(worker->session());
     // The author caption in chat matches the journal (a unique color by name).
     worker->session()->widget()->setAuthorLabels(
-        tr("Пользователь"), workerWindowTitle(worker));
+        tr("Вы"), workerWindowTitle(worker));
     if (_journal && worker->session()->agent())
     {
         _journal->setAgentLabel(worker->session()->agent(), workerWindowTitle(worker));
@@ -3825,6 +3838,8 @@ void MainWindow::setupUi()
             this, SLOT(sltCurrentTabChanged(int)));
     connect(_tabBar, SIGNAL(tabMoved(int,int)),
             this, SLOT(updateBusyTabs()));
+    connect(_tabBar, SIGNAL(tabMoved(int,int)),
+            this, SLOT(sltFlushSaveChats()));
 
     _tabBlinkTimer = new QTimer(this);
     _tabBlinkTimer->setInterval(480);
@@ -3947,10 +3962,6 @@ void MainWindow::setupMenus()
 {
     _fileMenu = menuBar()->addMenu(L("menu.file"));
 
-    _openProjectAction = _fileMenu->addAction(L("menu.file.open"));
-    _openProjectAction->setShortcut(QKeySequence::Open);
-    connect(_openProjectAction, SIGNAL(triggered()), this, SLOT(sltOpenProject()));
-
     _newProjectMenu = _fileMenu->addMenu(L("menu.file.new"));
     _newProjectDirectoryAction = _newProjectMenu->addAction(L("menu.file.new.directory"));
     connect(_newProjectDirectoryAction, SIGNAL(triggered()),
@@ -3958,6 +3969,10 @@ void MainWindow::setupMenus()
     _newProjectExistingAction = _newProjectMenu->addAction(L("menu.file.new.existing"));
     connect(_newProjectExistingAction, SIGNAL(triggered()),
             this, SLOT(sltNewProjectExisting()));
+
+    _openProjectAction = _fileMenu->addAction(L("menu.file.open"));
+    _openProjectAction->setShortcut(QKeySequence::Open);
+    connect(_openProjectAction, SIGNAL(triggered()), this, SLOT(sltOpenProject()));
 
     _openLastAction = _fileMenu->addAction(L("menu.file.openLast"));
     connect(_openLastAction, SIGNAL(triggered()), this, SLOT(sltOpenLastProject()));
@@ -4199,7 +4214,7 @@ void MainWindow::retranslateUi()
         if (worker)
         {
             session->widget()->setAuthorLabels(
-                tr("Пользователь"), workerWindowTitle(worker));
+                tr("Вы"), workerWindowTitle(worker));
             if (_journal && session->agent())
                 _journal->setAgentLabel(session->agent(), workerWindowTitle(worker));
         }
@@ -4988,7 +5003,11 @@ void MainWindow::openTabByKey(const QString &key, bool makeCurrent)
         const QString id = k.mid(5);
         foreach (ChatSession *session, _sessions)
         {
-            if (!session || session->id() != id || !session->widget() || !_tabs)
+            if (!session || session->id() != id || !_tabs)
+                continue;
+            if (!session->widget())
+                attachSessionUi(session);
+            if (!session->widget())
                 continue;
             session->ensureContentLoaded();
             const QString title = (session->worker() && !session->worker()->isRoot())
@@ -5444,7 +5463,10 @@ void MainWindow::ensureSessionVisible(ChatSession *session)
     if (session->worker())
         applyWorkerUi(session->worker());
     if (session->widget())
+    {
         session->widget()->syncRunningState();
+        session->widget()->revealEnd();
+    }
     refreshBusyTabs();
 }
 

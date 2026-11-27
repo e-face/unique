@@ -263,7 +263,9 @@ void JournalWidget::attachAgent(Agent *agent, QString label, QString workerId)
             this, SLOT(sltJournalUser(QString)));
     connect(agent, SIGNAL(assistantMessage(QString)),
             this, SLOT(sltJournalAssistant(QString)));
-    connect(agent, SIGNAL(toolCallStarted(QString,QString)),
+    connect(agent, SIGNAL(assistantRetracted(QString)),
+            this, SLOT(sltJournalRetracted(QString)));
+    connect(agent, SIGNAL(toolCallStarted(QString,QString,QString)),
             this, SLOT(sltToolCallStarted(QString,QString)));
     connect(agent, SIGNAL(toolCallFinished(QString,QString,bool)),
             this, SLOT(sltToolCallFinished(QString,QString,bool)));
@@ -495,6 +497,16 @@ QString JournalWidget::toolArgsExcerpt(const QString &name, const QString &argum
     else if (n == QString::fromUtf8("read_page"))
     {
         excerpt = o.value(QString::fromUtf8("url")).toString();
+        if (excerpt.isEmpty())
+        {
+            const QJsonArray urls = o.value(QString::fromUtf8("urls")).toArray();
+            if (!urls.isEmpty())
+            {
+                excerpt = urls.at(0).toString();
+                if (urls.size() > 1)
+                    excerpt += QString::fromUtf8(" (+%1)").arg(urls.size() - 1);
+            }
+        }
     }
     else if (n == QString::fromUtf8("web_search"))
     {
@@ -655,6 +667,26 @@ static QString exchangeTitle(const QString &from, const QString &to, const QStri
     if (title.isEmpty())
         return QString::fromUtf8("%1 \xE2\x86\x92 %2").arg(author, dest);
     return QString::fromUtf8("%1 \xE2\x86\x92 %2: %3").arg(author, dest, title);
+}
+
+//----------------------------------------------
+
+static void splitExchangeCaption(const QString &who, QString *caption, QString *note)
+{
+    const int arrow = who.indexOf(QString::fromUtf8(" \xE2\x86\x92 "));
+    const int colon = (arrow >= 0) ? who.indexOf(QString::fromUtf8(": "), arrow) : -1;
+    if (colon > 0)
+    {
+        if (caption)
+            *caption = who.left(colon).trimmed();
+        if (note)
+            *note = who.mid(colon + 2).trimmed();
+        return;
+    }
+    if (caption)
+        *caption = who;
+    if (note)
+        note->clear();
 }
 
 //----------------------------------------------
@@ -840,23 +872,26 @@ void JournalWidget::addPermanent(const QString &author, const QString &text, boo
         return;
     }
 
+    QString caption;
+    QString headerNote;
+    splitExchangeCaption(who, &caption, &headerNote);
     QWidget *bubble = 0;
     if (fromUser)
     {
-        bubble = addPlainBubble(who, text, QString::fromUtf8("userMsg"), true, false, true,
+        bubble = addPlainBubble(caption, text, QString::fromUtf8("userMsg"), true, false, true,
                                 colorKey);
     }
     else
     {
         const QString html = MarkdownFormatter::toHtml(text.left(kJournalTextClip),
                                                        journalImageBase());
-        bubble = addBubble(who, html, text, QString::fromUtf8("assistantMsg"), false, false,
+        bubble = addBubble(caption, html, text, QString::fromUtf8("assistantMsg"), false, false,
                            colorKey);
     }
     bindTitleLink(bubble, workerId);
     _lastPermanent = qobject_cast<ChatMessageFrame *>(bubble);
     if (_lastPermanent)
-        _lastPermanent->setPreview(QString());
+        _lastPermanent->setPreview(headerNote);
     _lastPermanentAuthor = who;
     _lastPermanentFromUser = fromUser;
     rememberEntry(who, text, fromUser, workerId);
@@ -905,6 +940,24 @@ void JournalWidget::sltJournalUser(const QString &text)
         return;
     addPermanent(exchangeTitle(from, to, firstJournalLine(body)), body,
                  ingress == AgentUserIngressHuman, workerIdFor(sender()));
+}
+
+//----------------------------------------------
+
+void JournalWidget::sltJournalRetracted(const QString &text)
+{
+    const QString wanted = text.trimmed();
+    if (wanted.isEmpty())
+        return;
+    for (int i = _entries.size() - 1; i >= 0; --i)
+    {
+        if (_entries.at(i).text.trimmed() != wanted)
+            continue;
+        _entries.removeAt(i);
+        rebuildFromEntries();
+        schedulePersist();
+        return;
+    }
 }
 
 //----------------------------------------------

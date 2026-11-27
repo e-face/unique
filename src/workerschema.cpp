@@ -304,11 +304,41 @@ void SchemaNodeItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, 
     }
 
     const QRectF textRect(36, 6, kCardW - 46, kCardH - 18);
+    QStringList lines;
+    const QString purpose = _purpose.simplified();
+    if (!purpose.isEmpty())
+        lines << purpose;
+    foreach (const QString &extra, _extraLines)
+    {
+        const QString line = extra.simplified();
+        if (!line.isEmpty())
+            lines << line;
+    }
+
+    // Point size follows the screen DPI and the application font, so on some
+    // displays the glyphs are taller than the card and the rest is clipped.
+    // Pixel size is a fraction of the card, in the same units as the shape,
+    // and the view transform scales both together.
     const QFont baseFont = painter->font();
+    const int bodyLines = qMin(2, lines.size());
+    int captionPx = qMax(1, qRound(textRect.height() * 0.22));
+    int rolePx = qMax(captionPx, qRound(textRect.height() * 0.26));
     QFont captionFont = baseFont;
+    QFont roleFont = baseFont;
     captionFont.setBold(false);
-    if (captionFont.pointSize() > 0)
-        captionFont.setPointSize(qMax(7, captionFont.pointSize() - 1));
+    roleFont.setBold(true);
+    for (;;)
+    {
+        captionFont.setPixelSize(captionPx);
+        roleFont.setPixelSize(rolePx);
+        const int captionH = QFontMetrics(captionFont).height();
+        const int roleH = QFontMetrics(roleFont).height();
+        const qreal used = captionH + roleH + 1 + bodyLines * captionH;
+        if (used <= textRect.height() + 0.5 || captionPx <= 1)
+            break;
+        --captionPx;
+        rolePx = qMax(1, captionPx + 1);
+    }
     painter->setFont(captionFont);
     const QFontMetrics captionFm(captionFont);
     qreal y = textRect.top();
@@ -318,8 +348,6 @@ void SchemaNodeItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, 
                       captionFm.elidedText(_typeCaption, Qt::ElideRight, int(textRect.width())));
     y += captionFm.height();
 
-    QFont roleFont = baseFont;
-    roleFont.setBold(true);
     painter->setFont(roleFont);
     painter->setPen(ink);
     const QFontMetrics roleFm(roleFont);
@@ -331,16 +359,6 @@ void SchemaNodeItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, 
 
     painter->setFont(captionFont);
     painter->setPen(muted);
-    QStringList lines;
-    const QString purpose = _purpose.simplified();
-    if (!purpose.isEmpty())
-        lines << purpose;
-    foreach (const QString &extra, _extraLines)
-    {
-        const QString line = extra.simplified();
-        if (!line.isEmpty())
-            lines << line;
-    }
     foreach (const QString &line, lines)
     {
         if (y + captionFm.height() > textRect.bottom())

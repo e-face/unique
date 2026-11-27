@@ -75,6 +75,7 @@ public slots:
 private slots:
     void sltJournalUser(const QString &text);
     void sltJournalAssistant(const QString &text);
+    void sltJournalRetracted(const QString &text);
     void sltJournalNotice(const QString &text);
     void sltJournalForwarded(const QString &text);
     void sltJournalFailed(const QString &error);

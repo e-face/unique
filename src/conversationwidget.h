@@ -157,6 +157,8 @@ public:
     void setExternalActivity(QString text);
     /** Refresh the activity line and buttons if work started before the chat was opened. */
     void syncRunningState();
+    /** Scroll to the end when this chat is pinned to the latest message. */
+    void revealEnd();
     /** Hide the chat activity line (the journal has its own line). */
     void setChatLiveActionVisible(bool visible);
 
@@ -184,7 +186,9 @@ private slots:
     void sltSend();
     void sltUserMessage(const QString &text);
     void sltAssistantMessage(const QString &text);
-    void sltToolCallStarted(const QString &name, const QString &arguments);
+    void sltAssistantRetracted(const QString &text);
+    void sltToolCallStarted(const QString &name, const QString &arguments,
+                            const QString &forUser);
     void sltToolCallFinished(const QString &name, const QString &result, bool ok);
     void sltNotice(const QString &text);
     void sltForwardedContext(const QString &text);
@@ -265,10 +269,13 @@ private:
     bool            _pinBottom;
     QString         _pendingToolName;
     QString         _pendingToolArgs;
+    QString         _pendingForUser;
     QList<ChatDisplayItem> _displayLog;
     bool            _restoring;
     bool            _userInputEnabled;
     bool            _scrollScheduled;
+    bool            _adjustingScroll;
+    bool            _scrollRetried;
 };
 
 #endif // CONVERSATIONWIDGET_H

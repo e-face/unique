@@ -6,11 +6,14 @@
 #include "projectworkspace.h"
 #include "worker.h"
 //----------------------------------------------
+#include <QBuffer>
 #include <QDir>
 #include <QDirIterator>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -39,6 +42,8 @@ const int kPdfMaxBytes = 32 * 1024 * 1024;
 const int kHtmlMaxBytes = 2 * 1024 * 1024;
 const int kPageDefaultChars = 12000;
 const int kPageMaxChars = 40000;
+const int kPageBatchMax = 30;
+const int kPageBatchBudget = 90000;
 
 //----------------------------------------------
 
@@ -822,6 +827,77 @@ bool approvedInternet(Worker *owner, const QString &action, bool *ok, QString *e
     return true;
 }
 
+//----------------------------------------------
+
+QString pageSliceReport(const QByteArray &body, int status, const QString &urlText,
+                        int offset, int limit, bool *ok)
+{
+    if (ok)
+        *ok = false;
+    if (body.startsWith("%PDF"))
+        return QString::fromUtf8("This address is a PDF. Call read_pdf with the same url.");
+    if (body.indexOf('\0') >= 0 && body.indexOf('\0') < 512)
+        return QString::fromUtf8("This address is not a text page.");
+
+    const QString text = htmlToPlain(QString::fromUtf8(body));
+    if (text.isEmpty())
+        return QString::fromUtf8("The page had no text (HTTP %1).").arg(status);
+    if (offset > text.size())
+    {
+        if (ok)
+            *ok = true;
+        return QString::fromUtf8("Page text is %1 characters. offset is past the end.")
+            .arg(text.size());
+    }
+    const QString slice = text.mid(offset - 1, limit);
+    QString report = QString::fromUtf8("url: %1\ncharacters: %2\noffset: %3\n\n%4")
+                         .arg(urlText)
+                         .arg(text.size())
+                         .arg(offset)
+                         .arg(slice);
+    if (offset - 1 + slice.size() < text.size())
+    {
+        report += QString::fromUtf8(
+                      "\n\nMore text remains. Call read_page again with offset %1.")
+                      .arg(offset + slice.size());
+    }
+    if (ok)
+        *ok = true;
+    return report;
+}
+
+//----------------------------------------------
+
+QString fetchPage(const QString &urlText, int offset, int limit,
+                  QNetworkReply **reply, QEventLoop **loop, bool *interrupted, bool *ok)
+{
+    if (ok)
+        *ok = false;
+    const QUrl url(urlText);
+    if (!url.isValid()
+        || (url.scheme() != QString::fromLatin1("http")
+            && url.scheme() != QString::fromLatin1("https")))
+    {
+        return QString::fromUtf8("url must be an http or https address.");
+    }
+    if (isSearchEnginePage(url))
+    {
+        return QString::fromUtf8(
+            "This is a search page. Call web_search for the query, then read_page "
+            "on a result address.");
+    }
+
+    int status = 0;
+    QString error;
+    const QByteArray body = httpGet(url, 20000, kHtmlMaxBytes,
+                                    reply, loop, interrupted, &status, &error);
+    if (interrupted && *interrupted)
+        return QString::fromUtf8("Interrupted.");
+    if (body.isEmpty())
+        return error.isEmpty() ? QString::fromUtf8("Empty response.") : error;
+    return pageSliceReport(body, status, urlText, offset, limit, ok);
+}
+
 } // namespace
 
 //----------------------------------------------
@@ -1280,7 +1356,8 @@ QString WebSearchAgentTool::description() const
         "Search the web and return titles, addresses, and short snippets. "
         "You choose engine: duckduckgo, bing, google, or yandex. "
         "limit is 1..30, default 10. A title or a snippet is not the page: "
-        "call read_page on the result address that bears on the fact. "
+        "call read_page on the result addresses that bear on the fact "
+        "(urls, up to 30 in one call). "
         "If nothing was parsed, the engine page changed or asked for consent; "
         "that is not an empty web. The user confirms the first call; "
         "Always then covers later web_search, read_page, and read_pdf downloads. "
@@ -1426,11 +1503,14 @@ QString ReadPageAgentTool::name() const
 QString ReadPageAgentTool::description() const
 {
     return QString::fromUtf8(
-        "Read one http or https page as text. Pass a result address from web_search, "
+        "Read http or https pages as text. Pass url for one result address, or urls "
+        "for up to 30 addresses in one call. Use result addresses from web_search, "
         "not a search-engine query page. A title or a short snippet is not the fact. "
         "The user confirms the first call; Always then covers later web_search, "
-        "read_page, and read_pdf downloads. offset is the first character, 1-based, "
-        "default 1. limit is how many characters, default 12000, max 40000.");
+        "read_page, and read_pdf downloads. offset is the first character of each "
+        "page, 1-based, default 1. limit is how many characters of each page, "
+        "default 12000, max 40000. A batch shares about 90000 characters, so each "
+        "page is shorter when many addresses are requested.");
 }
 
 //----------------------------------------------
@@ -1440,30 +1520,38 @@ QJsonObject ReadPageAgentTool::parametersSchema() const
     QJsonObject url;
     url.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
     url.insert(QString::fromUtf8("description"),
-               QString::fromUtf8("http or https address of one result page."));
+               QString::fromUtf8("http or https address of one result page. "
+                                 "Use urls instead when several pages are needed."));
+
+    QJsonObject urls;
+    urls.insert(QString::fromUtf8("type"), QString::fromUtf8("array"));
+    QJsonObject urlItem;
+    urlItem.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    urls.insert(QString::fromUtf8("items"), urlItem);
+    urls.insert(QString::fromUtf8("description"),
+                QString::fromUtf8("http or https result addresses to read in one call "
+                                  "(max 30). Prefer this over many separate read_page calls."));
 
     QJsonObject offset;
     offset.insert(QString::fromUtf8("type"), QString::fromUtf8("integer"));
     offset.insert(QString::fromUtf8("description"),
-                  QString::fromUtf8("First character to return, 1-based. Default 1."));
+                  QString::fromUtf8("First character of each page, 1-based. Default 1."));
 
     QJsonObject limit;
     limit.insert(QString::fromUtf8("type"), QString::fromUtf8("integer"));
     limit.insert(QString::fromUtf8("description"),
-                 QString::fromUtf8("Maximum characters to return. Default 12000, max 40000."));
+                 QString::fromUtf8("Maximum characters of each page. Default 12000, "
+                                   "max 40000. A batch shares about 90000 characters."));
 
     QJsonObject properties;
     properties.insert(QString::fromUtf8("url"), url);
+    properties.insert(QString::fromUtf8("urls"), urls);
     properties.insert(QString::fromUtf8("offset"), offset);
     properties.insert(QString::fromUtf8("limit"), limit);
-
-    QJsonArray required;
-    required.append(QString::fromUtf8("url"));
 
     QJsonObject schema;
     schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
     schema.insert(QString::fromUtf8("properties"), properties);
-    schema.insert(QString::fromUtf8("required"), required);
     return schema;
 }
 
@@ -1490,23 +1578,34 @@ QString ReadPageAgentTool::invoke(QString argumentsJson, bool *ok)
             *ok = false;
         return error;
     }
-    const QString urlText = args.value(QString::fromUtf8("url")).toString().trimmed();
-    const QUrl url(urlText);
-    if (!url.isValid()
-        || (url.scheme() != QString::fromLatin1("http")
-            && url.scheme() != QString::fromLatin1("https")))
+
+    QStringList urls;
+    const QJsonArray many = args.value(QString::fromUtf8("urls")).toArray();
+    for (int i = 0; i < many.size(); ++i)
     {
-        if (ok)
-            *ok = false;
-        return QString::fromUtf8("url must be an http or https address.");
+        const QString one = many.at(i).toString().trimmed();
+        if (!one.isEmpty())
+            urls.append(one);
     }
-    if (isSearchEnginePage(url))
+    if (urls.isEmpty())
+    {
+        const QString single = args.value(QString::fromUtf8("url")).toString().trimmed();
+        if (!single.isEmpty())
+            urls.append(single);
+    }
+    if (urls.isEmpty())
     {
         if (ok)
             *ok = false;
-        return QString::fromUtf8(
-            "This is a search page. Call web_search for the query, then read_page "
-            "on a result address.");
+        return QString::fromUtf8("Provide url or urls=[...].");
+    }
+    if (urls.size() > kPageBatchMax)
+    {
+        if (ok)
+            *ok = false;
+        return QString::fromUtf8("Too many urls (%1); max %2 per read_page call.")
+            .arg(urls.size())
+            .arg(kPageBatchMax);
     }
 
     int offset = args.value(QString::fromUtf8("offset")).toInt(1);
@@ -1518,68 +1617,90 @@ QString ReadPageAgentTool::invoke(QString argumentsJson, bool *ok)
     if (limit > kPageMaxChars)
         limit = kPageMaxChars;
 
-    const QString action = QString::fromUtf8("Open web page:\n%1").arg(urlText);
+    QString action;
+    if (urls.size() == 1)
+        action = QString::fromUtf8("Open web page:\n%1").arg(urls.first());
+    else
+    {
+        action = QString::fromUtf8("Open %1 web pages:\n").arg(urls.size());
+        for (int i = 0; i < urls.size(); ++i)
+        {
+            action += urls.at(i);
+            action += QString::fromUtf8("\n");
+        }
+    }
     if (!approvedInternet(_owner, action, ok, &error))
         return error;
 
-    _interrupted = false;
-    int status = 0;
-    const QByteArray body = httpGet(url, 20000, kHtmlMaxBytes,
-                                    &_reply, &_loop, &_interrupted, &status, &error);
-    if (_interrupted)
+    if (urls.size() == 1)
     {
+        _interrupted = false;
+        bool pageOk = false;
+        const QString report = fetchPage(urls.first(), offset, limit,
+                                         &_reply, &_loop, &_interrupted, &pageOk);
         if (ok)
-            *ok = false;
-        return QString::fromUtf8("Interrupted.");
-    }
-    if (body.isEmpty())
-    {
-        if (ok)
-            *ok = false;
-        return error.isEmpty() ? QString::fromUtf8("Empty response.") : error;
-    }
-    if (body.startsWith("%PDF"))
-    {
-        if (ok)
-            *ok = false;
-        return QString::fromUtf8("This address is a PDF. Call read_pdf with the same url.");
-    }
-    if (body.indexOf('\0') >= 0 && body.indexOf('\0') < 512)
-    {
-        if (ok)
-            *ok = false;
-        return QString::fromUtf8("This address is not a text page.");
+            *ok = pageOk;
+        return report;
     }
 
-    const QString text = htmlToPlain(QString::fromUtf8(body));
-    if (text.isEmpty())
+    int perPage = limit;
+    const int share = qMax(2000, kPageBatchBudget / urls.size());
+    if (perPage > share)
+        perPage = share;
+
+    QString report = QString::fromUtf8("pages: %1\nper page: %2 characters\n")
+                         .arg(urls.size())
+                         .arg(perPage);
+    int okCount = 0;
+    _interrupted = false;
+    for (int i = 0; i < urls.size(); ++i)
     {
-        if (ok)
-            *ok = false;
-        return QString::fromUtf8("The page had no text (HTTP %1).").arg(status);
-    }
-    if (offset > text.size())
-    {
-        if (ok)
-            *ok = true;
-        return QString::fromUtf8("Page text is %1 characters. offset is past the end.")
-            .arg(text.size());
-    }
-    const QString slice = text.mid(offset - 1, limit);
-    QString report = QString::fromUtf8("url: %1\ncharacters: %2\noffset: %3\n\n%4")
-                         .arg(urlText)
-                         .arg(text.size())
-                         .arg(offset)
-                         .arg(slice);
-    if (offset - 1 + slice.size() < text.size())
-    {
-        report += QString::fromUtf8(
-                      "\n\nMore text remains. Call read_page again with offset %1.")
-                      .arg(offset + slice.size());
+        if (_interrupted)
+        {
+            report += QString::fromUtf8("\nInterrupted.\n");
+            break;
+        }
+        if (report.size() >= kPageBatchBudget)
+        {
+            report += QString::fromUtf8(
+                          "\n[call budget exhausted; remaining pages not read]\n");
+            for (int j = i; j < urls.size(); ++j)
+            {
+                report += QString::fromUtf8("Continue with read_page urls: %1\n")
+                              .arg(urls.at(j));
+            }
+            break;
+        }
+
+        bool pageOk = false;
+        const QString body = fetchPage(urls.at(i), offset, perPage,
+                                       &_reply, &_loop, &_interrupted, &pageOk);
+        if (_interrupted)
+        {
+            report += QString::fromUtf8("\n===== %1 =====\nInterrupted.\n").arg(urls.at(i));
+            break;
+        }
+        if (pageOk)
+            ++okCount;
+        const QString chunk = QString::fromUtf8("\n===== %1 =====\n%2\n").arg(urls.at(i), body);
+        if (report.size() + chunk.size() > kPageBatchBudget && okCount > (pageOk ? 1 : 0))
+        {
+            report += QString::fromUtf8(
+                          "\n[call budget exhausted; remaining pages not read]\n");
+            for (int j = i; j < urls.size(); ++j)
+            {
+                report += QString::fromUtf8("Continue with read_page urls: %1\n")
+                              .arg(urls.at(j));
+            }
+            if (pageOk)
+                --okCount;
+            break;
+        }
+        report += chunk;
     }
     if (ok)
-        *ok = true;
-    return report;
+        *ok = okCount > 0 && !_interrupted;
+    return report.trimmed();
 }
 
 //----------------------------------------------
@@ -2159,4 +2280,220 @@ QString PdfPageImageAgentTool::invoke(QString argumentsJson, bool *ok)
     if (ok)
         *ok = true;
     return report.trimmed();
+}
+
+//----------------------------------------------
+
+AttachImageAgentTool::AttachImageAgentTool(ProjectWorkspace *workspace, QObject *parent)
+    : AgentTool(parent)
+    , _workspace(workspace)
+{
+}
+
+//----------------------------------------------
+
+QString AttachImageAgentTool::name() const
+{
+    return QString::fromUtf8("attach_image");
+}
+
+//----------------------------------------------
+
+QString AttachImageAgentTool::description() const
+{
+    return QString::fromUtf8(
+        "Load one image from the project into this chat as a real image, so you "
+        "can see the frame. Call it when the decision depends on how the frame "
+        "looks: a screenshot of a running program, layout and overlapping "
+        "elements, a chart or diagram, a visual defect, or the contents of a "
+        "picture. Do not call it when a window size, a log, code, or text is "
+        "enough: each image costs up to 1024 tokens and stays in the dialogue "
+        "until the end of the session. One frame per call.");
+}
+
+//----------------------------------------------
+
+QJsonObject AttachImageAgentTool::parametersSchema() const
+{
+    QJsonObject imagePath;
+    imagePath.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    imagePath.insert(QString::fromUtf8("description"),
+                     QString::fromUtf8(
+                         "Path relative to the project root. PNG, JPG, GIF or WebP. "
+                         "The file must exist. Files larger than 32 MiB are rejected."));
+
+    QJsonObject detail;
+    detail.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    QJsonArray detailEnum;
+    detailEnum.append(QString::fromUtf8("low"));
+    detailEnum.append(QString::fromUtf8("original"));
+    detail.insert(QString::fromUtf8("enum"), detailEnum);
+    detail.insert(QString::fromUtf8("description"),
+                  QString::fromUtf8(
+                      "low (default) scales the long side to 512 px: cheap, enough "
+                      "for layout. original keeps the source, with the long side "
+                      "capped at 2048 px, for small text and fine detail."));
+
+    QJsonObject note;
+    note.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+    note.insert(QString::fromUtf8("description"),
+                QString::fromUtf8(
+                    "Short caption of what the frame is and what to look for. "
+                    "Not a question."));
+
+    QJsonObject properties;
+    properties.insert(QString::fromUtf8("image_path"), imagePath);
+    properties.insert(QString::fromUtf8("detail"), detail);
+    properties.insert(QString::fromUtf8("note"), note);
+
+    QJsonArray required;
+    required.append(QString::fromUtf8("image_path"));
+
+    QJsonObject schema;
+    schema.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    schema.insert(QString::fromUtf8("properties"), properties);
+    schema.insert(QString::fromUtf8("required"), required);
+    schema.insert(QString::fromUtf8("additionalProperties"), false);
+    return schema;
+}
+
+//----------------------------------------------
+
+QJsonArray AttachImageAgentTool::takeResultParts()
+{
+    const QJsonArray parts = _parts;
+    _parts = QJsonArray();
+    return parts;
+}
+
+//----------------------------------------------
+
+static bool attachImageExtension(const QString &path)
+{
+    const QString lower = path.toLower();
+    return lower.endsWith(QString::fromUtf8(".png"))
+           || lower.endsWith(QString::fromUtf8(".jpg"))
+           || lower.endsWith(QString::fromUtf8(".jpeg"))
+           || lower.endsWith(QString::fromUtf8(".gif"))
+           || lower.endsWith(QString::fromUtf8(".webp"));
+}
+
+//----------------------------------------------
+
+QString AttachImageAgentTool::invoke(QString argumentsJson, bool *ok)
+{
+    _parts = QJsonArray();
+    if (ok)
+        *ok = false;
+    if (!_workspace || !_workspace->isSet())
+        return QString::fromUtf8("No project is open.");
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(argumentsJson.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+        return QString::fromUtf8("attach_image arguments are not a JSON object.");
+    const QJsonObject args = doc.object();
+
+    const QString imagePath = args.value(QString::fromUtf8("image_path")).toString().trimmed();
+    if (imagePath.isEmpty())
+        return QString::fromUtf8("image_path is required.");
+    if (!attachImageExtension(imagePath))
+        return QString::fromUtf8("attach_image accepts PNG, JPG, GIF or WebP only.");
+
+    QString detail = args.value(QString::fromUtf8("detail")).toString().trimmed().toLower();
+    if (detail.isEmpty())
+        detail = QString::fromUtf8("low");
+    if (detail != QString::fromUtf8("low") && detail != QString::fromUtf8("original"))
+        return QString::fromUtf8("detail must be low or original.");
+
+    const QString note = args.value(QString::fromUtf8("note")).toString().trimmed();
+
+    QString absolute;
+    QString resolveError;
+    if (!_workspace->resolvePath(imagePath, true, false, &absolute, &resolveError)
+        || absolute.isEmpty())
+    {
+        return resolveError.isEmpty()
+            ? QString::fromUtf8("File not found: %1").arg(imagePath)
+            : resolveError;
+    }
+
+    const qint64 size = QFileInfo(absolute).size();
+    const qint64 kMaxBytes = 32LL * 1024LL * 1024LL;
+    if (size <= 0)
+        return QString::fromUtf8("Empty image: %1").arg(imagePath);
+    if (size > kMaxBytes)
+        return QString::fromUtf8("Image is larger than 32 MiB: %1").arg(imagePath);
+
+    const bool low = detail == QString::fromUtf8("low");
+    QImageReader reader(absolute);
+    reader.setAutoTransform(true);
+    const QSize source = reader.size();
+    const int maxSide = low ? 512 : 2048;
+    if (source.isValid())
+    {
+        const int longSide = qMax(source.width(), source.height());
+        if (longSide > maxSide)
+        {
+            const double scale = double(maxSide) / double(longSide);
+            reader.setScaledSize(QSize(qMax(1, int(source.width() * scale)),
+                                       qMax(1, int(source.height() * scale))));
+        }
+    }
+    QImage image = reader.read();
+    if (image.isNull())
+        return QString::fromUtf8("Could not decode the image: %1").arg(imagePath);
+    if (image.width() > maxSide || image.height() > maxSide)
+    {
+        image = image.scaled(maxSide, maxSide, Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    }
+    if (image.isNull())
+        return QString::fromUtf8("Could not scale the image: %1").arg(imagePath);
+
+    const bool hasAlpha = image.hasAlphaChannel();
+    QByteArray encoded;
+    QBuffer buffer(&encoded);
+    buffer.open(QIODevice::WriteOnly);
+    QString mime = QString::fromUtf8("image/jpeg");
+    bool saved = false;
+    if (hasAlpha)
+    {
+        saved = image.convertToFormat(QImage::Format_ARGB32).save(&buffer, "PNG");
+        mime = QString::fromUtf8("image/png");
+    }
+    else
+    {
+        saved = image.convertToFormat(QImage::Format_RGB32).save(&buffer, "JPEG", 85);
+    }
+    buffer.close();
+    if (!saved || encoded.isEmpty())
+        return QString::fromUtf8("Could not encode the image: %1").arg(imagePath);
+
+    QString caption = imagePath;
+    if (!note.isEmpty())
+        caption = QString::fromUtf8("%1 - %2").arg(imagePath, note);
+
+    QJsonObject textPart;
+    textPart.insert(QString::fromUtf8("type"), QString::fromUtf8("text"));
+    textPart.insert(QString::fromUtf8("text"), caption);
+
+    QJsonObject imageUrl;
+    imageUrl.insert(QString::fromUtf8("url"),
+                    QString::fromUtf8("data:%1;base64,%2")
+                        .arg(mime, QString::fromLatin1(encoded.toBase64())));
+    imageUrl.insert(QString::fromUtf8("detail"),
+                    low ? QString::fromUtf8("low") : QString::fromUtf8("high"));
+    imageUrl.insert(QString::fromUtf8("source_path"), imagePath);
+
+    QJsonObject imagePart;
+    imagePart.insert(QString::fromUtf8("type"), QString::fromUtf8("image_url"));
+    imagePart.insert(QString::fromUtf8("image_url"), imageUrl);
+
+    _parts.append(textPart);
+    _parts.append(imagePart);
+
+    if (ok)
+        *ok = true;
+    return QString::fromUtf8("Attached image %1 (%2).").arg(imagePath, detail);
 }

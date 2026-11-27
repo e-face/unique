@@ -192,9 +192,10 @@ static bool isGenericFunction(const QString &name)
         QString::fromUtf8("list_child_workers"),
         QString::fromUtf8("get_child_result"),
         QString::fromUtf8("dismiss_child_worker"),
-        QString::fromUtf8("propose_decision")
+        QString::fromUtf8("propose_decision"),
+        QString::fromUtf8("attach_image")
     };
-    for (int i = 0; i < 27; ++i)
+    for (int i = 0; i < 28; ++i)
     {
         if (name == generic[i])
             return true;

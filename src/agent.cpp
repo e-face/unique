@@ -9,7 +9,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QMetaObject>
 #include <QPointer>
 #include <QRegExp>
@@ -18,6 +20,25 @@
 //----------------------------------------------
 
 static const int kDefaultMaxToolIterations = 1000;
+
+//----------------------------------------------
+
+static QString takeForUser(QString *argumentsJson)
+{
+    if (!argumentsJson)
+        return QString();
+    QJsonParseError error;
+    const QJsonDocument doc = QJsonDocument::fromJson(argumentsJson->toUtf8(), &error);
+    if (error.error != QJsonParseError::NoError || !doc.isObject())
+        return QString();
+    QJsonObject object = doc.object();
+    if (!object.contains(QString::fromUtf8("for_user")))
+        return QString();
+    const QString note = object.value(QString::fromUtf8("for_user")).toString().trimmed();
+    object.remove(QString::fromUtf8("for_user"));
+    *argumentsJson = QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact));
+    return note;
+}
 /** Window fill at which compression runs before a request. */
 static const int kCompactRatioPermille     = 950;
 /** Fill at which compression is harder (a shorter fresh tail). */
@@ -394,12 +415,14 @@ QString Agent::invokeTool(QString name, QString argumentsJson, bool *ok)
             *ok = false;
         return QString::fromUtf8("Tool %1 is not installed.").arg(name);
     }
-    emit toolCallStarted(name, argumentsJson);
+    QString arguments = argumentsJson;
+    const QString forUser = takeForUser(&arguments);
+    emit toolCallStarted(name, arguments, forUser);
     bool localOk = false;
     const bool nested = (name == QString::fromUtf8("delegate_task")
                          || name == QString::fromUtf8("run_tool"));
     const int span = nested ? 0 : AppSettings::instance()->beginWork();
-    const QString result = tool->invoke(argumentsJson, &localOk);
+    const QString result = tool->invoke(arguments, &localOk);
     if (span)
         AppSettings::instance()->endWork(span);
     if (ok)
@@ -455,6 +478,23 @@ void Agent::recordLocalExchange(QString userText, QString assistantText, int ing
 void Agent::requestStopAfterTools()
 {
     _stopAfterTools = true;
+}
+
+//----------------------------------------------
+
+void Agent::retractLastAssistant()
+{
+    if (_history.isEmpty())
+        return;
+    LlmMessage &last = _history.last();
+    if (last.role != LlmRoleAssistant || !last.toolCalls.isEmpty())
+        return;
+    const QString text = last.content;
+    if (text.trimmed().isEmpty() || last.hideInUi)
+        return;
+    last.hideInUi = true;
+    emit assistantRetracted(text);
+    emit historyChanged();
 }
 
 //----------------------------------------------
@@ -1315,8 +1355,7 @@ void Agent::sltResponseReceived(const LlmResponse &response)
     if (!droppedIds.isEmpty())
     {
         dropFileContexts(&_history, droppedIds);
-        emit serviceNotice(tr("Убрал из контекста файлы: %1")
-                           .arg(droppedIds.join(QString::fromUtf8(", "))));
+        emit historyChanged();
     }
     _history.append(stored);
     emitContextUsage();
@@ -2001,7 +2040,23 @@ LlmTool Agent::toolDescription(AgentTool *tool) const
         return description;
     description.name = tool->name();
     description.description = tool->description();
-    description.parameters = tool->parametersSchema();
+    QJsonObject parameters = tool->parametersSchema();
+    QJsonObject properties = parameters.value(QString::fromUtf8("properties")).toObject();
+    if (!properties.contains(QString::fromUtf8("for_user")))
+    {
+        QJsonObject note;
+        note.insert(QString::fromUtf8("type"), QString::fromUtf8("string"));
+        note.insert(QString::fromUtf8("description"),
+                    QString::fromUtf8(
+                        "One short sentence for the user, in the user's language, "
+                        "saying what this call does for them. Send it on every call. "
+                        "The chat shows it instead of the function name."));
+        properties.insert(QString::fromUtf8("for_user"), note);
+        parameters.insert(QString::fromUtf8("properties"), properties);
+        if (!parameters.contains(QString::fromUtf8("type")))
+            parameters.insert(QString::fromUtf8("type"), QString::fromUtf8("object"));
+    }
+    description.parameters = parameters;
     return description;
 }
 
@@ -2036,7 +2091,9 @@ void Agent::handleToolCalls(LlmMessage message)
     _executingTools = true;
     foreach (const LlmToolCall &call, message.toolCalls)
     {
-        emit toolCallStarted(call.name, call.arguments);
+        QString arguments = call.arguments;
+        const QString forUser = takeForUser(&arguments);
+        emit toolCallStarted(call.name, arguments, forUser);
 
         bool ok = false;
         QString result;
@@ -2075,7 +2132,7 @@ void Agent::handleToolCalls(LlmMessage message)
             const bool nested = (call.name == QString::fromUtf8("delegate_task")
                                  || call.name == QString::fromUtf8("run_tool"));
             const int span = nested ? 0 : AppSettings::instance()->beginWork();
-            result = tool->invoke(call.arguments, &ok);
+            result = tool->invoke(arguments, &ok);
             if (span)
                 AppSettings::instance()->endWork(span);
             if (!self)
@@ -2092,6 +2149,12 @@ void Agent::handleToolCalls(LlmMessage message)
         toolMessage.toolCallId = call.id;
         toolMessage.name = call.name;
         toolMessage.content = result;
+        if (tool)
+        {
+            const QJsonArray parts = tool->takeResultParts();
+            if (!parts.isEmpty())
+                toolMessage.contentParts = parts;
+        }
         _history.append(toolMessage);
     }
     if (!self)

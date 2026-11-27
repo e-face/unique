@@ -112,6 +112,11 @@ public:
      * @brief Add text to the model history without showing it in the chat.
      */
     void injectContext(QString text);
+    /**
+     * @brief The last assistant reply did not finish the task.
+     *        Hide it in the chat and the journal; the model still has it.
+     */
+    void retractLastAssistant();
     void holdForExternal();
     void sealIncompleteToolCalls(QString reason);
     /**
@@ -162,7 +167,9 @@ public slots:
 signals:
     void userMessage(const QString &text);
     void assistantMessage(const QString &text);
-    void toolCallStarted(const QString &name, const QString &arguments);
+    void assistantRetracted(const QString &text);
+    void toolCallStarted(const QString &name, const QString &arguments,
+                         const QString &forUser);
     void toolCallFinished(const QString &name, const QString &result, bool ok);
     void notice(const QString &text);
     /** Service note: chat feed only, not the journal. */

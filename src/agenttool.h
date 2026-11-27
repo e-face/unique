@@ -2,6 +2,7 @@
 #define AGENTTOOL_H
 
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QObject>
 #include <QString>
 
@@ -32,6 +33,16 @@ public:
      * @param ok false if the call failed (the error text is the return value).
      */
     virtual QString invoke(QString argumentsJson, bool *ok) = 0;
+
+    /**
+     * @brief Multimodal blocks for the tool message (text + image_url).
+     *        Empty means the string from invoke() is the whole result.
+     *        The array is taken once.
+     */
+    virtual QJsonArray takeResultParts()
+    {
+        return QJsonArray();
+    }
 
     /**
      * @brief Interrupt a stuck call (a command or a nested loop).

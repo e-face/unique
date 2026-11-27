@@ -126,4 +126,22 @@ private:
     bool              _interrupted;
 };
 
+//----------------------------------------------
+
+class AttachImageAgentTool : public AgentTool
+{
+public:
+    explicit AttachImageAgentTool(ProjectWorkspace *workspace, QObject *parent = 0);
+
+    virtual QString     name() const;
+    virtual QString     description() const;
+    virtual QJsonObject parametersSchema() const;
+    virtual QString     invoke(QString argumentsJson, bool *ok);
+    virtual QJsonArray  takeResultParts();
+
+private:
+    ProjectWorkspace *_workspace;
+    QJsonArray        _parts;
+};
+
 #endif // LOOKUPTOOLS_H

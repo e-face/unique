@@ -2370,14 +2370,26 @@ QString Worker::openingBlockReason() const
 
 //----------------------------------------------
 
+static bool assistantTextIsStatus(const QString &text)
+{
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty())
+        return true;
+    // A one-line note is "I will do it", not the outcome. A real report
+    // has more than one line.
+    if (trimmed.contains(QChar('\n')))
+        return false;
+    return trimmed.size() < 240;
+}
+
+//----------------------------------------------
+
 bool Worker::shouldNudgeToContinue() const
 {
     if (_idleNudges >= 2 || !needsWorkOpening())
         return false;
     if (!hasWorkPlan())
         return !openingBlockReason().isEmpty();
-    if (!_actedAfterPlan)
-        return true;
     for (int i = 0; i < _workPlan.size(); ++i)
     {
         if ((_workPlan.at(i).how == QString::fromUtf8("delegate")
@@ -2385,6 +2397,10 @@ bool Worker::shouldNudgeToContinue() const
             && !_workPlan.at(i).delegated)
             return true;
     }
+    // how=self is done when the reply is the outcome. Do not demand another
+    // tool call and another copy of the same report.
+    if (!_actedAfterPlan && assistantTextIsStatus(_lastAssistant))
+        return true;
     return false;
 }
 
@@ -2541,6 +2557,9 @@ void Worker::sltIdleAfterBusy()
     if (shouldNudgeToContinue() && _session && _session->agent())
     {
         ++_idleNudges;
+        // The text just shown did not finish the task. Drop it so the chat
+        // keeps the later report, not a copy of the same answer.
+        _session->agent()->retractLastAssistant();
         setState(WorkerStateRunning);
         _session->agent()->sendUserMessage(continueNudgeText(), AgentUserIngressSystem);
         return;
