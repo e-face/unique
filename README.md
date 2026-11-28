@@ -20,7 +20,8 @@ The interface is localized for Russian, English, and Chinese.
 ## Links
 
 - Project page: https://www.e-face.org/softcraft/unique
-- Video: https://cloud.mail.ru/public/a4Xj/Sz4bCZk3p
+- Video 0.1.1: https://cloud.mail.ru/public/a4Xj/Sz4bCZk3p
+- Video 0.4.10: https://cloud.mail.ru/public/C23P/EWhr9AeJc
 - Download for 32-bit Windows: https://www.e-face.org/softcraft/unique/windows/x86/index.php
 - Download for 64-bit Windows: https://www.e-face.org/softcraft/unique/windows/x64/index.php
 - Download for 64-bit Ubuntu: https://www.e-face.org/softcraft/unique/ubuntu/x64/index.php
