@@ -23,3 +23,6 @@ The interface is localized for Russian, English, and Chinese.
 - Video: https://cloud.mail.ru/public/a4Xj/Sz4bCZk3p
 - Download for 32-bit Windows: https://www.e-face.org/softcraft/unique/windows/x86/index.php
 - Download for 64-bit Windows: https://www.e-face.org/softcraft/unique/windows/x64/index.php
+- Download for 64-bit Ubuntu: https://www.e-face.org/softcraft/unique/ubuntu/x64/index.php
+- Download for 64-bit Debian: https://www.e-face.org/softcraft/unique/debian/x64/index.php
+- Download for 64-bit Red Hat: https://www.e-face.org/softcraft/unique/redhat/x64/index.php
